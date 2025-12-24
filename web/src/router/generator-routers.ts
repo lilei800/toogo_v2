@@ -18,9 +18,15 @@ LayoutMap.set('IFRAME', Iframe);
  */
 export const routerGenerator = (routerMap, parent?): any[] => {
   return routerMap.map((item) => {
+    // 如果路径是绝对路径（以/开头），直接使用；否则拼接父路径
+    let routePath = item.path;
+    if (!routePath.startsWith('/')) {
+      routePath = `${(parent && parent.path) || ''}/${item.path}`;
+    }
+    
     const currentRouter: any = {
       // 路由地址 动态拼接生成如 /dashboard/workplace
-      path: `${(parent && parent.path) || ''}/${item.path}`,
+      path: routePath,
       // 路由名称，建议唯一
       name: item.name || '',
       // 该路由对应页面的 组件
@@ -35,7 +41,7 @@ export const routerGenerator = (routerMap, parent?): any[] => {
     };
 
     // 为了防止出现后端返回结果不规范，处理有可能出现拼接出两个 反斜杠
-    currentRouter.path = currentRouter.path.replace('//', '/');
+    currentRouter.path = currentRouter.path.replace(/\/+/g, '/');
     // 重定向 ,菜单类型为目录默认默认跳转
     if(item.meta.type === 1){
       item.redirect && (currentRouter.redirect = item.redirect);

@@ -1,0 +1,2 @@
+﻿group_key	group_name
+official_btc_usdt_v12_2	BTC-USDT-V12.2推荐策略，选择适合自己的

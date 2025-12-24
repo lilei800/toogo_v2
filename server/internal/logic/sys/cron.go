@@ -39,12 +39,14 @@ func (s *sSysCron) StartCron(ctx context.Context) {
 		Where("status", consts.StatusEnabled).
 		Order("sort asc,id desc").
 		Scan(&list); err != nil {
-		cron.Logger().Fatalf(ctx, "定时任务获取失败, err . %v", err)
+		// 运行期/启动期错误不应直接退出进程，记录后返回即可
+		cron.Logger().Errorf(ctx, "定时任务获取失败, err . %v", err)
 		return
 	}
 
 	if err := cron.StartALL(list); err != nil {
-		cron.Logger().Fatalf(ctx, "定时任务启动失败, err . %v", err)
+		// 运行期/启动期错误不应直接退出进程，记录后返回即可
+		cron.Logger().Errorf(ctx, "定时任务启动失败, err . %v", err)
 		return
 	}
 }

@@ -6,9 +6,10 @@
 package common
 
 import (
-	"github.com/gogf/gf/v2/frame/g"
 	"hotgo/internal/model"
 	"hotgo/internal/model/input/adminin"
+
+	"github.com/gogf/gf/v2/frame/g"
 )
 
 // LoginLogoutReq 注销登录
@@ -27,6 +28,32 @@ type RegisterReq struct {
 type RegisterRes struct {
 	*adminin.LoginModel
 }
+
+// SendRegisterEmailReq 发送注册邮箱验证码（无需登录）
+type SendRegisterEmailReq struct {
+	g.Meta `path:"/site/sendRegisterEmail" tags:"后台基础" method:"post" summary:"发送注册邮箱验证码"`
+	Email  string `json:"email" v:"required|email#邮箱不能为空|邮箱格式不正确" dc:"邮箱地址"`
+}
+
+type SendRegisterEmailRes struct{}
+
+// SendResetPwdEmailReq 发送重置密码邮件（无需登录）
+type SendResetPwdEmailReq struct {
+	g.Meta `path:"/site/sendResetPwdEmail" tags:"后台基础" method:"post" summary:"发送重置密码邮件"`
+	Email  string `json:"email" v:"required|email#邮箱不能为空|邮箱格式不正确" dc:"邮箱地址"`
+}
+
+type SendResetPwdEmailRes struct{}
+
+// PasswordResetReq 重置密码（通过token）
+type PasswordResetReq struct {
+	g.Meta `path:"/site/passwordReset" tags:"后台基础" method:"post" summary:"重置密码(通过token)"`
+	Token  string `json:"token" v:"required#token不能为空" dc:"重置token"`
+	// 前端会对password做AES加密（与注册/登录一致），后端在Filter里解密校验
+	Password string `json:"password" v:"required#密码不能为空" dc:"新密码"`
+}
+
+type PasswordResetRes struct{}
 
 // LoginCaptchaReq 获取登录验证码
 type LoginCaptchaReq struct {

@@ -87,7 +87,7 @@ func (s *sSysProvinces) Edit(ctx context.Context, in *sysin.ProvincesEditInp) (e
 
 	// 修改
 	if models != nil {
-		if _, err = dao.SysProvinces.Ctx(ctx).Fields(sysin.ProvincesUpdateFields{}).WherePri(in.Id).Data(in).Update(); err != nil {
+		if _, err = dao.SysProvinces.Ctx(ctx).Fields(sysin.ProvincesUpdateFields{}).Where("id", in.Id).Data(in).Update(); err != nil {
 			err = gerror.Wrap(err, "修改省市区数据失败！")
 		}
 		return

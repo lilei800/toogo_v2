@@ -54,42 +54,42 @@ func New(name ...string) PayClient {
 }
 
 // GenOrderSn 生成业务订单号
-func GenOrderSn(ctx context.Context) string {
+func GenOrderSn(ctx context.Context) (string, error) {
 	orderSn := fmt.Sprintf("HG@%v%v", gtime.Now().Format("YmdHis"), grand.S(4))
 	count, err := dao.PayLog.Ctx(ctx).Where(dao.PayLog.Columns().OrderSn, orderSn).Count()
 	if err != nil {
-		panic(fmt.Sprintf("payment.GenOrderSn err:%+v", err))
+		return "", fmt.Errorf("payment.GenOrderSn err: %w", err)
 	}
 	if count > 0 {
 		return GenOrderSn(ctx)
 	}
-	return orderSn
+	return orderSn, nil
 }
 
 // GenOutTradeNo 生成商户订单号
-func GenOutTradeNo(ctx context.Context) string {
+func GenOutTradeNo(ctx context.Context) (string, error) {
 	outTradeNo := fmt.Sprintf("%v%v", gtime.Now().Format("YmdHis"), grand.N(10000000, 99999999))
 	count, err := dao.PayLog.Ctx(ctx).Where(dao.PayLog.Columns().OutTradeNo, outTradeNo).Count()
 	if err != nil {
-		panic(fmt.Sprintf("payment.GenOutTradeNo err:%+v", err))
+		return "", fmt.Errorf("payment.GenOutTradeNo err: %w", err)
 	}
 	if count > 0 {
 		return GenOutTradeNo(ctx)
 	}
-	return outTradeNo
+	return outTradeNo, nil
 }
 
 // GenRefundSn 生成退款订单号
-func GenRefundSn(ctx context.Context) string {
+func GenRefundSn(ctx context.Context) (string, error) {
 	outTradeNo := fmt.Sprintf("%v%v", gtime.Now().Format("YmdHis"), grand.N(10000, 99999))
 	count, err := dao.PayRefund.Ctx(ctx).Where(dao.PayRefund.Columns().RefundTradeNo, outTradeNo).Count()
 	if err != nil {
-		panic(fmt.Sprintf("payment.GenRefundSn err:%+v", err))
+		return "", fmt.Errorf("payment.GenRefundSn err: %w", err)
 	}
 	if count > 0 {
 		return GenRefundSn(ctx)
 	}
-	return outTradeNo
+	return outTradeNo, nil
 }
 
 // AutoTradeType 根据userAgent自动识别交易方式，在实际支付场景中你可以手动调整识别规则

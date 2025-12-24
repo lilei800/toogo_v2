@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Toogo.Ai - 智能机器人土狗</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Toogo.Ai</h1>
+            <p>您的智能AI助手 - 土狗</p>
+        </header>
+
+        <div class="scene">
+            <!-- 动态科技背景 -->
+            <div class="tech-background">
+                <div class="grid-line vertical"></div>
+                <div class="grid-line horizontal"></div>
+            </div>
+
+            <!-- 聊天气泡 -->
+            <div class="chat-bubble" id="chat-bubble">你好！我是 Toogo。</div>
+
+            <!-- 机器人主体 SVG -->
+            <svg id="toogo-robot" viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg">
+                <defs>
+                    <!-- 金属外壳渐变 -->
+                    <linearGradient id="metal-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%" style="stop-color:#ffffff;stop-opacity:1" />
+                        <stop offset="50%" style="stop-color:#e0e0e0;stop-opacity:1" />
+                        <stop offset="100%" style="stop-color:#b0b0b0;stop-opacity:1" />
+                    </linearGradient>
+                    <!-- 屏幕深色渐变 -->
+                    <linearGradient id="screen-gradient" x1="0%" y1="0%" x2="0%" y2="100%">
+                        <stop offset="0%" style="stop-color:#333;stop-opacity:1" />
+                        <stop offset="100%" style="stop-color:#111;stop-opacity:1" />
+                    </linearGradient>
+                    <!-- 眼睛发光渐变 -->
+                    <radialGradient id="eye-glow" cx="50%" cy="50%" r="50%" fx="50%" fy="50%">
+                        <stop offset="0%" style="stop-color:#00f3ff;stop-opacity:1" />
+                        <stop offset="80%" style="stop-color:#00a8ff;stop-opacity:1" />
+                        <stop offset="100%" style="stop-color:#0077ff;stop-opacity:1" />
+                    </radialGradient>
+                    <!-- 影子渐变 -->
+                    <radialGradient id="shadow-gradient" cx="50%" cy="50%" r="50%">
+                        <stop offset="0%" style="stop-color:#000000;stop-opacity:0.6" />
+                        <stop offset="100%" style="stop-color:#000000;stop-opacity:0" />
+                    </radialGradient>
+                </defs>
+
+                <!-- 阴影 -->
+                <ellipse cx="200" cy="360" rx="80" ry="15" class="shadow" fill="url(#shadow-gradient)" />
+
+                <!-- 尾巴 -->
+                <g class="tail-group">
+                    <path d="M280 280 Q 320 250 330 200" class="tail" stroke="#ccc" stroke-width="8" fill="none" stroke-linecap="round"/>
+                    <circle cx="330" cy="200" r="8" class="tail-tip" fill="#00f3ff"/>
+                </g>
+
+                <!-- 身体 -->
+                <g class="body-group">
+                    <rect x="140" y="220" width="120" height="100" rx="20" class="body-chassis" fill="url(#metal-gradient)"/>
+                    <rect x="160" y="240" width="80" height="60" rx="10" class="body-screen" fill="url(#screen-gradient)"/>
+                    <text x="200" y="275" text-anchor="middle" fill="#00f3ff" font-family="Arial" font-size="14" class="logo-text" style="filter: drop-shadow(0 0 2px #00f3ff);">Toogo.Ai</text>
+                    <!-- 数据流效果 (专注模式用) -->
+                    <g class="data-stream" style="opacity: 0;">
+                        <rect x="130" y="210" width="140" height="120" rx="25" fill="none" stroke="#00f3ff" stroke-width="2" stroke-dasharray="10,5"/>
+                    </g>
+                </g>
+
+                <!-- 腿 -->
+                <g class="legs">
+                    <rect x="150" y="310" width="20" height="40" rx="10" fill="#bbb"/>
+                    <rect x="230" y="310" width="20" height="40" rx="10" fill="#bbb"/>
+                </g>
+
+                <!-- 头部 -->
+                <g class="head-group">
+                    <!-- 耳朵 -->
+                    <g class="ears">
+                        <path d="M130 150 L 110 100 L 150 120 Z" class="ear left-ear" fill="#ccc"/>
+                        <path d="M270 150 L 290 100 L 250 120 Z" class="ear right-ear" fill="#ccc"/>
+                    </g>
+
+                    <!-- 头盔 -->
+                    <rect x="120" y="120" width="160" height="110" rx="30" class="head-shell" fill="url(#metal-gradient)"/>
+                    
+                    <!-- 脸部屏幕 -->
+                    <rect x="135" y="135" width="130" height="80" rx="20" class="face-screen" fill="#111"/>
+
+                    <!-- 眉毛 -->
+                    <g class="eyebrows">
+                        <path d="M160 160 Q 170 160 180 160" class="eyebrow left-eyebrow" stroke="#00f3ff" stroke-width="3" fill="none" stroke-linecap="round"/>
+                        <path d="M220 160 Q 230 160 240 160" class="eyebrow right-eyebrow" stroke="#00f3ff" stroke-width="3" fill="none" stroke-linecap="round"/>
+                    </g>
+
+                    <!-- 眼睛 -->
+                    <g class="eyes">
+                        <g class="eye left-eye" transform="translate(170, 175)">
+                            <circle cx="0" cy="0" r="12" fill="url(#eye-glow)" class="eye-ball" style="filter: drop-shadow(0 0 5px #00f3ff);"/>
+                            <!-- 爱心形状 (默认隐藏) -->
+                            <path d="M0 5 q-5 -10 -10 -5 t 10 10 t 10 -10 t -10 5" fill="#ff0055" class="eye-heart" style="display:none; transform: scale(1.5) translate(-5px, -5px); filter: drop-shadow(0 0 5px #ff0055);"/>
+                            <!-- 眯眼线 (默认隐藏) -->
+                            <path d="M-10 0 L 10 0" class="eye-squint" stroke="#00f3ff" stroke-width="3" stroke-linecap="round" style="display:none; filter: drop-shadow(0 0 2px #00f3ff);"/>
+                        </g>
+                        <g class="eye right-eye" transform="translate(230, 175)">
+                            <circle cx="0" cy="0" r="12" fill="url(#eye-glow)" class="eye-ball" style="filter: drop-shadow(0 0 5px #00f3ff);"/>
+                            <path d="M0 5 q-5 -10 -10 -5 t 10 10 t 10 -10 t -10 5" fill="#ff0055" class="eye-heart" style="display:none; transform: scale(1.5) translate(-5px, -5px); filter: drop-shadow(0 0 5px #ff0055);"/>
+                            <path d="M-10 0 L 10 0" class="eye-squint" stroke="#00f3ff" stroke-width="3" stroke-linecap="round" style="display:none; filter: drop-shadow(0 0 2px #00f3ff);"/>
+                        </g>
+                    </g>
+
+                    <!-- 脸颊 (默认隐藏) -->
+                    <g class="cheeks" style="opacity: 0;">
+                        <ellipse cx="155" cy="190" rx="8" ry="4" fill="#ff0055" opacity="0.6"/>
+                        <ellipse cx="245" cy="190" rx="8" ry="4" fill="#ff0055" opacity="0.6"/>
+                    </g>
+
+                    <!-- 嘴巴 (多种形态) -->
+                    <g class="mouth-group">
+                        <!-- 微笑 -->
+                        <path d="M185 200 Q 200 210 215 200" class="mouth mouth-smile" stroke="#00f3ff" stroke-width="3" fill="none" stroke-linecap="round" style="opacity: 0;"/>
+                        <!-- 悲伤/困惑 -->
+                        <path d="M185 205 Q 200 195 215 205" class="mouth mouth-sad" stroke="#00f3ff" stroke-width="3" fill="none" stroke-linecap="round" style="opacity: 0;"/>
+                        <!-- 张嘴/惊讶 -->
+                        <ellipse cx="200" cy="200" rx="8" ry="8" class="mouth mouth-open" stroke="#00f3ff" stroke-width="3" fill="none" style="opacity: 0;"/>
+                        <!-- 直线/严肃 -->
+                        <path d="M190 200 L 210 200" class="mouth mouth-line" stroke="#00f3ff" stroke-width="3" fill="none" stroke-linecap="round" style="opacity: 0;"/>
+                    </g>
+
+                    <!-- 疑惑气泡 (默认隐藏) -->
+                    <g class="question-mark" style="opacity: 0;" transform="translate(280, 100)">
+                        <text x="0" y="0" fill="#00f3ff" font-size="40" font-weight="bold">?</text>
+                    </g>
+                    
+                    <!-- 思考指示灯 -->
+                    <circle cx="260" cy="130" r="4" class="indicator-light" fill="#555"/>
+                </g>
+
+                <!-- 交易状态特效组件 -->
+                
+                <!-- 1. 保守型：能量护盾 -->
+                <g class="shield-group" style="opacity: 0; pointer-events: none;">
+                    <path d="M110 100 Q 200 40 290 100 V 280 Q 200 380 110 280 Z" fill="url(#shield-gradient)" stroke="#4cd137" stroke-width="2" stroke-dasharray="10,5" opacity="0.4"/>
+                    <defs>
+                        <radialGradient id="shield-gradient" cx="50%" cy="50%" r="50%">
+                            <stop offset="0%" style="stop-color:#4cd137;stop-opacity:0" />
+                            <stop offset="100%" style="stop-color:#4cd137;stop-opacity:0.2" />
+                        </radialGradient>
+                    </defs>
+                </g>
+
+                <!-- 2. 激进型：火箭推进火焰 -->
+                <g class="fire-group" style="opacity: 0;">
+                    <path d="M160 350 Q 170 380 160 400 Q 150 380 160 350" fill="#e84118" class="flame flame-left"/>
+                    <path d="M240 350 Q 250 380 240 400 Q 230 380 240 350" fill="#e84118" class="flame flame-right"/>
+                </g>
+
+                <!-- 3. 平衡型/激进型：全息图表 -->
+                <g class="chart-group" style="opacity: 0;" transform="translate(280, 180)">
+                    <polyline points="0,50 20,40 40,60 60,20" fill="none" stroke="#fbc531" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="chart-line"/>
+                    <circle cx="60" cy="20" r="3" fill="#fbc531" class="chart-dot"/>
+                </g>
+
+            </svg>
+        </div>
+
+        <div class="controls">
+            <button onclick="setMood('normal')">默认 (Normal)</button>
+            <button onclick="setMood('happy')">开心 (Happy)</button>
+            <button onclick="setMood('thinking')">思考 (Thinking)</button>
+            <button onclick="setMood('confused')">疑惑 (Confused)</button>
+            <button onclick="setMood('tired')">疲惫 (Tired)</button>
+            <button onclick="setMood('excited')">兴奋 (Excited)</button>
+            <button onclick="setMood('focused')">专注 (Focused)</button>
+            <button onclick="setMood('sad')">失落 (Sad)</button>
+            <!-- 新增交易状态按钮 -->
+            <button onclick="setMood('conservative')" style="border-color: #4cd137; color: #4cd137;">🛡️ 保守型</button>
+            <button onclick="setMood('balanced')" style="border-color: #00a8ff; color: #00a8ff;">⚖️ 平衡型</button>
+            <button onclick="setMood('aggressive')" style="border-color: #e84118; color: #e84118;">🚀 激进型</button>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

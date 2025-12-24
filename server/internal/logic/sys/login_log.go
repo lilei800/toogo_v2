@@ -124,7 +124,7 @@ func (s *sSysLoginLog) Export(ctx context.Context, in *sysin.LoginLogListInp) (e
 
 // Delete 删除登录日志
 func (s *sSysLoginLog) Delete(ctx context.Context, in *sysin.LoginLogDeleteInp) (err error) {
-	_, err = s.Model(ctx).WherePri(in.Id).Delete()
+	_, err = s.Model(ctx).Where("id", in.Id).Delete()
 	return
 }
 

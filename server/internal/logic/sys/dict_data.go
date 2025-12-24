@@ -42,7 +42,7 @@ func (s *sSysDictData) Delete(ctx context.Context, in *sysin.DictDataDeleteInp) 
 func (s *sSysDictData) Edit(ctx context.Context, in *sysin.DictDataEditInp) (err error) {
 	// 修改
 	if in.Id > 0 {
-		_, err = dao.SysDictData.Ctx(ctx).Fields(sysin.DictDataUpdateFields{}).WherePri(in.Id).Data(in).Update()
+		_, err = dao.SysDictData.Ctx(ctx).Fields(sysin.DictDataUpdateFields{}).Where("id", in.Id).Data(in).Update()
 		if err != nil {
 			err = gerror.Wrap(err, consts.ErrorORM)
 			return err

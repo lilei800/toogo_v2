@@ -7,9 +7,11 @@ package cmd
 
 import (
 	"context"
+	"hotgo/utility/simple"
+
+	"github.com/gogf/gf/v2/errors/gerror"
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/os/gcmd"
-	"hotgo/utility/simple"
 )
 
 var (
@@ -63,7 +65,9 @@ var (
 				var cmd = server
 				simple.SafeGo(ctx, func(ctx context.Context) {
 					if err := cmd.Func(ctx, parser); err != nil {
-						g.Log().Fatalf(ctx, "%v start fail:%v", cmd.Name, err)
+						g.Log().Errorf(ctx, "%v start fail:%v", cmd.Name, err)
+						// 记录详细错误信息，但不立即退出进程
+						g.Log().Criticalf(ctx, "[服务启动失败] 服务名称: %v, 错误信息: %+v, 堆栈信息: %+v", cmd.Name, err, gerror.Stack(err))
 					}
 				})
 			}

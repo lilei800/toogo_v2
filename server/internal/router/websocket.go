@@ -12,6 +12,7 @@ import (
 	controller "hotgo/internal/controller/websocket"
 	"hotgo/internal/controller/websocket/handler/admin"
 	"hotgo/internal/controller/websocket/handler/common"
+	"hotgo/internal/controller/websocket/handler/toogo"
 	"hotgo/internal/service"
 	"hotgo/internal/websocket"
 	"hotgo/utility/simple"
@@ -42,5 +43,11 @@ func WebSocket(ctx context.Context, group *ghttp.RouterGroup) {
 		"quit":                  common.Site.Quit,      // 退出组
 		"admin/monitor/trends":  admin.Monitor.Trends,  // 后台监控，动态数据
 		"admin/monitor/runInfo": admin.Monitor.RunInfo, // 后台监控，运行信息
+		// Toogo - 机器人实时推送（批量实时分析）
+		"toogo/robot/realtime/subscribe":   toogo.RobotRealtime.Subscribe,
+		"toogo/robot/realtime/unsubscribe": toogo.RobotRealtime.Unsubscribe,
+		// Toogo - 机器人持仓实时推送（positions snapshot）
+		"toogo/robot/positions/subscribe":   toogo.RobotPositionsRealtime.Subscribe,
+		"toogo/robot/positions/unsubscribe": toogo.RobotPositionsRealtime.Unsubscribe,
 	})
 }

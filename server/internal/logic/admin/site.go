@@ -83,22 +83,11 @@ func (s *sAdminSite) Register(ctx context.Context, in *adminin.RegisterInp) (err
 		return
 	}
 
-	// 验证唯一性
+	// 验证唯一性（仅验证Email）
 	err = service.AdminMember().VerifyUnique(ctx, &adminin.VerifyUniqueInp{
 		Where: g.Map{
-			dao.AdminMember.Columns().Username: in.Username,
-			dao.AdminMember.Columns().Mobile:   in.Mobile,
+			dao.AdminMember.Columns().Email: in.Email,
 		},
-	})
-	if err != nil {
-		return
-	}
-
-	// 验证短信验证码
-	err = service.SysSmsLog().VerifyCode(ctx, &sysin.VerifyCodeInp{
-		Event:  consts.SmsTemplateRegister,
-		Mobile: in.Mobile,
-		Code:   in.Code,
 	})
 	if err != nil {
 		return
@@ -114,7 +103,7 @@ func (s *sAdminSite) Register(ctx context.Context, in *adminin.RegisterInp) (err
 		RealName: "",
 		Avatar:   config.Avatar,
 		Sex:      3, // 保密
-		Mobile:   in.Mobile,
+		Email:    in.Email,
 		Status:   consts.StatusEnabled,
 	}
 	data.Salt = grand.S(6)
@@ -258,7 +247,7 @@ func (s *sAdminSite) handleLogin(ctx context.Context, mb *entity.AdminMember) (r
 
 // getLoginRoleAndDept 获取登录的角色和部门信息
 func (s *sAdminSite) getLoginRoleAndDept(ctx context.Context, roleId, deptId int64) (role *entity.AdminRole, dept *entity.AdminDept, err error) {
-	if err = dao.AdminRole.Ctx(ctx).Fields(dao.AdminRole.Columns().Id, dao.AdminRole.Columns().Key, dao.AdminRole.Columns().Status).WherePri(roleId).Scan(&role); err != nil {
+	if err = dao.AdminRole.Ctx(ctx).Fields(dao.AdminRole.Columns().Id, dao.AdminRole.Columns().Key, dao.AdminRole.Columns().Status).Where(dao.AdminRole.Columns().Id, roleId).Scan(&role); err != nil {
 		err = gerror.Wrap(err, consts.ErrorORM)
 		return
 	}
@@ -273,7 +262,7 @@ func (s *sAdminSite) getLoginRoleAndDept(ctx context.Context, roleId, deptId int
 		return
 	}
 
-	if err = dao.AdminDept.Ctx(ctx).Fields(dao.AdminDept.Columns().Id, dao.AdminDept.Columns().Type, dao.AdminDept.Columns().Status).WherePri(deptId).Scan(&dept); err != nil {
+	if err = dao.AdminDept.Ctx(ctx).Fields(dao.AdminDept.Columns().Id, dao.AdminDept.Columns().Type, dao.AdminDept.Columns().Status).Where(dao.AdminDept.Columns().Id, deptId).Scan(&dept); err != nil {
 		err = gerror.Wrap(err, "获取部门信息失败，请稍后重试！")
 		return
 	}
@@ -297,7 +286,7 @@ func (s *sAdminSite) BindUserContext(ctx context.Context, claims *model.Identity
 	// return
 
 	var mb *entity.AdminMember
-	if err = dao.AdminMember.Ctx(ctx).WherePri(claims.Id).Scan(&mb); err != nil {
+	if err = dao.AdminMember.Ctx(ctx).Where(dao.AdminMember.Columns().Id, claims.Id).Scan(&mb); err != nil {
 		err = gerror.Wrap(err, "获取用户信息失败，请稍后重试！")
 		return
 	}

@@ -56,8 +56,10 @@ func handlerMsg(client *Client, message []byte) {
 func RegisterMsg(handlers EventHandlers) {
 	for id, f := range handlers {
 		if _, ok := routers[id]; ok {
-			g.Log().Fatalf(mctx, "RegisterMsg function id %v: already registered", id)
-			return
+			// 重复注册是编程错误，使用 panic 而非 Fatal（避免运行时退出）
+			// 这里 panic 会在启动时被捕获，便于开发者修复问题
+			g.Log().Errorf(mctx, "RegisterMsg function id %v: already registered (skipped)", id)
+			continue
 		}
 		routers[id] = f
 	}

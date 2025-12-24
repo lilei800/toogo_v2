@@ -7,7 +7,7 @@ package queue
 
 import (
 	"context"
-	"fmt"
+
 	"github.com/IBM/sarama"
 	"github.com/gogf/gf/v2/errors/gerror"
 	"github.com/gogf/gf/v2/frame/g"
@@ -94,11 +94,13 @@ func (r *KafkaMq) ListenReceiveMsgDo(topic string, receiveDo func(mqMsg MqMsg)) 
 	go func(consumerCtx context.Context) {
 		for {
 			if err = r.consumerIns.Consume(consumerCtx, []string{topic}, &consumer); err != nil {
-				Logger().Fatalf(ctx, "kafka Error from consumer, err%+v", err)
+				// 运行期错误不应直接退出进程，记录后继续循环等待下一次消费/重平衡
+				Logger().Errorf(ctx, "kafka Error from consumer, err%+v", err)
+				time.Sleep(1 * time.Second)
 			}
 
 			if consumerCtx.Err() != nil {
-				Logger().Debugf(ctx, fmt.Sprintf("kafka consoumer stop : %v", consumerCtx.Err()))
+				Logger().Debugf(ctx, "kafka consoumer stop : %v", consumerCtx.Err())
 				return
 			}
 			consumer.ready = make(chan bool)
@@ -113,7 +115,8 @@ func (r *KafkaMq) ListenReceiveMsgDo(topic string, receiveDo func(mqMsg MqMsg)) 
 		Logger().Debug(ctx, "kafka consumer close...")
 		cancel()
 		if err = r.consumerIns.Close(); err != nil {
-			Logger().Fatalf(ctx, "kafka Error closing client, err:%+v", err)
+			// 关闭失败不应导致进程退出
+			Logger().Errorf(ctx, "kafka Error closing client, err:%+v", err)
 		}
 	})
 	return

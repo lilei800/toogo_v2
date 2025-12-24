@@ -1,0 +1,3 @@
+﻿group_key	group_name	desc_preview
+official_btc_usdt_v12	BTCUSDT-V12推荐策略，选择适合自己的 - 12个月回测验证版	Toogo AI量化团队基于12个月K线数据回测精心打造的BTC-USDT盈利策略V12.0版本。策略参数基于2023-2024年12个月BTCUSDT历史K线数据回测优化，所有策略均经过严格回测验证
+official_btc_usdt_v8	BTCUSDT-v8官方推荐策略 - 半年数据优化版	Toogo AI量化团队基于半年K线数据和市场波动算法精心打造的BTC-USDT官方推荐策略V8.0版本。策略参数基于2024年6个月BTCUSDT历史K线数据回测优化，涵盖趋势、震荡、高波动、低波动

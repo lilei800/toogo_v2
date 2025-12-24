@@ -130,7 +130,7 @@ func (s *sSysNormalTreeDemo) Delete(ctx context.Context, in *sysin.NormalTreeDem
 	if count > 0 {
 		return gerror.New("请先删除该普通树表下的所有下级！")
 	}
-	if _, err = s.Model(ctx).WherePri(in.Id).Delete(); err != nil {
+	if _, err = s.Model(ctx).Where("id", in.Id).Delete(); err != nil {
 		err = gerror.Wrap(err, "删除普通树表失败，请稍后重试！")
 		return
 	}
@@ -154,7 +154,7 @@ func (s *sSysNormalTreeDemo) MaxSort(ctx context.Context, in *sysin.NormalTreeDe
 
 // View 获取普通树表指定信息
 func (s *sSysNormalTreeDemo) View(ctx context.Context, in *sysin.NormalTreeDemoViewInp) (res *sysin.NormalTreeDemoViewModel, err error) {
-	if err = s.Model(ctx).WherePri(in.Id).Hook(hook.MemberSummary).Scan(&res); err != nil {
+	if err = s.Model(ctx).Where("id", in.Id).Hook(hook.MemberSummary).Scan(&res); err != nil {
 		err = gerror.Wrap(err, "获取普通树表信息，请稍后重试！")
 		return
 	}

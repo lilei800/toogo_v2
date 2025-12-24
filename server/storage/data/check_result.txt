@@ -1,0 +1,2 @@
+﻿group_name
+BTCUSDT-v8官方推荐策略 - 半年数据优化版

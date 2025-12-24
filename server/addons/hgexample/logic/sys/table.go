@@ -144,7 +144,7 @@ func (s *sSysTable) Edit(ctx context.Context, in *sysin.TableEditInp) (err error
 	// 修改
 	if in.Id > 0 {
 		in.UpdatedBy = contexts.GetUserId(ctx)
-		if _, err = s.Model(ctx).WherePri(in.Id).Data(in).Update(); err != nil {
+		if _, err = s.Model(ctx).Where("id", in.Id).Data(in).Update(); err != nil {
 			err = gerror.Wrap(err, "修改表格失败，请稍后重试！")
 			return
 		}
@@ -162,7 +162,7 @@ func (s *sSysTable) Edit(ctx context.Context, in *sysin.TableEditInp) (err error
 
 // Delete 删除
 func (s *sSysTable) Delete(ctx context.Context, in *sysin.TableDeleteInp) (err error) {
-	if _, err = s.Model(ctx).WherePri(in.Id).Delete(); err != nil {
+	if _, err = s.Model(ctx).Where("id", in.Id).Delete(); err != nil {
 		err = gerror.Wrap(err, "删除表格失败，请稍后重试！")
 		return
 	}
@@ -176,7 +176,7 @@ func (s *sSysTable) Status(ctx context.Context, in *sysin.TableStatusInp) (err e
 		dao.AddonHgexampleTable.Columns().UpdatedBy: contexts.GetUserId(ctx),
 	}
 
-	if _, err = s.Model(ctx).WherePri(in.Id).Data(update).Update(); err != nil {
+	if _, err = s.Model(ctx).Where("id", in.Id).Data(update).Update(); err != nil {
 		err = gerror.Wrap(err, "更新表格状态失败，请稍后重试！")
 		return
 	}
@@ -225,7 +225,7 @@ func (s *sSysTable) MaxSort(ctx context.Context, in *sysin.TableMaxSortInp) (res
 
 // View 获取指定信息
 func (s *sSysTable) View(ctx context.Context, in *sysin.TableViewInp) (res *sysin.TableViewModel, err error) {
-	if err = s.Model(ctx).WherePri(in.Id).Scan(&res); err != nil {
+	if err = s.Model(ctx).Where("id", in.Id).Scan(&res); err != nil {
 		err = gerror.Wrap(err, "获取生成演示信息，请稍后重试！")
 		return
 	}

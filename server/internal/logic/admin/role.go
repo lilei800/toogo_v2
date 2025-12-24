@@ -93,7 +93,7 @@ func (s *sAdminRole) List(ctx context.Context, in *adminin.RoleListInp) (res *ad
 
 // GetName 获取指定角色的名称
 func (s *sAdminRole) GetName(ctx context.Context, id int64) (name string, err error) {
-	r, err := dao.AdminRole.Ctx(ctx).Fields(dao.AdminRole.Columns().Name).WherePri(id).OrderDesc(dao.AdminRole.Columns().Id).Value()
+	r, err := dao.AdminRole.Ctx(ctx).Fields(dao.AdminRole.Columns().Name).Where(dao.AdminRole.Columns().Id, id).OrderDesc(dao.AdminRole.Columns().Id).Value()
 	if err != nil {
 		err = gerror.Wrap(err, consts.ErrorORM)
 		return
@@ -103,7 +103,7 @@ func (s *sAdminRole) GetName(ctx context.Context, id int64) (name string, err er
 
 // GetMemberList 获取指定用户的岗位列表
 func (s *sAdminRole) GetMemberList(ctx context.Context, id int64) (list []*adminin.RoleListModel, err error) {
-	if err = dao.AdminRole.Ctx(ctx).WherePri(id).OrderDesc(dao.AdminRole.Columns().Id).Scan(&list); err != nil {
+	if err = dao.AdminRole.Ctx(ctx).Where(dao.AdminRole.Columns().Id, id).OrderDesc(dao.AdminRole.Columns().Id).Scan(&list); err != nil {
 		err = gerror.Wrap(err, consts.ErrorORM)
 	}
 	return
@@ -177,7 +177,7 @@ func (s *sAdminRole) Edit(ctx context.Context, in *adminin.RoleEditInp) (err err
 	if in.Id > 0 {
 		err = dao.AdminRole.Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
 			// 更新数据
-			_, err = dao.AdminRole.Ctx(ctx).Fields(adminin.RoleUpdateFields{}).WherePri(in.Id).Data(in).Update()
+			_, err = dao.AdminRole.Ctx(ctx).Fields(adminin.RoleUpdateFields{}).Where("id", in.Id).Data(in).Update()
 			if err != nil {
 				err = gerror.Wrap(err, consts.ErrorORM)
 				return err

@@ -43,7 +43,7 @@ func (s *sAdminPost) Delete(ctx context.Context, in *adminin.PostDeleteInp) (err
 		return gerror.New("请先解除该岗位下所有已关联用户关联关系！")
 	}
 
-	_, err = dao.AdminPost.Ctx(ctx).WherePri(in.Id).Delete()
+	_, err = dao.AdminPost.Ctx(ctx).Where(dao.AdminPost.Columns().Id, in.Id).Delete()
 	return
 }
 
@@ -91,7 +91,7 @@ func (s *sAdminPost) Edit(ctx context.Context, in *adminin.PostEditInp) (err err
 
 	// 修改
 	if in.Id > 0 {
-		_, err = dao.AdminPost.Ctx(ctx).WherePri(in.Id).Data(in).Update()
+		_, err = dao.AdminPost.Ctx(ctx).Where(dao.AdminPost.Columns().Id, in.Id).Data(in).Update()
 		return
 	}
 
@@ -103,7 +103,7 @@ func (s *sAdminPost) Edit(ctx context.Context, in *adminin.PostEditInp) (err err
 // MaxSort 最大排序
 func (s *sAdminPost) MaxSort(ctx context.Context, in *adminin.PostMaxSortInp) (res *adminin.PostMaxSortModel, err error) {
 	if in.Id > 0 {
-		if err = dao.AdminPost.Ctx(ctx).WherePri(in.Id).OrderDesc(dao.AdminPost.Columns().Sort).Scan(&res); err != nil {
+		if err = dao.AdminPost.Ctx(ctx).Where(dao.AdminPost.Columns().Id, in.Id).OrderDesc(dao.AdminPost.Columns().Sort).Scan(&res); err != nil {
 			err = gerror.Wrap(err, consts.ErrorORM)
 			return
 		}
@@ -118,7 +118,7 @@ func (s *sAdminPost) MaxSort(ctx context.Context, in *adminin.PostMaxSortInp) (r
 
 // View 获取指定岗位信息
 func (s *sAdminPost) View(ctx context.Context, in *adminin.PostViewInp) (res *adminin.PostViewModel, err error) {
-	err = dao.AdminPost.Ctx(ctx).WherePri(in.Id).Scan(&res)
+	err = dao.AdminPost.Ctx(ctx).Where(dao.AdminPost.Columns().Id, in.Id).Scan(&res)
 	return
 }
 
@@ -187,7 +187,7 @@ func (s *sAdminPost) GetMemberByStartName(ctx context.Context, memberId int64) (
 		return
 	}
 
-	val, err := dao.AdminPost.Ctx(ctx).Fields(dao.AdminPost.Columns().Name).WherePri(postId.Int()).OrderDesc(dao.AdminPost.Columns().Id).Value()
+	val, err := dao.AdminPost.Ctx(ctx).Fields(dao.AdminPost.Columns().Name).Where("id", postId.Int()).OrderDesc(dao.AdminPost.Columns().Id).Value()
 	if err != nil {
 		err = gerror.Wrap(err, consts.ErrorORM)
 		return
@@ -197,6 +197,6 @@ func (s *sAdminPost) GetMemberByStartName(ctx context.Context, memberId int64) (
 
 // Status 更新状态
 func (s *sAdminPost) Status(ctx context.Context, in *adminin.PostStatusInp) (err error) {
-	_, err = dao.AdminPost.Ctx(ctx).WherePri(in.Id).Data(dao.AdminPost.Columns().Status, in.Status).Update()
+	_, err = dao.AdminPost.Ctx(ctx).Where(dao.AdminPost.Columns().Id, in.Id).Data(dao.AdminPost.Columns().Status, in.Status).Update()
 	return
 }

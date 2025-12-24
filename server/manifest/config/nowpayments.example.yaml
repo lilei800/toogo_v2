@@ -1,0 +1,47 @@
+# ===========================================
+# NOWPayments 支付配置
+# 官网: https://nowpayments.io
+# API文档: https://documenter.getpostman.com/view/7907941/S1a32n38
+# ===========================================
+
+nowpayments:
+  # API Key (从NOWPayments后台获取)
+  # 登录 https://account.nowpayments.io 
+  # 进入 Store Settings > API Keys
+  apiKey: "YOUR_API_KEY_HERE"
+  
+  # IPN Secret (用于验证回调签名)
+  # 登录 https://account.nowpayments.io
+  # 进入 Store Settings > IPN Settings
+  ipnSecret: "YOUR_IPN_SECRET_HERE"
+  
+  # 是否沙盒环境 (测试环境)
+  # true: 使用 api-sandbox.nowpayments.io (测试)
+  # false: 使用 api.nowpayments.io (生产)
+  isSandbox: true
+  
+  # 回调地址 (需要外网可访问)
+  # 建议使用ngrok进行本地测试: ngrok http 8000
+  callbackUrl: "https://your-domain.com"
+
+# ===========================================
+# 申请步骤:
+# 1. 访问 https://nowpayments.io 注册账号
+# 2. 完成邮箱验证
+# 3. 进入 Store Settings > API Keys 创建API Key
+# 4. 进入 Store Settings > IPN Settings 设置回调URL和获取IPN Secret
+# 5. 测试时先使用Sandbox环境
+# 6. 测试通过后切换到生产环境
+# ===========================================
+
+# NOWPayments 支持的USDT网络:
+# - usdttrc20 (TRC20, 推荐, 手续费低)
+# - usdterc20 (ERC20, 以太坊网络)
+# - usdtbsc (BEP20, 币安智能链)
+# - usdtmatic (Polygon)
+# - usdtsol (Solana)
+
+# 手续费说明:
+# - 收款手续费: 0.5%
+# - 提现手续费: 取决于网络, TRC20最低约1U
+

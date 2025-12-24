@@ -7,15 +7,19 @@ package router
 
 import (
 	"context"
-	"github.com/gogf/gf/v2/net/ghttp"
 	"hotgo/internal/consts"
-	"hotgo/internal/controller/admin/admin"
+	"hotgo/internal/controller/admin"
+	adminCtrl "hotgo/internal/controller/admin/admin"
 	"hotgo/internal/controller/admin/common"
 	"hotgo/internal/controller/admin/pay"
+	"hotgo/internal/controller/admin/payment"
 	"hotgo/internal/controller/admin/sys"
+	"hotgo/internal/controller/admin/trading"
 	"hotgo/internal/router/genrouter"
 	"hotgo/internal/service"
 	"hotgo/utility/simple"
+
+	"github.com/gogf/gf/v2/net/ghttp"
 )
 
 func Admin(ctx context.Context, group *ghttp.RouterGroup) {
@@ -30,35 +34,53 @@ func Admin(ctx context.Context, group *ghttp.RouterGroup) {
 		)
 		group.Middleware(service.Middleware().AdminAuth)
 		group.Bind(
-			common.Console,   // 控制台
-			common.Ems,       // 邮件
-			common.Sms,       // 短信
-			common.Upload,    // 上传
-			common.Wechat,    // 微信授权
-			sys.Config,       // 配置
-			sys.DictType,     // 字典类型
-			sys.DictData,     // 字典数据
-			sys.Attachment,   // 附件
-			sys.Provinces,    // 省市区
-			sys.Cron,         // 定时任务
-			sys.CronGroup,    // 定时任务分组
-			sys.Blacklist,    // 黑名单
-			sys.Log,          // 访问日志
-			sys.LoginLog,     // 登录日志
-			sys.ServeLog,     // 服务日志
-			sys.SmsLog,       // 短信记录
-			sys.ServeLicense, // 服务许可证
-			admin.Member,     // 用户
-			admin.Monitor,    // 监控
-			admin.Role,       // 路由
-			admin.Dept,       // 部门
-			admin.Menu,       // 菜单
-			admin.Notice,     // 公告
-			admin.Post,       // 岗位
-			admin.Order,      // 充值订单
-			admin.CreditsLog, // 资金变动
-			admin.Cash,       // 提现
-			pay.Refund,       // 交易退款
+			common.Console,       // 控制台
+			common.Ems,           // 邮件
+			common.Sms,           // 短信
+			common.Upload,        // 上传
+			common.Wechat,        // 微信授权
+			sys.Config,           // 配置
+			sys.DictType,         // 字典类型
+			sys.DictData,         // 字典数据
+			sys.Attachment,       // 附件
+			sys.Provinces,        // 省市区
+			sys.Cron,             // 定时任务
+			sys.CronGroup,        // 定时任务分组
+			sys.Blacklist,        // 黑名单
+			sys.Log,              // 访问日志
+			sys.LoginLog,         // 登录日志
+			sys.ServeLog,         // 服务日志
+			sys.SmsLog,           // 短信记录
+			sys.ServeLicense,     // 服务许可证
+			adminCtrl.Member,     // 用户
+			adminCtrl.Monitor,    // 监控
+			adminCtrl.Role,       // 路由
+			adminCtrl.Dept,       // 部门
+			adminCtrl.Menu,       // 菜单
+			adminCtrl.Notice,     // 公告
+			adminCtrl.Post,       // 岗位
+			adminCtrl.Order,      // 充值订单
+			adminCtrl.CreditsLog, // 资金变动
+			adminCtrl.Cash,       // 提现
+			pay.Refund,           // 交易退款
+			// Trading模块
+			trading.ApiConfig,        // Trading API配置
+			trading.ProxyConfig,      // Trading 代理配置
+			trading.Robot,            // Trading 机器人
+			trading.Order,            // Trading 订单
+			trading.Monitor,          // Trading 监控
+			trading.StrategyGroup,    // Trading 策略模板
+			trading.StrategyTemplate, // Trading 策略
+			trading.VolatilityConfig, // Trading 波动率配置
+			trading.PublicMarket,     // Trading 公共行情（无需API Key）
+			trading.AlertController,  // Trading 预警日志
+			// Payment模块
+			payment.Deposit,  // USDT充值
+			payment.Withdraw, // USDT提现
+			payment.Balance,  // 余额管理
+			// Toogo模块
+			admin.Toogo,       // Toogo量化交易
+			admin.ToogoConfig, // Toogo系统配置
 		)
 
 		group.Middleware(service.Middleware().Develop)

@@ -42,7 +42,7 @@ func (s *sAdminDept) Model(ctx context.Context, option ...*handler.Option) *gdb.
 // Delete 删除
 func (s *sAdminDept) Delete(ctx context.Context, in *adminin.DeptDeleteInp) (err error) {
 	var models *entity.AdminDept
-	if err = s.Model(ctx).WherePri(in.Id).Scan(&models); err != nil {
+	if err = s.Model(ctx).Where("id", in.Id).Scan(&models); err != nil {
 		return err
 	}
 
@@ -59,7 +59,7 @@ func (s *sAdminDept) Delete(ctx context.Context, in *adminin.DeptDeleteInp) (err
 		return gerror.New("请先删除该部门下得所有子级！")
 	}
 
-	_, err = s.Model(ctx).WherePri(in.Id).Delete()
+	_, err = s.Model(ctx).Where("id", in.Id).Delete()
 	return
 }
 
@@ -110,7 +110,7 @@ func (s *sAdminDept) Edit(ctx context.Context, in *adminin.DeptEditInp) (err err
 		}
 		// 修改
 		if in.Id > 0 {
-			if _, err = s.Model(ctx).WherePri(in.Id).Data(in).Update(); err != nil {
+			if _, err = s.Model(ctx).Where("id", in.Id).Data(in).Update(); err != nil {
 				err = gerror.Wrap(err, "修改部门管理失败，请稍后重试！")
 			}
 			return
@@ -127,7 +127,7 @@ func (s *sAdminDept) Edit(ctx context.Context, in *adminin.DeptEditInp) (err err
 // MaxSort 最大排序
 func (s *sAdminDept) MaxSort(ctx context.Context, in *adminin.DeptMaxSortInp) (res *adminin.DeptMaxSortModel, err error) {
 	if in.Id > 0 {
-		if err = dao.AdminDept.Ctx(ctx).WherePri(in.Id).OrderDesc(dao.AdminDept.Columns().Sort).Scan(&res); err != nil {
+		if err = dao.AdminDept.Ctx(ctx).Where(dao.AdminDept.Columns().Id, in.Id).OrderDesc(dao.AdminDept.Columns().Sort).Scan(&res); err != nil {
 			err = gerror.Wrap(err, "获取部门数据异常！")
 			return
 		}
@@ -143,7 +143,7 @@ func (s *sAdminDept) MaxSort(ctx context.Context, in *adminin.DeptMaxSortInp) (r
 
 // View 获取指定部门信息
 func (s *sAdminDept) View(ctx context.Context, in *adminin.DeptViewInp) (res *adminin.DeptViewModel, err error) {
-	if err = dao.AdminDept.Ctx(ctx).WherePri(in.Id).Scan(&res); err != nil {
+	if err = dao.AdminDept.Ctx(ctx).Where(dao.AdminDept.Columns().Id, in.Id).Scan(&res); err != nil {
 		err = gerror.Wrap(err, "获取部门信息失败！")
 	}
 	return

@@ -1,0 +1,175 @@
+# ===========================================
+# Toogo 交易配置
+# ===========================================
+
+trading:
+  # 全局默认配置
+  defaults:
+    # 默认杠杆倍数
+    leverage: 10
+    # 默认保证金模式: ISOLATED(逐仓) / CROSSED(全仓)
+    marginType: "ISOLATED"
+    # 默认订单类型: MARKET(市价) / LIMIT(限价)
+    orderType: "MARKET"
+    # 默认持仓模式: true(双向持仓) / false(单向持仓)
+    hedgeMode: true
+
+  # 风控配置
+  riskControl:
+    # 是否启用风控
+    enabled: true
+    # 单笔最大金额(USDT)
+    maxOrderAmount: 1000
+    # 单日最大交易次数
+    maxDailyTrades: 100
+    # 单日最大亏损金额(USDT)
+    maxDailyLoss: 500
+    # 最大持仓数量
+    maxPositions: 10
+    # 最大杠杆倍数
+    maxLeverage: 50
+    # 默认止损百分比
+    defaultStopLossPercent: 5
+    # 默认止盈百分比
+    defaultTakeProfitPercent: 10
+    # 强制止损(超过此百分比强制平仓)
+    forceStopLossPercent: 20
+    # 最小开仓金额(USDT)
+    minOrderAmount: 10
+    # 冷却时间(秒,两次交易之间)
+    cooldownSeconds: 30
+
+  # 机器人配置
+  robot:
+    # 机器人引擎执行间隔(秒)
+    engineInterval: 10
+    # 行情检查间隔(秒)
+    tickerInterval: 5
+    # 持仓检查间隔(秒)
+    positionCheckInterval: 30
+    # 订单超时时间(秒)
+    orderTimeout: 60
+    # 最大重试次数
+    maxRetries: 3
+    # 重试间隔(秒)
+    retryInterval: 5
+
+  # 算力配置
+  power:
+    # 算力消耗比例(盈利订单)
+    consumePercent: 10
+    # 最低运行算力
+    minRequired: 10
+    # 每次消耗最低算力
+    minConsume: 0.1
+    # 免费赠送积分(新用户)
+    freeGift: 30
+
+  # 策略配置
+  strategy:
+    # 默认策略参数
+    defaults:
+      # 网格策略
+      grid:
+        gridCount: 10
+        upperPrice: 0
+        lowerPrice: 0
+        totalAmount: 1000
+      # 马丁格尔策略
+      martingale:
+        initialAmount: 100
+        multiplier: 2
+        maxLayers: 5
+        priceGap: 1
+      # DCA定投策略
+      dca:
+        amount: 100
+        interval: 86400
+        buyOnDip: true
+        dipPercent: 5
+    
+    # 策略组最大策略数
+    maxStrategiesPerGroup: 20
+
+  # 交易对配置
+  symbols:
+    # 默认支持的交易对
+    default:
+      - "BTCUSDT"
+      - "ETHUSDT"
+      - "BNBUSDT"
+      - "SOLUSDT"
+      - "XRPUSDT"
+    # 高风险交易对(需要更严格的风控)
+    highRisk:
+      - "DOGEUSDT"
+      - "SHIBUSDT"
+      - "PEPEUSDT"
+    # 高风险交易对最大杠杆
+    highRiskMaxLeverage: 10
+
+  # API调用配置
+  api:
+    # 请求超时(秒)
+    timeout: 30
+    # 请求重试次数
+    retries: 3
+    # 请求间隔(毫秒,防止频率限制)
+    interval: 100
+    # 每分钟最大请求数
+    rateLimit: 1200
+
+  # 通知配置
+  notification:
+    # 是否启用通知
+    enabled: true
+    # 通知类型: websocket/email/sms
+    types:
+      - "websocket"
+    # 需要通知的事件
+    events:
+      - "order_filled"      # 订单成交
+      - "position_closed"   # 持仓平仓
+      - "stop_loss_hit"     # 触发止损
+      - "take_profit_hit"   # 触发止盈
+      - "liquidation_risk"  # 强平风险
+      - "robot_error"       # 机器人错误
+
+  # 日志配置
+  log:
+    # 是否记录详细日志
+    verbose: true
+    # 日志保留天数
+    retentionDays: 30
+    # 是否记录API调用
+    logApiCalls: true
+    # 是否记录订单详情
+    logOrderDetails: true
+
+# ===========================================
+# 交易所特定配置
+# ===========================================
+exchanges:
+  binance:
+    # API基础URL
+    baseUrl: "https://fapi.binance.com"
+    # 测试网URL
+    testnetUrl: "https://testnet.binancefuture.com"
+    # WebSocket URL
+    wsUrl: "wss://fstream.binance.com"
+    # 特定配置
+    recvWindow: 5000
+
+  okx:
+    baseUrl: "https://www.okx.com"
+    wsUrl: "wss://ws.okx.com:8443/ws/v5/private"
+    wsPublicUrl: "wss://ws.okx.com:8443/ws/v5/public"
+
+  bitget:
+    baseUrl: "https://api.bitget.com"
+    wsUrl: "wss://ws.bitget.com/mix/v1/stream"
+
+  gate:
+    baseUrl: "https://api.gateio.ws"
+    wsUrl: "wss://fx-ws.gateio.ws/v4/ws/usdt"
+

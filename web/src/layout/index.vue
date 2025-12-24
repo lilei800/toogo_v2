@@ -1,278 +1,160 @@
 <template>
-  <n-layout class="layout" :position="fixedMenu" has-sider>
-    <n-layout-sider
-      v-if="
-        !isMobile && isMixMenuNoneSub && (navMode === 'vertical' || navMode === 'horizontal-mix')
-      "
-      show-trigger="bar"
-      @collapse="collapsed = true"
-      :position="fixedMenu"
-      @expand="collapsed = false"
-      :collapsed="collapsed"
-      collapse-mode="width"
-      :collapsed-width="64"
-      :width="leftMenuWidth"
-      :native-scrollbar="false"
-      :inverted="inverted"
-      class="layout-sider"
-    >
-      <Logo :collapsed="collapsed" />
-      <AsideMenu v-model:collapsed="collapsed" v-model:location="getMenuLocation" />
-    </n-layout-sider>
+  <pro-layout v-bind="layoutConfig">
+    <template #header-right>
+      <RightItem />
+    </template>
+    <!-- 顶部菜单 -->
+    <template #header-menu>
+      <TopMenu v-if="['vertical-mix', 'horizontal'].includes(getNavMode)" responsive />
+    </template>
 
-    <n-drawer
-      v-model:show="showSideDrawder"
-      :width="menuWidth"
-      :placement="'left'"
-      class="layout-side-drawer"
-    >
-      <Logo :collapsed="collapsed" />
-      <AsideMenu @clickMenuItem="collapsed = false" />
-    </n-drawer>
+    <MainView />
 
-    <n-layout :inverted="inverted">
-      <n-layout-header :inverted="getHeaderInverted" :position="fixedHeader">
-        <PageHeader v-model:collapsed="collapsed" :inverted="inverted" />
-      </n-layout-header>
+    <!-- 系统配置入口 -->
+    <n-tooltip trigger="hover">
+      <template #trigger>
+        <n-el tag="div" class="system-setting">
+          <div class="shadow system-setting-btn" @click="openSetting">
+            <n-icon :size="20" color="var(--primary-color)">
+              <ToggleSharp />
+            </n-icon>
 
-      <n-layout-content
-        class="layout-content"
-        :class="{ 'layout-default-background': getDarkTheme === false }"
-      >
-        <div
-          class="layout-content-main"
-          :class="{
-            'layout-content-main-fix': fixedMulti,
-            'fluid-header': fixedHeader === 'static',
-          }"
-        >
-          <TabsView v-if="isMultiTabs" v-model:collapsed="collapsed" />
-          <div
-            class="main-view"
-            :class="{
-              'main-view-fix': fixedMulti,
-              noMultiTabs: !isMultiTabs,
-              'mt-3': !isMultiTabs,
-            }"
-          >
-            <MainView />
+            <n-icon :size="20" color="var(--primary-color)" class="-mt-1 opacity-50">
+              <ToggleSharp />
+            </n-icon>
           </div>
-        </div>
-      </n-layout-content>
-      <n-back-top :right="100" />
-    </n-layout>
-  </n-layout>
+        </n-el>
+      </template>
+      系统配置
+    </n-tooltip>
+
+    <!--项目配置-->
+    <ProjectSetting ref="drawerSetting" />
+
+    <!--全屏水印-->
+    <n-watermark
+      v-if="settingStore.isWatermark"
+      content="NaiveAdmin"
+      cross
+      fullscreen
+      :font-size="16"
+      :line-height="16"
+      :width="384"
+      :height="384"
+      :x-offset="12"
+      :y-offset="60"
+      :rotate="-15"
+    />
+  </pro-layout>
 </template>
 
 <script lang="ts" setup>
-  import { ref, unref, computed, onMounted } from 'vue';
-  import { Logo } from './components/Logo';
-  import { TabsView } from './components/TagsView';
+  import { ref, reactive, unref, computed, watch, provide, onMounted } from 'vue';
   import { MainView } from './components/Main';
-  import { AsideMenu } from './components/Menu';
-  import { PageHeader } from './components/Header';
+  import { RightItem } from './components/Header';
+  import { proLayout } from './components/ProLayout/index';
+  import { TopMenu } from './components/Menu';
+  import { ToggleSharp } from '@vicons/ionicons5';
   import { useProjectSetting } from '@/hooks/setting/useProjectSetting';
-  import { useDesignSetting } from '@/hooks/setting/useDesignSetting';
-  import { useLoadingBar } from 'naive-ui';
-  import { useRoute } from 'vue-router';
+  import ProjectSetting from './components/ProjectSetting/index.vue';
+
   import { useProjectSettingStore } from '@/store/modules/projectSetting';
-  import { useI18nStore } from '@/store/modules/i18n';
 
-  const { getDarkTheme } = useDesignSetting();
-  const {
-    // getShowFooter,
-    getNavMode,
-    getNavTheme,
-    getHeaderSetting,
-    getMenuSetting,
-    getMultiTabsSetting,
-  } = useProjectSetting();
+  import { useFullscreen } from '@vueuse/core';
 
-  const route = useRoute();
+  const { getNavMode, getNavTheme, getNavWidth, getSubNavWidth, getNavMinWidth, getCollapsedNav } =
+    useProjectSetting();
+
   const settingStore = useProjectSettingStore();
-  const i18nStore = useI18nStore();
 
-  const navMode = getNavMode;
-
-  const collapsed = ref<boolean>(false);
-
-  const { mobileWidth, menuWidth } = unref(getMenuSetting);
-
-  const isMobile = computed<boolean>({
-    get: () => settingStore.getIsMobile,
-    set: (val) => settingStore.setIsMobile(val),
+  const drawerSetting = ref();
+  const collapsed = ref<boolean>(getCollapsedNav.value);
+  const adminBodyRef = ref<HTMLElement | null>(null);
+  const layoutConfig = reactive({
+    title: 'Toogo.Ai',
   });
 
-  const fixedHeader = computed(() => {
-    const { fixed } = unref(getHeaderSetting);
-    return fixed ? 'absolute' : 'static';
+  const { isFullscreen } = useFullscreen(adminBodyRef);
+
+  provide('isPageFullScreen', isFullscreen);
+  provide('collapsed', collapsed);
+  provide('openSetting', openSetting);
+  provide('navTheme', getNavTheme);
+  provide('navWidth', getNavWidth);
+  provide('navMinWidth', getNavMinWidth);
+
+  watch(
+    () => collapsed.value,
+    (newValue) => {
+      settingStore.setCollapsedNav(newValue);
+    },
+    { immediate: true },
+  );
+
+  watch(
+    () => settingStore.collapsedNav,
+    (newValue) => {
+      collapsed.value = newValue;
+    },
+    { immediate: true },
+  );
+
+  //打开设置
+  function openSetting() {
+    const { openDrawer } = drawerSetting.value;
+    openDrawer();
+  }
+
+  const leftWidth = computed(() => {
+    return unref(getNavWidth) + unref(getSubNavWidth) + 'px';
   });
 
-
-  const isMixMenuNoneSub = computed(() => {
-    const mixMenu = settingStore.menuSetting.mixMenu;
-    // const currentRoute = useRoute();
-    if (unref(navMode) != 'horizontal-mix') return true;
-    if (unref(navMode) === 'horizontal-mix' && mixMenu && route.meta.isRoot) {
-      return false;
-    }
-    return true;
-  });
-
-  const fixedMenu = computed(() => {
-    const { fixed } = unref(getHeaderSetting);
-    return fixed ? 'absolute' : 'static';
-  });
-
-  const isMultiTabs = computed(() => {
-    return unref(getMultiTabsSetting).show;
-  });
-
-  const fixedMulti = computed(() => {
-    return unref(getMultiTabsSetting).fixed;
-  });
-
-  const inverted = computed(() => {
-    return ['dark', 'header-dark'].includes(unref(getNavTheme));
-  });
-
-  const getHeaderInverted = computed(() => {
-    const navTheme = unref(getNavTheme);
-    return ['light', 'header-dark'].includes(navTheme) ? unref(inverted) : !unref(inverted);
-  });
-
-  const leftMenuWidth = computed(() => {
-    const { minMenuWidth, menuWidth } = unref(getMenuSetting);
-    return collapsed.value ? minMenuWidth : menuWidth;
-  });
-
-  // const getChangeStyle = computed(() => {
-  //   const { minMenuWidth, menuWidth } = unref(getMenuSetting);
-  //   return {
-  //     'padding-left': collapsed.value ? `${minMenuWidth}px` : `${menuWidth}px`,
-  //   };
-  // });
-
-  const getMenuLocation = computed(() => {
-    return 'left';
-  });
-
-  // 控制显示或隐藏移动端侧边栏
-  const showSideDrawder = computed({
-    get: () => isMobile.value && collapsed.value,
-    set: (val) => (collapsed.value = val),
-  });
+  provide('leftWidth', leftWidth);
 
   //判断是否触发移动端模式
-  const checkMobileMode = () => {
-    if (document.body.clientWidth <= mobileWidth) {
-      isMobile.value = true;
+  const watchMobileMode = () => {
+    if (document.body.clientWidth <= settingStore.mobileWidth) {
+      settingStore.setIsMobile(true);
     } else {
-      isMobile.value = false;
+      settingStore.setIsMobile(false);
     }
-    collapsed.value = false;
   };
 
-  const watchWidth = () => {
+  const watchViewportWidth = () => {
     const Width = document.body.clientWidth;
     if (Width <= 950) {
-      collapsed.value = true;
-    } else collapsed.value = false;
+      settingStore.setCollapsedNav(true);
+    } else settingStore.setCollapsedNav(false);
 
-    checkMobileMode();
+    watchMobileMode();
   };
 
   onMounted(() => {
-    checkMobileMode();
-    window.addEventListener('resize', watchWidth);
-    i18nStore.initLocale();
-    //挂载在 window 方便与在js中使用
-    window['$loading'] = useLoadingBar();
-    window['$loading'].finish();
+    watchMobileMode();
+    window.addEventListener('resize', watchViewportWidth);
   });
 </script>
 
-<style lang="less">
-  .layout-side-drawer {
-    background-color: rgb(0, 20, 40);
-
-    .layout-sider {
-      min-height: 100vh;
-      box-shadow: 2px 0 8px 0 rgb(29 35 41 / 5%);
-      position: relative;
-      z-index: 13;
-      transition: all 0.2s ease-in-out;
-    }
-  }
-</style>
 <style lang="less" scoped>
-  .layout {
-    display: flex;
-    flex-direction: row;
-    flex: auto;
+  .system-setting {
+    position: fixed;
+    z-index: 10;
+    right: 26px;
+    bottom: 86px;
 
-    &-default-background {
-      background: #f5f7f9;
+    &-btn {
+      background: var(--card-color);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      cursor: pointer;
+      border-radius: 50%;
+      width: 52px;
+      height: 52px;
+      color: var(--card-color);
+      box-shadow: 0 1px 2px -2px rgba(0, 0, 0, 0.08), 0 3px 6px 0 rgba(0, 0, 0, 0.06),
+        0 5px 12px 4px rgba(0, 0, 0, 0.04);
     }
-
-    .layout-sider {
-      min-height: 100vh;
-      box-shadow: 2px 0 8px 0 rgb(29 35 41 / 5%);
-      position: relative;
-      z-index: 13;
-      transition: all 0.2s ease-in-out;
-    }
-
-    .layout-sider-fix {
-      position: fixed;
-      top: 0;
-      left: 0;
-    }
-
-    .ant-layout {
-      overflow: hidden;
-    }
-
-    .layout-right-fix {
-      overflow-x: hidden;
-      padding-left: 200px;
-      min-height: 100vh;
-      transition: all 0.2s ease-in-out;
-    }
-
-    .layout-content {
-      flex: auto;
-      min-height: 100vh;
-    }
-
-    .n-layout-header.n-layout-header--absolute-positioned {
-      z-index: 11;
-    }
-
-    .n-layout-footer {
-      background: none;
-    }
-  }
-
-  .layout-content-main {
-    margin: 0 10px 10px;
-    position: relative;
-    padding-top: 64px;
-  }
-
-  .layout-content-main-fix {
-    padding-top: 64px;
-  }
-
-  .fluid-header {
-    padding-top: 0;
-  }
-
-  .main-view-fix {
-    padding-top: 44px;
-  }
-
-  .noMultiTabs {
-    padding-top: 0;
   }
 </style>

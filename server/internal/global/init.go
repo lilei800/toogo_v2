@@ -40,8 +40,8 @@ func Init(ctx context.Context) {
 
 	// 默认上海时区
 	if err := gtime.SetTimeZone("Asia/Shanghai"); err != nil {
-		g.Log().Fatalf(ctx, "时区设置异常 err：%+v", err)
-		return
+		// 时区设置失败不应导致进程退出，记录错误后继续使用系统默认时区
+		g.Log().Warningf(ctx, "时区设置异常 (使用系统默认时区) err：%+v", err)
 	}
 
 	fmt.Printf("欢迎使用HotGo！\r\n当前运行环境：%v, 运行根路径为：%v \r\nHotGo版本：v%v, gf版本：%v \n", runtime.GOOS, gfile.Pwd(), consts.VersionApp, gf.VERSION)
@@ -143,7 +143,9 @@ func InitTrace(ctx context.Context) {
 
 	tp, err := jaeger.Init(simple.AppName(ctx), g.Cfg().MustGet(ctx, "jaeger.endpoint").String())
 	if err != nil {
-		g.Log().Fatal(ctx, err)
+		// 链路追踪初始化失败不应导致进程退出，记录错误后继续运行（禁用链路追踪）
+		g.Log().Errorf(ctx, "InitTrace fail (tracing disabled): %+v", err)
+		return
 	}
 
 	simple.Event().Register(consts.EventServerClose, func(ctx context.Context, args ...interface{}) {

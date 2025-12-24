@@ -119,7 +119,7 @@ func (s *sSysTreeTable) Edit(ctx context.Context, in *sysin.TableEditInp) (err e
 
 		if in.Id > 0 {
 			in.UpdatedBy = contexts.GetUserId(ctx)
-			if _, err = s.Model(ctx).WherePri(in.Id).Data(in).Update(); err != nil {
+			if _, err = s.Model(ctx).Where("id", in.Id).Data(in).Update(); err != nil {
 				err = gerror.Wrap(err, "修改表格失败，请稍后重试！")
 				return err
 			}
@@ -145,7 +145,7 @@ func (s *sSysTreeTable) Delete(ctx context.Context, in *sysin.TableDeleteInp) (e
 		return gerror.New("请先删除该表格下的所有下级！")
 	}
 
-	if _, err = s.Model(ctx).WherePri(in.Id).Delete(); err != nil {
+	if _, err = s.Model(ctx).Where("id", in.Id).Delete(); err != nil {
 		err = gerror.Wrap(err, "删除表格失败，请稍后重试！")
 		return
 	}

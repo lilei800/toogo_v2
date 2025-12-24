@@ -1,3 +1,6 @@
+//go:build integration
+// +build integration
+
 // Package location_test
 // @Link  https://github.com/bufanyun/hotgo
 // @Copyright  Copyright (c) 2024 HotGo CLI

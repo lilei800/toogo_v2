@@ -29,6 +29,7 @@ import (
 	"github.com/gogf/gf/v2/os/gtime"
 	"github.com/gogf/gf/v2/os/gview"
 	"github.com/gogf/gf/v2/text/gstr"
+	"github.com/gogf/gf/v2/util/gconv"
 	"github.com/gogf/gf/v2/util/grand"
 )
 
@@ -271,7 +272,18 @@ func (s *sSysEmsLog) newView(ctx context.Context, in *sysin.SendEmsInp, config *
 			passwordResetLink string
 			resetToken        = charset.RandomCreateBytes(32)
 		)
-		if user != nil {
+		// 优先使用外部传入的重置链接（适用于未登录场景）
+		if in.TplData != nil {
+			if v, ok := in.TplData["passwordResetLink"]; ok {
+				passwordResetLink = gconv.String(v)
+			}
+			if v, ok := in.TplData["username"]; ok {
+				view.Assign("username", gconv.String(v))
+			}
+		}
+
+		// 没有传入链接时，才走“登录用户”自动生成逻辑
+		if passwordResetLink == "" && user != nil {
 			switch user.App {
 			// 后台用户
 			case consts.AppAdmin:

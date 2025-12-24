@@ -41,7 +41,7 @@ func UpdateAdminMenuTree(ctx context.Context) {
 		if v.Level == update["level"] && v.Tree == update["tree"] {
 			continue
 		}
-		if _, err = dao.AdminMenu.Ctx(ctx).WherePri(v.Id).Data(genUpdateData(v)).Update(); err != nil {
+		if _, err = dao.AdminMenu.Ctx(ctx).Where(dao.AdminMenu.Columns().Id, v.Id).Data(genUpdateData(v)).Update(); err != nil {
 			g.Log().Fatal(ctx, err)
 		}
 	}

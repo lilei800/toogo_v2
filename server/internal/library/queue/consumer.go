@@ -7,6 +7,8 @@ package queue
 
 import (
 	"context"
+	"hotgo/internal/consts"
+	"hotgo/utility/simple"
 	"sync"
 )
 
@@ -41,9 +43,11 @@ func RegisterConsumer(cs Consumer) {
 // StartConsumersListener 启动所有已注册的消费者监听
 func StartConsumersListener(ctx context.Context) {
 	for _, c := range consumers.list {
-		go func(c Consumer) {
-			consumerListen(ctx, c)
-		}(c)
+		consumer := c
+		// 使用SafeGo避免消费者内部panic导致进程崩溃
+		simple.SafeGo(ctx, func(ctx context.Context) {
+			consumerListen(ctx, consumer)
+		})
 	}
 }
 
@@ -55,9 +59,14 @@ func consumerListen(ctx context.Context, job Consumer) {
 	)
 
 	if err != nil {
-		Logger().Fatalf(ctx, "InstanceConsumer %s err:%+v", topic, err)
+		Logger().Errorf(ctx, "InstanceConsumer %s err:%+v", topic, err)
 		return
 	}
+
+	// 监听服务关闭事件（方便底层mq驱动在内部cancel/close）
+	simple.Event().Register(consts.EventServerClose, func(ctx context.Context, args ...interface{}) {
+		Logger().Debugf(ctx, "queue consumer shutdown signal received, topic=%s", topic)
+	})
 
 	if listenErr := c.ListenReceiveMsgDo(topic, func(mqMsg MqMsg) {
 		err = job.Handle(ctx, mqMsg)
@@ -70,6 +79,7 @@ func consumerListen(ctx context.Context, job Consumer) {
 		// 记录消费队列日志
 		ConsumerLog(ctx, topic, mqMsg, err)
 	}); listenErr != nil {
-		Logger().Fatalf(ctx, "消费队列：%s 监听失败, err:%+v", topic, listenErr)
+		// 运行期错误不应直接退出进程
+		Logger().Errorf(ctx, "消费队列：%s 监听失败, err:%+v", topic, listenErr)
 	}
 }

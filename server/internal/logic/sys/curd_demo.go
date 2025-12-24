@@ -171,7 +171,7 @@ func (s *sSysCurdDemo) Edit(ctx context.Context, in *sysin.CurdDemoEditInp) (err
 // Delete 删除CURD列表
 func (s *sSysCurdDemo) Delete(ctx context.Context, in *sysin.CurdDemoDeleteInp) (err error) {
 
-	if _, err = s.Model(ctx).WherePri(in.Id).Data(g.Map{
+	if _, err = s.Model(ctx).Where("id", in.Id).Data(g.Map{
 		dao.SysGenCurdDemo.Columns().DeletedBy: contexts.GetUserId(ctx),
 		dao.SysGenCurdDemo.Columns().DeletedAt: gtime.Now(),
 	}).Unscoped().Update(); err != nil {
@@ -198,7 +198,7 @@ func (s *sSysCurdDemo) MaxSort(ctx context.Context, in *sysin.CurdDemoMaxSortInp
 
 // View 获取CURD列表指定信息
 func (s *sSysCurdDemo) View(ctx context.Context, in *sysin.CurdDemoViewInp) (res *sysin.CurdDemoViewModel, err error) {
-	if err = s.Model(ctx).WherePri(in.Id).Hook(hook.MemberSummary).Scan(&res); err != nil {
+	if err = s.Model(ctx).Where("id", in.Id).Hook(hook.MemberSummary).Scan(&res); err != nil {
 		err = gerror.Wrap(err, "获取CURD列表信息，请稍后重试！")
 		return
 	}
@@ -207,7 +207,7 @@ func (s *sSysCurdDemo) View(ctx context.Context, in *sysin.CurdDemoViewInp) (res
 
 // Status 更新CURD列表状态
 func (s *sSysCurdDemo) Status(ctx context.Context, in *sysin.CurdDemoStatusInp) (err error) {
-	if _, err = s.Model(ctx).WherePri(in.Id).Data(g.Map{
+	if _, err = s.Model(ctx).Where("id", in.Id).Data(g.Map{
 		dao.SysGenCurdDemo.Columns().Status:    in.Status,
 		dao.SysGenCurdDemo.Columns().UpdatedBy: contexts.GetUserId(ctx),
 	}).Update(); err != nil {
@@ -229,7 +229,7 @@ func (s *sSysCurdDemo) Switch(ctx context.Context, in *sysin.CurdDemoSwitchInp) 
 		return
 	}
 
-	if _, err = s.Model(ctx).WherePri(in.Id).Data(g.Map{
+	if _, err = s.Model(ctx).Where("id", in.Id).Data(g.Map{
 		in.Key:                                 in.Value,
 		dao.SysGenCurdDemo.Columns().UpdatedBy: contexts.GetUserId(ctx),
 	}).Update(); err != nil {

@@ -29,7 +29,8 @@ func SubscribeClusterSync(ctx context.Context) {
 	})
 
 	if err != nil {
-		g.Log().Fatal(ctx, err)
+		// 集群同步订阅失败不应导致进程退出，记录错误后继续运行（非集群模式也可正常使用）
+		g.Log().Errorf(ctx, "SubscribeClusterSync fail, cluster sync disabled: %+v", err)
 	}
 }
 

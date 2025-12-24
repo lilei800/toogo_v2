@@ -36,23 +36,24 @@ CREATE TABLE IF NOT EXISTS %s (
   PRIMARY KEY (id) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8 COLLATE = utf8_general_ci COMMENT = '管理员_casbin权限表' ROW_FORMAT = Dynamic;
 `
-	createPolicyTablePgSql = `CREATE TABLE IF NOT EXISTS "public"."%s" (
-  "id" int8 NOT NULL DEFAULT nextval('hg_admin_role_casbin_id_seq'::regclass),
-  "p_type" varchar(64) COLLATE "pg_catalog"."default",
-  "v0" varchar(256) COLLATE "pg_catalog"."default",
-  "v1" varchar(256) COLLATE "pg_catalog"."default",
-  "v2" varchar(256) COLLATE "pg_catalog"."default",
-  "v3" varchar(256) COLLATE "pg_catalog"."default",
-  "v4" varchar(256) COLLATE "pg_catalog"."default",
-  "v5" varchar(256) COLLATE "pg_catalog"."default",
-  CONSTRAINT "hg_admin_role_casbin_pkey" PRIMARY KEY ("id")
-)
-;
 
-ALTER TABLE "public"."%s" 
-  OWNER TO "postgres";
-
-COMMENT ON TABLE "public"."%s" IS '管理员_casbin权限表';`
+	// PostgreSQL 说明：
+	// - 不要依赖预先存在的 sequence（迁移/导入时不一定存在）
+	// - 不要强制 OWNER（云库/受限账号可能没有权限）
+	// - 使用 BIGSERIAL 自动创建 sequence，足够稳定
+	createPolicyTablePgSql = `
+CREATE TABLE IF NOT EXISTS "public"."%s" (
+  "id" BIGSERIAL PRIMARY KEY,
+  "p_type" varchar(64) NULL DEFAULT NULL,
+  "v0" varchar(256) NULL DEFAULT NULL,
+  "v1" varchar(256) NULL DEFAULT NULL,
+  "v2" varchar(256) NULL DEFAULT NULL,
+  "v3" varchar(256) NULL DEFAULT NULL,
+  "v4" varchar(256) NULL DEFAULT NULL,
+  "v5" varchar(256) NULL DEFAULT NULL
+);
+COMMENT ON TABLE "public"."%s" IS '管理员_casbin权限表';
+`
 )
 
 type (
@@ -125,7 +126,7 @@ func (a *adapter) model() *gdb.Model {
 // create a policy table when it's not exists.
 func (a *adapter) createPolicyTable() (err error) {
 	if a.db.GetConfig().Type == consts.DBPgsql {
-		_, err = a.db.Exec(context.TODO(), fmt.Sprintf(createPolicyTablePgSql, a.table, a.table, a.table))
+		_, err = a.db.Exec(context.TODO(), fmt.Sprintf(createPolicyTablePgSql, a.table, a.table))
 		return
 	}
 	_, err = a.db.Exec(context.TODO(), fmt.Sprintf(createPolicyTableSql, a.table))

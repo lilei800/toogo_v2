@@ -2,18 +2,20 @@ package adminin
 
 import (
 	"context"
+	"hotgo/utility/simple"
+
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/os/gtime"
-	"hotgo/utility/simple"
 )
 
 // RegisterInp 账号注册
 type RegisterInp struct {
 	Username   string `json:"username" v:"required#用户名不能为空" dc:"用户名"`
 	Password   string `json:"password" v:"required#密码不能为空" dc:"密码"`
-	Mobile     string `json:"mobile" v:"required|phone-loose#手机号不能为空|手机号格式不正确" dc:"手机号"`
-	Code       string `json:"code" v:"required#验证码不能为空"  dc:"验证码"`
-	InviteCode string `json:"inviteCode" dc:"邀请码"`
+	Email      string `json:"email" v:"required|email#邮箱不能为空|邮箱格式不正确" dc:"邮箱"`
+	// EmailCode 邮箱验证码（默认不校验；如需启用再加 v:"required#邮箱验证码不能为空" 并在逻辑层校验）
+	EmailCode  string `json:"emailCode" dc:"邮箱验证码"`
+	InviteCode string `json:"inviteCode" v:"required#邀请码不能为空" dc:"邀请码"`
 }
 
 func (in *RegisterInp) Filter(ctx context.Context) (err error) {

@@ -135,7 +135,7 @@ func (s *sSysServeLicense) Edit(ctx context.Context, in *sysin.ServeLicenseEditI
 	}
 	// 修改
 	if in.Id > 0 {
-		if _, err = s.Model(ctx).Fields(sysin.ServeLicenseUpdateFields{}).WherePri(in.Id).Data(in).Update(); err != nil {
+		if _, err = s.Model(ctx).Fields(sysin.ServeLicenseUpdateFields{}).Where("id", in.Id).Data(in).Update(); err != nil {
 			err = gerror.Wrap(err, "修改服务许可证失败，请稍后重试！")
 		}
 		return
@@ -150,7 +150,7 @@ func (s *sSysServeLicense) Edit(ctx context.Context, in *sysin.ServeLicenseEditI
 
 // Delete 删除服务许可证
 func (s *sSysServeLicense) Delete(ctx context.Context, in *sysin.ServeLicenseDeleteInp) (err error) {
-	if _, err = s.Model(ctx).WherePri(in.Id).Delete(); err != nil {
+	if _, err = s.Model(ctx).Where("id", in.Id).Delete(); err != nil {
 		err = gerror.Wrap(err, "删除服务许可证失败，请稍后重试！")
 		return
 	}
@@ -159,7 +159,7 @@ func (s *sSysServeLicense) Delete(ctx context.Context, in *sysin.ServeLicenseDel
 
 // View 获取服务许可证指定信息
 func (s *sSysServeLicense) View(ctx context.Context, in *sysin.ServeLicenseViewInp) (res *sysin.ServeLicenseViewModel, err error) {
-	if err = s.Model(ctx).WherePri(in.Id).Scan(&res); err != nil {
+	if err = s.Model(ctx).Where("id", in.Id).Scan(&res); err != nil {
 		err = gerror.Wrap(err, "获取服务许可证信息，请稍后重试！")
 		return
 	}
@@ -172,7 +172,7 @@ func (s *sSysServeLicense) Status(ctx context.Context, in *sysin.ServeLicenseSta
 		dao.SysServeLicense.Columns().Status: in.Status,
 	}
 
-	if _, err = s.Model(ctx).WherePri(in.Id).Data(update).Update(); err != nil {
+	if _, err = s.Model(ctx).Where("id", in.Id).Data(update).Update(); err != nil {
 		err = gerror.Wrap(err, "更新服务许可证状态失败，请稍后重试！")
 		return
 	}
@@ -185,7 +185,7 @@ func (s *sSysServeLicense) AssignRouter(ctx context.Context, in *sysin.ServeLice
 		dao.SysServeLicense.Columns().Routes: in.Routes,
 	}
 
-	if _, err = s.Model(ctx).WherePri(in.Id).Data(update).Update(); err != nil {
+	if _, err = s.Model(ctx).Where("id", in.Id).Data(update).Update(); err != nil {
 		err = gerror.Wrap(err, "分配服务许可证路由失败，请稍后重试！")
 		return
 	}

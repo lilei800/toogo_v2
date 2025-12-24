@@ -30,9 +30,6 @@ import (
 	"github.com/gogf/gf/v2/util/gconv"
 )
 
-//go:linkname doGenDaoForArray hotgo/internal/library/hggen/internal/cmd/gendao.doGenDaoForArray
-func doGenDaoForArray(ctx context.Context, index int, in gendao.CGenDaoInput)
-
 // Dao 生成数据库实体
 func Dao(ctx context.Context) (err error) {
 	// 在执行gf gen dao时，先将生成文件放在临时路径，生成完成后再拷贝到项目
@@ -59,7 +56,7 @@ func Dao(ctx context.Context) (err error) {
 			return err
 		}
 
-		doGenDaoForArray(ctx, -1, inp)
+		gendao.DoGenDaoForArray(ctx, -1, inp)
 
 		if err = gfile.CopyDir(inp.Path, gfile.Pwd()+"/"+oldPath); err != nil {
 			err = gerror.Newf("拷贝生成文件失败:%v", err)

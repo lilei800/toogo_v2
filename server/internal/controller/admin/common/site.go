@@ -7,13 +7,21 @@ package common
 
 import (
 	"context"
-	"github.com/gogf/gf/v2/i18n/gi18n"
+	"fmt"
 	"hotgo/api/admin/common"
 	"hotgo/internal/consts"
+	"hotgo/internal/dao"
 	"hotgo/internal/library/captcha"
 	"hotgo/internal/library/token"
+	"hotgo/internal/model/entity"
+	"hotgo/internal/model/input/sysin"
 	"hotgo/internal/service"
+	"hotgo/utility/charset"
+	"hotgo/utility/simple"
 	"hotgo/utility/validate"
+
+	"github.com/gogf/gf/v2/crypto/gmd5"
+	"github.com/gogf/gf/v2/i18n/gi18n"
 
 	"github.com/gogf/gf/v2/errors/gerror"
 	"github.com/gogf/gf/v2/frame/g"
@@ -21,6 +29,7 @@ import (
 	"github.com/gogf/gf/v2/text/gstr"
 	"github.com/gogf/gf/v2/util/gconv"
 	"github.com/gogf/gf/v2/util/gmode"
+	"github.com/gogf/gf/v2/util/grand"
 )
 
 var Site = cSite{}
@@ -111,6 +120,103 @@ func (c *cSite) Captcha(ctx context.Context, _ *common.LoginCaptchaReq) (res *co
 // Register 账号注册
 func (c *cSite) Register(ctx context.Context, req *common.RegisterReq) (res *common.RegisterRes, err error) {
 	err = service.AdminSite().Register(ctx, &req.RegisterInp)
+	return
+}
+
+// SendRegisterEmail 发送注册邮箱验证码（无需登录）
+func (c *cSite) SendRegisterEmail(ctx context.Context, req *common.SendRegisterEmailReq) (res *common.SendRegisterEmailRes, err error) {
+	// 发送注册验证码
+	err = service.SysEmsLog().Send(ctx, &sysin.SendEmsInp{
+		Event: consts.EmsTemplateRegister,
+		Email: req.Email,
+	})
+	return
+}
+
+// SendResetPwdEmail 发送重置密码邮件（无需登录）
+func (c *cSite) SendResetPwdEmail(ctx context.Context, req *common.SendResetPwdEmailReq) (res *common.SendResetPwdEmailRes, err error) {
+	// 为防止“邮箱枚举”，无论邮箱是否存在，都返回成功；实际发送失败会打日志
+	var mb *entity.AdminMember
+	if err = dao.AdminMember.Ctx(ctx).Where(dao.AdminMember.Columns().Email, req.Email).Scan(&mb); err != nil {
+		return
+	}
+	if mb == nil {
+		return
+	}
+
+	// 生成token并落库
+	resetToken := string(charset.RandomCreateBytes(32))
+	_, err = dao.AdminMember.Ctx(ctx).
+		Where(dao.AdminMember.Columns().Id, mb.Id).
+		Data(g.Map{
+			dao.AdminMember.Columns().PasswordResetToken: resetToken,
+		}).
+		Update()
+	if err != nil {
+		return
+	}
+
+	// 域名优先走配置，否则走当前请求域名（兼容本地调试）
+	basic, _ := service.SysConfig().GetBasic(ctx)
+	domain := ""
+	if basic != nil && basic.Domain != "" {
+		domain = basic.Domain
+	} else {
+		r := ghttp.RequestFromCtx(ctx)
+		if r != nil {
+			domain = "http://" + r.GetHost()
+		}
+	}
+
+	resetLink := fmt.Sprintf("%s/admin/passwordReset?token=%s", domain, resetToken)
+	_ = service.SysEmsLog().Send(ctx, &sysin.SendEmsInp{
+		Event: consts.EmsTemplateResetPwd,
+		Email: req.Email,
+		TplData: g.Map{
+			"username":          mb.Username,
+			"passwordResetLink": resetLink,
+		},
+	})
+	return
+}
+
+// PasswordReset 重置密码（通过token）
+func (c *cSite) PasswordReset(ctx context.Context, req *common.PasswordResetReq) (res *common.PasswordResetRes, err error) {
+	if req.Token == "" {
+		err = gerror.New("链接无效或已过期")
+		return
+	}
+
+	// 解密并校验密码长度
+	password, err := simple.DecryptText(req.Password)
+	if err != nil {
+		return
+	}
+	if err = g.Validator().Data(password).Rules("password").Messages("密码长度在6~18之间").Run(ctx); err != nil {
+		return
+	}
+
+	// 按token查用户
+	var mb *entity.AdminMember
+	if err = dao.AdminMember.Ctx(ctx).Where(dao.AdminMember.Columns().PasswordResetToken, req.Token).Scan(&mb); err != nil {
+		return
+	}
+	if mb == nil {
+		err = gerror.New("链接无效或已过期")
+		return
+	}
+
+	// 复用注册的加盐MD5策略
+	salt := grand.S(6)
+	passwordHash := gmd5.MustEncryptString(password + salt)
+	_, err = dao.AdminMember.Ctx(ctx).
+		Where(dao.AdminMember.Columns().Id, mb.Id).
+		Data(g.Map{
+			dao.AdminMember.Columns().Salt:               salt,
+			dao.AdminMember.Columns().PasswordHash:       passwordHash,
+			dao.AdminMember.Columns().PasswordResetToken: "",
+		}).
+		Update()
 	return
 }
 

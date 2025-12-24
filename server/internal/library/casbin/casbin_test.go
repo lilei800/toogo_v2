@@ -1,3 +1,6 @@
+//go:build integration
+// +build integration
+
 // Package casbin
 // @Link  https://github.com/bufanyun/hotgo
 // @Copyright  Copyright (c) 2023 HotGo CLI

@@ -25,7 +25,7 @@ func GenSubTree(ctx context.Context, dao daoInstance, oldPid int64) (newPid int6
 	}
 
 	var models *model.DefaultTree
-	if err = dao.Ctx(ctx).WherePri(oldPid).Scan(&models); err != nil {
+	if err = dao.Ctx(ctx).Where("id", oldPid).Scan(&models); err != nil {
 		return 0, 0, "", err
 	}
 
@@ -72,7 +72,7 @@ func AutoUpdateTree(ctx context.Context, dao daoInstance, id, pid int64) (newPid
 		newTree = ""
 	} else {
 		var pd *model.DefaultTree
-		if err = dao.Ctx(ctx).WherePri(pid).Scan(&pd); err != nil {
+		if err = dao.Ctx(ctx).Where("id", pid).Scan(&pd); err != nil {
 			return 0, 0, "", err
 		}
 
@@ -95,7 +95,7 @@ func AutoUpdateTree(ctx context.Context, dao daoInstance, id, pid int64) (newPid
 		}
 
 		var models *model.DefaultTree
-		if err = dao.Ctx(ctx).WherePri(id).Scan(&models); err != nil {
+		if err = dao.Ctx(ctx).Where("id", id).Scan(&models); err != nil {
 			return 0, 0, "", err
 		}
 

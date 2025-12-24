@@ -131,7 +131,7 @@ func (s *sSysOptionTreeDemo) Delete(ctx context.Context, in *sysin.OptionTreeDem
 		return gerror.New("请先删除该选项树表下的所有下级！")
 	}
 
-	if _, err = s.Model(ctx).WherePri(in.Id).Unscoped().Delete(); err != nil {
+	if _, err = s.Model(ctx).Where("id", in.Id).Unscoped().Delete(); err != nil {
 		err = gerror.Wrap(err, "删除选项树表失败，请稍后重试！")
 		return
 	}
@@ -155,7 +155,7 @@ func (s *sSysOptionTreeDemo) MaxSort(ctx context.Context, in *sysin.OptionTreeDe
 
 // View 获取选项树表指定信息
 func (s *sSysOptionTreeDemo) View(ctx context.Context, in *sysin.OptionTreeDemoViewInp) (res *sysin.OptionTreeDemoViewModel, err error) {
-	if err = s.Model(ctx).WherePri(in.Id).Hook(hook.MemberSummary).Scan(&res); err != nil {
+	if err = s.Model(ctx).Where("id", in.Id).Hook(hook.MemberSummary).Scan(&res); err != nil {
 		err = gerror.Wrap(err, "获取选项树表信息，请稍后重试！")
 		return
 	}

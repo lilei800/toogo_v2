@@ -16,6 +16,10 @@
         >
           <List :type="defaultTab" />
         </n-tab-pane>
+        <!-- Toogo用户标签页 -->
+        <n-tab-pane name="toogo" tab="Toogo用户">
+          <ToogoUserList />
+        </n-tab-pane>
       </n-tabs>
     </n-card>
   </div>
@@ -24,6 +28,7 @@
 <script lang="ts" setup>
   import { onMounted, ref } from 'vue';
   import List from './list.vue';
+  import ToogoUserList from './toogo-user-list.vue';
   import { useRouter } from 'vue-router';
   import { loadOptions } from './model';
   import { useDictStore } from '@/store/modules/dict';

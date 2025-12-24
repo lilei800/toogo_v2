@@ -35,13 +35,13 @@ func init() {
 
 // Delete 删除
 func (s *sSysSmsLog) Delete(ctx context.Context, in *sysin.SmsLogDeleteInp) (err error) {
-	_, err = dao.SysSmsLog.Ctx(ctx).WherePri(in.Id).Delete()
+	_, err = dao.SysSmsLog.Ctx(ctx).Where(dao.SysSmsLog.Columns().Id, in.Id).Delete()
 	return
 }
 
 // View 获取指定字典类型信息
 func (s *sSysSmsLog) View(ctx context.Context, in *sysin.SmsLogViewInp) (res *sysin.SmsLogViewModel, err error) {
-	if err = dao.SysSmsLog.Ctx(ctx).WherePri(in.Id).Scan(&res); err != nil {
+	if err = dao.SysSmsLog.Ctx(ctx).Where(dao.SysSmsLog.Columns().Id, in.Id).Scan(&res); err != nil {
 		err = gerror.Wrap(err, consts.ErrorORM)
 		return
 	}
@@ -277,12 +277,12 @@ func (s *sSysSmsLog) VerifyCode(ctx context.Context, in *sysin.VerifyCodeInp) (e
 	}
 
 	if models.Code != in.Code {
-		_, _ = dao.SysSmsLog.Ctx(ctx).WherePri(models.Id).Increment(cols.Times, 1)
+		_, _ = dao.SysSmsLog.Ctx(ctx).Where(dao.SysSmsLog.Columns().Id, models.Id).Increment(cols.Times, 1)
 		err = gerror.New("验证码错误！")
 		return
 	}
 
-	_, err = dao.SysSmsLog.Ctx(ctx).WherePri(models.Id).Data(g.Map{
+	_, err = dao.SysSmsLog.Ctx(ctx).Where(dao.SysSmsLog.Columns().Id, models.Id).Data(g.Map{
 		cols.Times:     models.Times + 1,
 		cols.Status:    consts.CodeStatusUsed,
 		cols.UpdatedAt: gtime.Now(),

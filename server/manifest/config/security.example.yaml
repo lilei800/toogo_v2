@@ -1,0 +1,131 @@
+# ===========================================
+# Toogo 安全配置
+# ===========================================
+
+security:
+  # 加密配置
+  encryption:
+    # API密钥加密密钥（32字符，生产环境必须修改！）
+    key: "toogo_secure_key_2024_change_me!"
+    # 加密算法
+    algorithm: "aes-256-gcm"
+
+  # 请求限流配置
+  rateLimit:
+    # 是否启用限流
+    enabled: true
+    # 默认限流配置
+    default:
+      window: 60          # 时间窗口（秒）
+      maxRequests: 100    # 最大请求数
+    # 交易接口限流（更严格）
+    trading:
+      window: 60
+      maxRequests: 30
+    # 登录接口限流
+    login:
+      window: 60
+      maxRequests: 10
+    # 提现接口限流
+    withdraw:
+      window: 300
+      maxRequests: 5
+
+  # 登录安全配置
+  login:
+    # 最大登录尝试次数
+    maxAttempts: 5
+    # 锁定时间（秒）
+    lockDuration: 300
+    # 是否启用验证码
+    captchaEnabled: true
+    # 连续失败多少次后显示验证码
+    captchaAfterAttempts: 3
+
+  # 会话配置
+  session:
+    # 会话超时时间（秒）
+    timeout: 7200
+    # 是否允许多端登录
+    multiLogin: true
+    # 单用户最大会话数
+    maxSessions: 5
+
+  # IP安全配置
+  ip:
+    # 是否启用IP白名单（生产环境建议开启）
+    whitelistEnabled: false
+    # IP白名单列表
+    whitelist:
+      - "127.0.0.1"
+      - "192.168.1.0/24"
+    # 是否启用IP黑名单
+    blacklistEnabled: true
+    # 自动封禁配置
+    autoBan:
+      enabled: true
+      # 触发自动封禁的请求失败次数
+      threshold: 100
+      # 封禁时长（秒）
+      duration: 3600
+
+  # 敏感操作配置
+  sensitiveOps:
+    # 是否需要二次验证
+    requireVerification: true
+    # 需要二次验证的操作
+    operations:
+      - withdraw      # 提现
+      - transfer      # 转账
+      - api_key       # API密钥操作
+      - password      # 密码修改
+    # 验证方式: sms, email, google_auth
+    verificationMethod: "sms"
+
+  # API密钥安全配置
+  apiKey:
+    # 密钥最大有效期（天）
+    maxAge: 90
+    # 是否强制IP白名单
+    requireIpWhitelist: false
+    # 是否加密存储
+    encryptStorage: true
+
+  # 审计日志配置
+  audit:
+    # 是否启用审计日志
+    enabled: true
+    # 需要记录的操作类型
+    logTypes:
+      - login           # 登录
+      - logout          # 登出
+      - trading         # 交易操作
+      - withdraw        # 提现
+      - api_key         # API密钥操作
+      - config_change   # 配置修改
+    # 日志保留天数
+    retentionDays: 90
+
+  # CORS配置
+  cors:
+    # 允许的域名
+    allowOrigins:
+      - "http://localhost:3000"
+      - "https://toogo.ai"
+    # 允许的方法
+    allowMethods:
+      - "GET"
+      - "POST"
+      - "PUT"
+      - "DELETE"
+      - "OPTIONS"
+    # 允许的请求头
+    allowHeaders:
+      - "Content-Type"
+      - "Authorization"
+      - "X-Requested-With"
+    # 是否允许携带凭证
+    allowCredentials: true
+    # 预检请求缓存时间（秒）
+    maxAge: 86400
+

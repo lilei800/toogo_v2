@@ -24,11 +24,16 @@ export default ({ command, mode }: ConfigEnv): UserConfig => {
   const viteEnv = wrapperEnv(env);
   const { VITE_PUBLIC_PATH, VITE_PORT, VITE_PROXY } = viteEnv;
   const isBuild = command === 'build';
+  const defaultBackend = 'http://127.0.0.1:8000';
   return {
     base: VITE_PUBLIC_PATH,
     esbuild: {},
     resolve: {
       alias: [
+        {
+          find: 'vue-i18n',
+          replacement: 'vue-i18n/dist/vue-i18n.cjs.js',
+        },
         {
           find: /\/#\//,
           replacement: pathResolve('types') + '/',
@@ -38,14 +43,10 @@ export default ({ command, mode }: ConfigEnv): UserConfig => {
           replacement: pathResolve('src') + '/',
         },
       ],
-      dedupe: ['vue'],
     },
     plugins: createVitePlugins(viteEnv, isBuild),
     define: {
       __APP_INFO__: JSON.stringify(__APP_INFO__),
-      __VUE_OPTIONS_API__: true,
-      __VUE_PROD_DEVTOOLS__: false,
-      __VUE_PROD_HYDRATION_MISMATCH_DETAILS__: true,
     },
     css: {
       preprocessorOptions: {
@@ -59,25 +60,68 @@ export default ({ command, mode }: ConfigEnv): UserConfig => {
     server: {
       host: true,
       port: VITE_PORT,
-      proxy: createProxy(VITE_PROXY),
-      // proxy: {
-      //     '/api': {
-      //         target: '',
-      //         changeOrigin: true,
-      //         rewrite: (path) => path.replace(/^\/api/, '/api/v1')
-      //     }
-      // }
+      // 说明：
+      // - 环境变量 VITE_PROXY 在某些机器上可能缺失/错误，导致 proxy ECONNREFUSED，页面空白。
+      // - hotgo_v2 后端默认监听 :8000（manifest/config/config.yaml），这里给本机开发加一个兜底：
+      //   强制把 /admin 与 /socket 代理到 http://127.0.0.1:8000。
+      // - 注意：后端路由配置中 admin 的 prefix 是 /admin，所以代理时不能去掉 /admin 前缀
+      proxy: (() => {
+        const proxy = createProxy(VITE_PROXY);
+        proxy['/admin'] = {
+          target: defaultBackend,
+          changeOrigin: true,
+          ws: true,
+          // 不要去掉 /admin 前缀，因为后端路由需要这个前缀
+          // rewrite: (path) => path.replace(/^\/admin/, ''),
+        };
+        proxy['/socket'] = {
+          target: defaultBackend,
+          changeOrigin: true,
+          ws: true,
+          rewrite: (path) => path.replace(/^\/socket/, '/socket'),
+        };
+        return proxy;
+      })(),
     },
     optimizeDeps: {
-      include: [],
-      exclude: ['vue-demi'],
+      include: ['@vicons/ionicons5', '@vicons/antd'],
+      exclude: [],
     },
     build: {
       target: 'es2015',
       cssTarget: 'chrome80',
       outDir: OUTPUT_DIR,
+      // minify: 'terser',
+      /**
+       * 当 minify 为 minify 或 terser 打开注释
+       */
+      // terserOptions: {
+      //   compress: {
+      //     keep_infinity: true,
+      //     drop_console: VITE_DROP_CONSOLE,
+      //   },
+      // },
       reportCompressedSize: false,
-      chunkSizeWarningLimit: 3000,
+      chunkSizeWarningLimit: 2000,
+      // 构建分包策略
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            'naive-ui': ['naive-ui'],
+            'lodash-es': ['lodash-es'],
+            'vue-router': ['vue-router'],
+            'vue-quill': ['@vueup/vue-quill'],
+            'vicons-antd': ['@vicons/antd'],
+            'vicons-ionicons5': ['@vicons/ionicons5'],
+            vuedraggable: ['vuedraggable'],
+            echarts: ['echarts'],
+            vueuse: ['@vueuse/core'],
+            vue: ['vue'],
+            pinia: ['pinia'],
+            xlsx: ['xlsx'],
+          },
+        },
+      },
     },
   };
 };

@@ -34,17 +34,22 @@ func SetAdapter(ctx context.Context) {
 	case "file":
 		fileDir := g.Cfg().MustGet(ctx, "cache.fileDir").String()
 		if fileDir == "" {
-			g.Log().Fatal(ctx, "file path must be configured for file caching.")
-			return
-		}
-
-		if !gfile.Exists(fileDir) {
-			if err := gfile.Mkdir(fileDir); err != nil {
-				g.Log().Fatalf(ctx, "failed to create the cache directory. procedure, err:%+v", err)
-				return
+			// 缓存目录未配置不应导致进程退出，回退到内存缓存
+			g.Log().Warningf(ctx, "file path not configured for file caching, falling back to memory cache")
+			adapter = gcache.NewAdapterMemory()
+		} else {
+			if !gfile.Exists(fileDir) {
+				if err := gfile.Mkdir(fileDir); err != nil {
+					// 缓存目录创建失败不应导致进程退出，回退到内存缓存
+					g.Log().Warningf(ctx, "failed to create cache directory (falling back to memory cache), err:%+v", err)
+					adapter = gcache.NewAdapterMemory()
+				} else {
+					adapter = file.NewAdapterFile(fileDir)
+				}
+			} else {
+				adapter = file.NewAdapterFile(fileDir)
 			}
 		}
-		adapter = file.NewAdapterFile(fileDir)
 	default:
 		adapter = gcache.NewAdapterMemory()
 	}

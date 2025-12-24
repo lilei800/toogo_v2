@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"hotgo/internal/consts"
+
 	"github.com/gogf/gf/v2/database/gdb"
 	"github.com/gogf/gf/v2/frame/g"
 )
@@ -18,7 +20,7 @@ import (
 // for _, v := range fields {}
 func GetFieldsWithComment(ctx context.Context, tableName, dbTag string) (fields map[string]*gdb.TableField, err error) {
 	db := g.DB(dbTag)
-	fields, err = db.TableFields(ctx, tableName) // 使用 goframe 框架本身已完美支持 mysql 获取表字段及注释
+	fields, err = db.TableFields(ctx, tableName) // goframe TableFields 在 mysql/pgsql 已支持字段与注释
 	dbConf := db.GetConfig()
 	switch dbConf.Type {
 	case "sqlite":
@@ -32,14 +34,29 @@ type TableComment struct {
 	Comment string `json:"comment"`
 }
 
-// 获取数据库表字段及注释
+// GetTablesWithComment 获取数据库表及注释
 func GetTablesWithComment(ctx context.Context, dbTag string) (tables []*TableComment, err error) {
 	db := g.DB(dbTag)
 	dbConf := db.GetConfig()
+
 	switch dbConf.Type {
-	case "mysql":
+	case consts.DBMysql:
 		sql := "SELECT TABLE_NAME as name, TABLE_COMMENT as comment FROM information_schema.`TABLES` WHERE TABLE_SCHEMA = '%s'"
 		if err = db.Ctx(ctx).Raw(fmt.Sprintf(sql, dbConf.Name)).Scan(&tables); err != nil {
+			return
+		}
+	case consts.DBPgsql:
+		// PostgreSQL: public schema 下的普通表 + obj_description 取表注释
+		sql := `
+SELECT
+  c.relname as name,
+  COALESCE(obj_description(c.oid), '') as comment
+FROM pg_class c
+JOIN pg_namespace n ON c.relnamespace = n.oid
+WHERE n.nspname = 'public'
+  AND c.relkind = 'r'
+ORDER BY c.relname`
+		if err = db.Ctx(ctx).Raw(sql).Scan(&tables); err != nil {
 			return
 		}
 	case "sqlite":
@@ -50,5 +67,6 @@ func GetTablesWithComment(ctx context.Context, dbTag string) (tables []*TableCom
 		}
 		tables, err = transSqliteTablesComment(ctx, tableNames, db)
 	}
+
 	return
 }

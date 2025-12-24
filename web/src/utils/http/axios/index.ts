@@ -3,23 +3,28 @@ import { VAxios } from './Axios';
 import { AxiosTransform } from './axiosTransform';
 import axios, { AxiosResponse } from 'axios';
 import { checkStatus } from './checkStatus';
-import { formatRequestDate, joinTimestamp } from './helper';
-import { ContentTypeEnum, RequestEnum, ResultEnum } from '@/enums/httpEnum';
+import { joinTimestamp, formatRequestDate } from './helper';
+import { RequestEnum, ResultEnum, ContentTypeEnum } from '@/enums/httpEnum';
 import { PageEnum } from '@/enums/pageEnum';
+
 import { useGlobSetting } from '@/hooks/setting';
-import { isString, isUrl } from '@/utils/is/';
-import { deepMerge } from '@/utils';
-import { setObjToUrlParams } from '@/utils/urlUtils';
-import { CreateAxiosOptions, RequestOptions, Result } from './types';
+import { useMessage } from '@/hooks/web/useMessage';
+import { useDialog } from '@/hooks/web/useDialog';
+
+import { isString } from '@/utils/is/';
+import { deepMerge, isUrl } from '@/utils';
+import { setObjToUrlParams, encodeParams } from '@/utils/urlUtils';
+
+import { RequestOptions, Result, CreateAxiosOptions } from './types';
+
 import { useUserStoreWidthOut } from '@/store/modules/user';
-import router from '@/router';
-import { storage } from '@/utils/Storage';
-import { encodeParams } from '@/utils/urlUtils';
-import { delNullProperty } from '@/utils/array';
-import { useI18nStore } from '@/store/modules/i18n';
 
 const globSetting = useGlobSetting();
-const urlPrefix = globSetting.urlPrefix || '';
+// 如果环境变量未设置，默认使用 /admin 前缀（因为后端路由配置中 admin 的 prefix 是 /admin）
+const urlPrefix = globSetting.urlPrefix || '/admin';
+
+import router from '@/router';
+import { storage } from '@/utils/Storage';
 
 /**
  * @description: 数据处理，方便区分多种处理方式
@@ -49,20 +54,19 @@ const transform: AxiosTransform = {
       return res.data;
     }
 
-    const response = res.data;
-    const $dialog = window['$dialog'];
-    const $message = window['$message'];
+    const { data } = res;
 
-    if (!response) {
+    const $dialog = useDialog();
+    const $message = useMessage();
+
+    if (!data) {
       // return '[HTTP] Request has no return value';
       throw new Error('请求出错，请稍候重试');
     }
-
     //  这里 code，result，message为 后台统一的字段，需要修改为项目自己的接口返回格式
-    const { code, data, message } = response;
-
+    const { code, data: result, message } = data;
     // 请求成功
-    const hasSuccess = response && Reflect.has(response, 'code') && code === ResultEnum.SUCCESS;
+    const hasSuccess = data && Reflect.has(data, 'code') && code === ResultEnum.SUCCESS;
     // 是否显示提示信息
     if (isShowMessage) {
       if (hasSuccess && (successMessageText || isShowSuccessMessage)) {
@@ -87,7 +91,7 @@ const transform: AxiosTransform = {
 
     // 接口请求成功，直接返回结果
     if (code === ResultEnum.SUCCESS) {
-      return data;
+      return result;
     }
     // 接口请求错误，统一提示错误信息 这里逻辑可以根据项目进行修改
     let errorMsg = message;
@@ -100,12 +104,12 @@ const transform: AxiosTransform = {
       case ResultEnum.TIMEOUT:
         const LoginName = PageEnum.BASE_LOGIN_NAME;
         const LoginPath = PageEnum.BASE_LOGIN;
-        if (router.currentRoute.value.name === LoginName) return;
+        if (router.currentRoute.value?.name === LoginName) return;
         // 到登录页
-        errorMsg = message ?? '登录超时，请重新登录!';
+        errorMsg = '登录超时，请重新登录!';
         $dialog.warning({
           title: '提示',
-          content: errorMsg, // '登录身份已失效，请重新登录!',
+          content: '登录身份已失效，请重新登录!',
           positiveText: '确定',
           //negativeText: '取消',
           closable: false,
@@ -117,11 +121,7 @@ const transform: AxiosTransform = {
           onNegativeClick: () => {},
         });
         break;
-      default:
-        console.log('unknown status code:' + code);
-        $message.error(errorMsg);
     }
-
     throw new Error(errorMsg);
   },
 
@@ -152,7 +152,11 @@ const transform: AxiosTransform = {
     } else {
       if (!isString(params)) {
         formatDate && formatRequestDate(params);
-        if (Reflect.has(config, 'data') && config.data && Object.keys(config.data).length > 0) {
+        if (
+          Reflect.has(config, 'data') &&
+          config.data &&
+          (Object.keys(config.data).length > 0 || config.data instanceof FormData)
+        ) {
           config.data = data;
           config.params = params;
         } else {
@@ -162,7 +166,7 @@ const transform: AxiosTransform = {
         if (joinParamsToUrl) {
           config.url = setObjToUrlParams(
             config.url as string,
-            Object.assign({}, config.params, config.data)
+            Object.assign({}, config.params, config.data),
           );
         }
       } else {
@@ -179,7 +183,6 @@ const transform: AxiosTransform = {
    */
   requestInterceptors: (config, options) => {
     // 请求之前处理config
-    const i18nStore = useI18nStore();
     const userStore = useUserStoreWidthOut();
     const token = userStore.getToken;
     if (token && (config as Recordable)?.requestOptions?.withToken !== false) {
@@ -188,51 +191,63 @@ const transform: AxiosTransform = {
         ? `${options.authenticationScheme} ${token}`
         : token;
     }
-    config.headers.Locale = i18nStore.getLocale();
     return config;
   },
 
   /**
    * @description: 响应错误处理
    */
-  responseInterceptorsCatch: (error: any) => {
-    const $dialog = window['$dialog'];
-    const $message = window['$message'];
-    const { response, code, message } = error || {};
+  responseInterceptorsCatch: (_, error: any) => {
+    const $dialog = useDialog();
+    const $message = useMessage();
+    
+    // 安全获取错误信息
+    const response = error?.response;
+    const code = error?.code;
+    const message = error?.message;
+    
     // TODO 此处要根据后端接口返回格式修改
-    const msg: string =
-      response && response.data && response.data.message ? response.data.message : '';
-    const err: string = error.toString();
+    const msg: string = response?.data?.message || message || '请求失败';
+    const err: string = error?.toString?.() || '';
+    
     try {
-      if (code === 'ECONNABORTED' && message.indexOf('timeout') !== -1) {
+      if (code === 'ECONNABORTED' && message?.indexOf?.('timeout') !== -1) {
         $message.error('接口请求超时，请刷新页面重试!');
-        return;
+        return Promise.reject({ message: '接口请求超时' });
       }
       if (err && err.includes('Network Error')) {
         $dialog.info({
           title: '网络异常',
           content: '请检查您的网络连接是否正常',
           positiveText: '确定',
-          //negativeText: '取消',
           closable: false,
           maskClosable: false,
           onPositiveClick: () => {},
           onNegativeClick: () => {},
         });
-        return Promise.reject(error);
+        return Promise.reject({ message: '网络异常' });
       }
-    } catch (error) {
-      throw new Error(error as any);
+    } catch (e) {
+      console.error('错误处理异常:', e);
     }
+    
     // 请求是否被取消
     const isCancel = axios.isCancel(error);
-    if (!isCancel) {
-      checkStatus(error.response && error.response.status, msg);
+    if (!isCancel && response?.status) {
+      checkStatus(response.status, msg);
+    } else if (!isCancel) {
+      // 没有 response 的情况（如网络错误、代理错误等）
+      $message.error(msg || '网络请求失败，请检查网络连接');
     } else {
       console.warn(error, '请求被取消！');
     }
-    //return Promise.reject(error);
-    return Promise.reject(response?.data);
+    
+    // 返回格式化的错误对象
+    return Promise.reject({
+      message: msg,
+      code: response?.status || code,
+      data: response?.data,
+    });
   },
 };
 
@@ -240,7 +255,7 @@ function createAxios(opt?: Partial<CreateAxiosOptions>) {
   return new VAxios(
     deepMerge(
       {
-        timeout: 30 * 1000,
+        timeout: 10 * 1000,
         authenticationScheme: '',
         // 接口前缀
         prefixUrl: urlPrefix,
@@ -266,7 +281,7 @@ function createAxios(opt?: Partial<CreateAxiosOptions>) {
           // 接口拼接地址
           urlPrefix: urlPrefix,
           //  是否加入时间戳
-          joinTime: false,
+          joinTime: true,
           // 忽略重复请求
           ignoreCancelToken: true,
           // 是否携带token
@@ -274,12 +289,22 @@ function createAxios(opt?: Partial<CreateAxiosOptions>) {
         },
         withCredentials: false,
       },
-      opt || {}
-    )
+      opt || {},
+    ),
   );
 }
 
 export const http = createAxios();
+
+// 遍历对象，删除值为null的属性
+export function delNullProperty(obj) {
+  for (const i in obj) {
+    if (obj[i] === undefined || obj[i] === null) {
+      delete obj[i];
+    }
+  }
+  return obj;
+}
 
 // 导出
 export const jumpExport = function (url, params) {
@@ -294,7 +319,7 @@ export const jump = function (url, params) {
     '?' +
     encodeParams({
       ...delNullProperty(params),
-      ...{ authorization: useUserStoreWidthOut().token },
+      ...{ authorization: useUserStoreWidthOut().getToken },
     });
 };
 

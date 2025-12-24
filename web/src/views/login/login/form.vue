@@ -112,8 +112,6 @@
       <n-button type="primary" size="large" :block="true" :loading="loading" @click="handleLogin">
         登录
       </n-button>
-
-      <FormOther moduleKey="register" tag="注册账号" @updateActiveModule="updateActiveModule" />
     </n-space>
 
     <DemoAccount @login="handleDemoAccountLogin" />
@@ -133,7 +131,6 @@
   import { GetCaptcha } from '@/api/base';
   import { aesEcb } from '@/utils/encrypt';
   import DemoAccount from './demo-account.vue';
-  import FormOther from '../components/form-other.vue';
   import { useSendCode } from '@/hooks/common';
   import { SendSms } from '@/api/system/user';
   import { validate } from '@/utils/validateUtil';
@@ -293,11 +290,9 @@
       if (code == ResultEnum.SUCCESS) {
         const toPath = decodeURIComponent((route.query?.redirect || '/') as string);
         message.success('登录成功，即将进入系统');
-        if (route.name === LOGIN_NAME) {
-          await router.replace('/');
-        } else {
-          await router.replace(toPath);
-        }
+        // 使用 location.href 跳转，确保路由守卫完整执行
+        const targetPath = route.name === LOGIN_NAME ? PageEnum.BASE_HOME_REDIRECT : toPath;
+        window.location.href = targetPath;
       } else {
         message.destroyAll();
         message.info(msg || '登录失败');

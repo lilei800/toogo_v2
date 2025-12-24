@@ -31,10 +31,10 @@ func Generate(ctx context.Context, captchaType int) (id string, base64 string) {
 			NoiseCount:      0,
 			ShowLineOptions: 0,
 			BgColor: &color.RGBA{
-				R: 255,
-				G: 250,
-				B: 250,
-				A: 250,
+				R: 0,
+				G: 0,
+				B: 0,
+				A: 0,
 			},
 			Fonts: []string{"chromohv.ttf"},
 		}
@@ -49,10 +49,10 @@ func Generate(ctx context.Context, captchaType int) (id string, base64 string) {
 			//ShowLineOptions: 20,
 			Length: 4,
 			BgColor: &color.RGBA{
-				R: 255,
-				G: 250,
-				B: 250,
-				A: 250,
+				R: 0,
+				G: 0,
+				B: 0,
+				A: 0,
 			},
 			Source: "abcdefghjkmnpqrstuvwxyz23456789", // abcdefghjkmnpqrstuvwxyz23456789
 			Fonts:  []string{"chromohv.ttf"},

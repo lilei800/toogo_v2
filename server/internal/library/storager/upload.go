@@ -253,7 +253,7 @@ func HasFile(ctx context.Context, md5 string) (res *entity.SysAttachment, err er
 			dao.SysAttachment.Columns().Status:    consts.StatusEnabled,
 			dao.SysAttachment.Columns().UpdatedAt: gtime.Now(),
 		}
-		_, _ = GetModel(ctx).WherePri(res.Id).Data(update).Update()
+		_, _ = GetModel(ctx).Where("id", res.Id).Data(update).Update()
 	}
 	return
 }

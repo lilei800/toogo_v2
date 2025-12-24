@@ -38,7 +38,7 @@ func (s *sSysAttachment) Model(ctx context.Context, option ...*handler.Option) *
 
 // Delete 删除附件
 func (s *sSysAttachment) Delete(ctx context.Context, in *sysin.AttachmentDeleteInp) (err error) {
-	if _, err = s.Model(ctx).WherePri(in.Id).Delete(); err != nil {
+	if _, err = s.Model(ctx).Where("id", in.Id).Delete(); err != nil {
 		err = gerror.Wrap(err, "删除附件失败，请稍后重试！")
 	}
 	return
@@ -46,7 +46,7 @@ func (s *sSysAttachment) Delete(ctx context.Context, in *sysin.AttachmentDeleteI
 
 // View 获取附件信息
 func (s *sSysAttachment) View(ctx context.Context, in *sysin.AttachmentViewInp) (res *sysin.AttachmentViewModel, err error) {
-	if err = s.Model(ctx).WherePri(in.Id).Scan(&res); err != nil {
+	if err = s.Model(ctx).Where("id", in.Id).Scan(&res); err != nil {
 		err = gerror.Wrap(err, "获取附件信息失败，请稍后重试！")
 	}
 	return

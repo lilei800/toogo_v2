@@ -157,7 +157,7 @@ func (s *sSysTenantOrder) Edit(ctx context.Context, in *sysin.TenantOrderEditInp
 
 // Delete 删除多租户功能演示
 func (s *sSysTenantOrder) Delete(ctx context.Context, in *sysin.TenantOrderDeleteInp) (err error) {
-	if _, err = s.Model(ctx).WherePri(in.Id).Delete(); err != nil {
+	if _, err = s.Model(ctx).Where("id", in.Id).Delete(); err != nil {
 		err = gerror.Wrap(err, "删除多租户功能演示失败，请稍后重试！")
 		return
 	}
@@ -166,7 +166,7 @@ func (s *sSysTenantOrder) Delete(ctx context.Context, in *sysin.TenantOrderDelet
 
 // View 获取多租户功能演示指定信息
 func (s *sSysTenantOrder) View(ctx context.Context, in *sysin.TenantOrderViewInp) (res *sysin.TenantOrderViewModel, err error) {
-	if err = s.Model(ctx).WherePri(in.Id).Scan(&res); err != nil {
+	if err = s.Model(ctx).Where("id", in.Id).Scan(&res); err != nil {
 		err = gerror.Wrap(err, "获取多租户功能演示信息，请稍后重试！")
 		return
 	}

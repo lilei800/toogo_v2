@@ -43,7 +43,8 @@ func init() {
 // InitConfig 初始化系统配置
 func (s *sSysConfig) InitConfig(ctx context.Context) {
 	if err := s.LoadConfig(ctx); err != nil {
-		g.Log().Fatalf(ctx, "InitConfig fail：%+v", err)
+		// 配置加载失败不应导致进程退出，记录错误后继续运行（使用默认配置）
+		g.Log().Errorf(ctx, "InitConfig fail (using defaults): %+v", err)
 	}
 }
 

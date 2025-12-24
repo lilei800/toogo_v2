@@ -7,12 +7,13 @@ package cmd
 
 import (
 	"context"
-	"github.com/gogf/gf/v2/os/gctx"
-	"github.com/gogf/gf/v2/os/gproc"
 	"hotgo/internal/consts"
 	"hotgo/utility/simple"
 	"os"
 	"sync"
+
+	"github.com/gogf/gf/v2/os/gctx"
+	"github.com/gogf/gf/v2/os/gproc"
 )
 
 var (

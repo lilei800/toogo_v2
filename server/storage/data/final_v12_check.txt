@@ -1,0 +1,4 @@
+﻿strategy_key	strategy_name
+v12_conservative_trend	[保守型] 趋势跟踪策略 - 回测胜率65%
+v12_conservative_volatile	[保守型] 区间震荡策略 - 回测胜率58%
+v12_conservative_high_vol	[保守型] 高波动防守策略 - 回测胜率52%

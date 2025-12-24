@@ -1,9 +1,9 @@
-import { SocketEnum } from '@/enums/socketEnum';
+﻿import { SocketEnum } from '@/enums/socketEnum';
 import { useUserStoreWidthOut } from '@/store/modules/user';
 import { isJsonString } from '@/utils/is';
 import { registerGlobalMessage } from '@/utils/websocket/registerMessage';
 
-// WebSocket消息格式
+// WebSocket娑堟伅鏍煎紡
 export interface WebSocketMessage {
   event: string;
   data: any;
@@ -37,7 +37,7 @@ export default () => {
           })
         );
         self.serverTimeoutObj = setTimeout(function () {
-          console.log('[WebSocket] 关闭服务');
+          console.log('[WebSocket] Log');
           socket.close();
         }, self.timeout);
       }, this.timeout);
@@ -47,15 +47,47 @@ export default () => {
   const useUserStore = useUserStoreWidthOut();
   let lockReconnect = false;
   let timer: ReturnType<typeof setTimeout>;
+
+  const getWsAddr = (): string => {
+    const cfgAddr = useUserStore.config?.wsAddr;
+    if (cfgAddr && cfgAddr !== '') {
+      // 鍏煎锛欻otGo ws 璺敱閫氬父鏄?/socket/锛堟湯灏惧甫/锛夛紝閮ㄥ垎鏈嶅姟鍣ㄥ /socket 浼?301 鍒?/socket/
+      // WebSocket 涓嶄竴瀹氳兘鑷姩璺熼殢 301锛屽洜姝よ繖閲岀粺涓€琛ラ綈鏈熬鏂滄潬
+      return cfgAddr.endsWith('/socket') ? `${cfgAddr}/` : cfgAddr;
+    }
+
+    // 鍏滃簳锛氫娇鐢ㄥ綋鍓?hostname + HotGo 榛樿 ws 鍓嶇紑 /socket
+    // - 寮€鍙戠幆澧冨父瑙侊細鍓嶇 8009锛屽悗绔?8000
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const hostname = window.location.hostname;
+    let host = window.location.host;
+
+    // Dev fallback: when frontend runs on 8009 (or any non-8000 port), connect WS directly to backend :8000.
+    // This avoids Vite ws proxy handshake issues in some environments.
+    const isDev = import.meta.env.DEV;
+    if (isDev && window.location.port && window.location.port !== '8000') {
+      host = `${hostname}:8000`;
+    }
+
+    return `${wsProtocol}//${host}/socket/`;
+  };
+
   const createSocket = () => {
     console.log('[WebSocket] createSocket...');
-    if (useUserStore.token === '' || useUserStore.config?.wsAddr == '') {
-      console.error('[WebSocket] 用户未登录，稍后重试...');
+    if (useUserStore.token === '') {
+      console.error('[WebSocket] Error');
       resetReconnect();
       return;
     }
     try {
-      socket = new WebSocket(`${useUserStore.config?.wsAddr}?authorization=${useUserStore.token}`);
+      const wsAddr = getWsAddr();
+      if (!wsAddr) {
+        console.error('[WebSocket] Error');
+        resetReconnect();
+        return;
+      }
+      console.log('[WebSocket] Closed');
+      socket = new WebSocket(`${wsAddr}?authorization=${useUserStore.token}`);
       init();
       if (lockReconnect) {
         lockReconnect = false;
@@ -75,7 +107,7 @@ export default () => {
   };
 
   const reconnect = () => {
-    console.log('[WebSocket] lockReconnect:' + lockReconnect);
+      console.log('[WebSocket] Closed');
     if (lockReconnect) return;
     lockReconnect = true;
     clearTimeout(timer);
@@ -86,17 +118,17 @@ export default () => {
 
   const init = () => {
     socket.onopen = function (_) {
-      console.log('[WebSocket] 已连接');
+      console.log('[WebSocket] Connected');
       heartCheck.reset().start();
       isActive = true;
     };
 
     socket.onmessage = function (event) {
       isActive = true;
-      // console.log('WebSocket:收到一条消息', event.data);
+      // console.log('WebSocket:鏀跺埌涓€鏉℃秷鎭?, event.data);
 
       if (!isJsonString(event.data)) {
-        console.log('[WebSocket] message incorrect format:' + JSON.stringify(event));
+      console.log('[WebSocket] Closed');
         return;
       }
 
@@ -107,13 +139,13 @@ export default () => {
     };
 
     socket.onerror = function (_) {
-      console.log('[WebSocket] 发生错误');
+      console.log('[WebSocket] Log');
       reconnect();
       isActive = false;
     };
 
     socket.onclose = function (_) {
-      console.log('[WebSocket] 已关闭');
+      console.log('[WebSocket] Closed');
       heartCheck.reset();
       reconnect();
       isActive = false;
@@ -139,18 +171,18 @@ function onMessage(message: WebSocketMessage) {
   });
 
   if (!handled) {
-    console.log('[WebSocket] messageHandler not registered. message:' + JSON.stringify(message));
+      console.log('[WebSocket] Closed');
   }
 }
 
-// 发送消息
+// 鍙戦€佹秷鎭?
 export function sendMsg(event: string, data: any = null, isRetry = true) {
   if (socket === undefined || !isActive) {
     if (!isRetry) {
-      console.log('[WebSocket] 连接异常，发送失败！');
+      console.log('[WebSocket] Log');
       return;
     }
-    console.log('[WebSocket] 连接异常，等待重试..');
+    console.log('[WebSocket] Log');
     setTimeout(() => {
       sendMsg(event, data);
     }, 200);
@@ -160,29 +192,31 @@ export function sendMsg(event: string, data: any = null, isRetry = true) {
   try {
     socket.send(JSON.stringify({ event, data }));
   } catch (err: any) {
-    console.log('[WebSocket] 发送消息失败，err：', err.message);
+      console.log('[WebSocket] Closed');
     if (!isRetry) {
       return;
     }
 
-    console.log('[WebSocket] 等待重试..');
+    console.log('[WebSocket] Log');
     setTimeout(() => {
       sendMsg(event, data);
     }, 100);
   }
 }
 
-// 添加消息处理
+// 娣诲姞娑堟伅澶勭悊
 export function addOnMessage(key: string, value: Function): void {
   messageHandler.set(key, value);
 }
 
-// 移除消息处理
+// 绉婚櫎娑堟伅澶勭悊
 export function removeOnMessage(key: string): boolean {
   return messageHandler.delete(key);
 }
 
-// 查看所有消息处理
+// 鏌ョ湅鎵€鏈夋秷鎭鐞?
 export function getAllOnMessage(): Map<string, Function> {
   return messageHandler;
 }
+
+

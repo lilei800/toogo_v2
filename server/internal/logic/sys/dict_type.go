@@ -89,7 +89,7 @@ func (s *sSysDictType) Edit(ctx context.Context, in *sysin.DictTypeEditInp) (err
 
 	// 修改
 	if in.Id > 0 {
-		if _, err = dao.SysDictType.Ctx(ctx).Fields(sysin.DictTypeUpdateFields{}).WherePri(in.Id).Data(in).Update(); err != nil {
+		if _, err = dao.SysDictType.Ctx(ctx).Fields(sysin.DictTypeUpdateFields{}).Where("id", in.Id).Data(in).Update(); err != nil {
 			err = gerror.Wrap(err, consts.ErrorORM)
 		}
 		return

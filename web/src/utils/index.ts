@@ -12,9 +12,9 @@ import {
   NTooltip,
   SelectRenderTag,
 } from 'naive-ui';
-import { EllipsisHorizontalCircleOutline } from '@vicons/ionicons5';
+import { EllipsisHorizontalCircleOutline, DocumentOutline } from '@vicons/ionicons5';
 import { PageEnum } from '@/enums/pageEnum';
-import { isArray, isJsonString, isNullObject, isObject } from './is/index';
+import { isArray, isJsonString, isNullObject, isObject, isNumber, isString } from './is/index';
 import { cloneDeep } from 'lodash-es';
 import { VNode } from 'vue';
 import { DictType, useDictStore } from '@/store/modules/dict';
@@ -247,6 +247,10 @@ export function generatorMenu(routerMap: Array<any>) {
       key: info.name,
       icon: isRoot ? item.meta?.icon : info.meta?.icon,
     };
+    // 如果没有图标，设置默认图标
+    if (!currentMenu.icon) {
+      currentMenu.icon = renderIcon(DocumentOutline);
+    }
     // 是否有子菜单，并递归处理
     if (info.children && info.children.length > 0) {
       // Recursion
@@ -264,10 +268,15 @@ export function generatorMenu(routerMap: Array<any>) {
 /**
  * 混合菜单
  * */
-export function generatorMenuMix(routerMap: Array<any>, routerName: string, location: string) {
+export function generatorMenuMix(
+  routerMap: Array<any>,
+  routerName: string,
+  location: string,
+  isTop?: boolean,
+) {
   const cloneRouterMap = cloneDeep(routerMap);
   const newRouter = filterRouter(cloneRouterMap);
-  if (location === 'header') {
+  if (isTop && ['left-tow', 'top'].includes(location)) {
     const firstRouter: any[] = [];
     newRouter.forEach((item) => {
       const isRoot = isRootRouter(item);
@@ -283,7 +292,9 @@ export function generatorMenuMix(routerMap: Array<any>, routerName: string, loca
     });
     return firstRouter;
   } else {
-    return getChildrenRouter(newRouter.filter((item) => item.name === routerName));
+    const currentRouters = newRouter.filter((item) => item.name === routerName);
+    const childrenRouter = currentRouters.length ? currentRouters[0].children || [] : [];
+    return getChildrenRouter(childrenRouter);
   }
 }
 
@@ -300,6 +311,10 @@ export function getChildrenRouter(routerMap: Array<any>) {
       label: info.meta?.title,
       key: info.name,
     };
+    // 拆分菜单 默认设置一个菜单图标 可自行更改 或 去除
+    if (!currentMenu.icon) {
+      currentMenu.icon = renderIcon(DocumentOutline);
+    }
     // 是否有子菜单，并递归处理
     if (info.children && info.children.length > 0) {
       // Recursion
@@ -313,24 +328,7 @@ export function getChildrenRouter(routerMap: Array<any>) {
  * 判断根路由 Router
  * */
 export function isRootRouter(item) {
-  if (item.meta?.alwaysShow != true && item.children?.length === 0) {
-    return true;
-  }
-
-  // if (item.meta?.alwaysShow != true) {
-  //   if (item.children?.length > 0) {
-  //     // 如果存在子级。且只要有一个不是隐藏状态的，则判断不是跟路由
-  //     for (let i = 0; i < item.children.length; i++) {
-  //       if (item.children[i]?.hidden == false) {
-  //         return false;
-  //       }
-  //     }
-  //
-  //     return true;
-  //   }
-  // }
-
-  return false;
+  return item.meta?.alwaysShow === true && item.children?.length === 1;
 }
 
 /**
@@ -416,6 +414,67 @@ export function lighten(color: string, amount: number) {
   )}${addLight(color.substring(4, 6), amount)}`;
 }
 
+export function openWindow(
+  url: string,
+  opt?: { target?: TargetContext | string; noopener?: boolean; noreferrer?: boolean }
+) {
+  const { target = '__blank', noopener = true, noreferrer = true } = opt || {};
+  const feature: string[] = [];
+
+  noopener && feature.push('noopener=yes');
+  noreferrer && feature.push('noreferrer=yes');
+  window.open(url, target, feature.join(','));
+}
+
+/**
+ * 处理css单位
+ * */
+export function cssUnit(value: string | number, unit = 'px') {
+  return isNumber(value) || (isString(value) && value.indexOf(unit as string) === -1)
+    ? `${value}${unit}`
+    : value;
+}
+
+/**
+ * 判断是否 url
+ * */
+export function isUrl(url: string) {
+  return /^(http|https):\/\//g.test(url);
+}
+
+/*
+ * 模拟a下载一个文件
+ * @params res 结果集
+ * @params filename 文件名
+ */
+export const downloadFile = (res, filename?) => {
+  const blob = new Blob([res.data]);
+  let fileName = filename || res.headers['content-disposition'].split('filename=').pop();
+  fileName = decodeURIComponent(fileName);
+  if (window.navigator && window.navigator.msSaveOrOpenBlob) {
+    // IE
+    window.navigator.msSaveOrOpenBlob(blob, fileName);
+  } else {
+    const objectUrl = (window.URL || window.webkitURL).createObjectURL(blob);
+    const downFile = document.createElement('a');
+    downFile.style.display = 'none';
+    downFile.href = objectUrl;
+    downFile.download = fileName; // 下载后文件名
+    document.body.appendChild(downFile);
+    downFile.click();
+    document.body.removeChild(downFile); // 下载完成移除元素
+    window.URL.revokeObjectURL(objectUrl); // 释放掉blob对象。
+  }
+};
+
+/**
+ * eval() 函数的替代方案
+ * */
+export function Eval(fn) {
+  const Fn = Function;
+  return new Fn('return ' + fn)();
+}
+
 // 获取树的所有节点key
 export function getAllExpandKeys(treeData: any): any[] {
   let expandedKeys: any = [];
@@ -450,4 +509,24 @@ export function findTreeNode(data: any, key?: string | number, keyField = 'key')
     }
   }
   return null;
+}
+
+// 获取树中指定节点（兼容原版）
+export function getTreeItem(data: any, key?: string | number, keyField = 'key'): any {
+  return findTreeNode(data, key, keyField);
+}
+
+// 获取树的所有节点（兼容原版）
+export function getTreeAll(data: any, keyField = 'key'): any[] {
+  const result: any[] = [];
+  const traverse = (items: any[]) => {
+    items.forEach((item: any) => {
+      result.push(item);
+      if (item.children && item.children.length > 0) {
+        traverse(item.children);
+      }
+    });
+  };
+  traverse(unref(data));
+  return result;
 }

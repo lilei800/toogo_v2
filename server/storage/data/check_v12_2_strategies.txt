@@ -1,0 +1,5 @@
+﻿strategy_key	strategy_name	risk_preference	market_state	monitor_window	volatility_threshold	leverage	margin_percent
+v12_2_conservative_trend	[保守型] 趋势跟踪策略 - 回测胜率66%	conservative	trend	380	92.00	3	7.50
+v12_2_conservative_volatile	[保守型] 区间震荡策略 - 回测胜率59%	conservative	volatile	250	62.00	2	5.50
+v12_2_conservative_high_vol	[保守型] 高波动防守策略 - 回测胜率53%	conservative	high_vol	160	185.00	2	4.50
+v12_2_conservative_low_vol	[保守型] 低波动蓄力策略 - 回测胜率69% ⭐最高胜率	conservative	low_vol	750	38.00	4	9.50

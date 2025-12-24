@@ -5,7 +5,6 @@
         @register="register"
         @submit="handleSubmit"
         @reset="handleReset"
-        @keyup.enter="handleSubmit"
         ref="searchFormRef"
       >
         <template #statusSlot="{ model, field }">

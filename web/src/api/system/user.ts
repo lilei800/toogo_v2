@@ -1,5 +1,6 @@
 import { http } from '@/utils/http/axios';
 import { ApiEnum } from '@/enums/apiEnum';
+import { aesEcb } from '@/utils/encrypt';
 
 export interface BasicResponseModel<T = any> {
   code: number;
@@ -70,6 +71,38 @@ export function SendBindEmail() {
   });
 }
 
+// 注册：发送邮箱验证码
+export function SendRegisterEmail(params: { email: string }) {
+  return http.request({
+    url: '/site/sendRegisterEmail',
+    method: 'post',
+    params,
+  });
+}
+
+// 忘记密码：发送重置密码邮件
+export function SendResetPwdEmail(params: { email: string }) {
+  return http.request({
+    url: '/site/sendResetPwdEmail',
+    method: 'post',
+    params,
+  });
+}
+
+// 重置密码：通过token设置新密码
+export function PasswordReset(params: { token: string; password: string }) {
+  return http.request<BasicResponseModel>(
+    {
+      url: '/site/passwordReset',
+      method: 'post',
+      params,
+    },
+    {
+      isTransformResponse: false,
+    }
+  );
+}
+
 export function SendBindSms() {
   return http.request({
     url: '/sms/sendBind',
@@ -123,6 +156,7 @@ export function register(params) {
  * @description: 用户登录
  */
 export function login(params) {
+  // 注意：密码已经在 HotgoLoginForm.vue 中加密过了，这里不需要再加密
   return http.request<BasicResponseModel>(
     {
       url: ApiEnum.SiteAccountLogin,
@@ -167,6 +201,11 @@ export function logout() {
 }
 
 /**
+ * @description: 用户注销（别名）
+ */
+export const userLogout = logout;
+
+/**
  * @description: 用户修改密码
  */
 export function changePassword(params, uid) {
@@ -180,4 +219,15 @@ export function changePassword(params, uid) {
       isTransformResponse: false,
     }
   );
+}
+
+/**
+ * @description: 获取用户列表（兼容原版）
+ */
+export function getUserList(params) {
+  return http.request({
+    url: '/member/list',
+    method: 'get',
+    params,
+  });
 }

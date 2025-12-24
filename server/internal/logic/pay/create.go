@@ -68,6 +68,11 @@ func (s *sPay) Create(ctx context.Context, in payin.PayCreateInp) (res *payin.Pa
 		mchId = config.QQPayMchId
 	}
 
+	outTradeNo, err := payment.GenOutTradeNo(ctx)
+	if err != nil {
+		return
+	}
+
 	data := &entity.PayLog{
 		MemberId:      contexts.GetUserId(ctx),
 		AppId:         contexts.GetModule(ctx),
@@ -78,7 +83,7 @@ func (s *sPay) Create(ctx context.Context, in payin.PayCreateInp) (res *payin.Pa
 		MchId:         mchId,
 		Subject:       in.Subject,
 		Detail:        in.Detail,
-		OutTradeNo:    payment.GenOutTradeNo(ctx),
+		OutTradeNo:    outTradeNo,
 		TransactionId: "",
 		PayType:       in.PayType,
 		PayAmount:     in.PayAmount,

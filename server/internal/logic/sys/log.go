@@ -295,7 +295,7 @@ func (s *sSysLog) View(ctx context.Context, in *sysin.LogViewInp) (res *sysin.Lo
 		mod = dao.SysLog.Ctx(ctx)
 	}
 
-	if err = mod.Hook(hook.CityLabel).WherePri(in.Id).Scan(&res); err != nil {
+	if err = mod.Hook(hook.CityLabel).Where("id", in.Id).Scan(&res); err != nil {
 		err = gerror.Wrap(err, consts.ErrorORM)
 		return
 	}
@@ -325,7 +325,7 @@ func (s *sSysLog) View(ctx context.Context, in *sysin.LogViewInp) (res *sysin.Lo
 
 // Delete 删除请求日志
 func (s *sSysLog) Delete(ctx context.Context, in *sysin.LogDeleteInp) (err error) {
-	_, err = s.Model(ctx).WherePri(in.Id).Delete()
+	_, err = s.Model(ctx).Where("id", in.Id).Delete()
 	return
 }
 
@@ -415,7 +415,7 @@ func (s *sSysLog) List(ctx context.Context, in *sysin.LogListInp) (list []*sysin
 	routes := global.LoadHTTPRoutes(ghttp.RequestFromCtx(ctx))
 	for _, v := range list {
 		if v.AppId == consts.AppAdmin {
-			memberName, err := dao.AdminMember.Ctx(ctx).Fields(dao.AdminMember.Columns().RealName).WherePri(v.MemberId).Value()
+			memberName, err := dao.AdminMember.Ctx(ctx).Fields(dao.AdminMember.Columns().RealName).Where("id", v.MemberId).Value()
 			if err != nil {
 				err = gerror.Wrap(err, consts.ErrorORM)
 				return list, totalCount, err

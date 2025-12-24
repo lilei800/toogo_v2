@@ -1,3 +1,6 @@
+//go:build integration
+// +build integration
+
 // Package handler
 // @Link  https://github.com/bufanyun/hotgo
 // @Copyright  Copyright (c) 2023 HotGo CLI

@@ -1,0 +1,338 @@
+<template>
+  <div class="account-root">
+    <n-el tag="div" class="account-root-item root-left-item">
+      <transition name="fade-bottom" appear mode="out-in">
+        <div>
+          <!-- <div class="root-left-logo">
+            <img src="~@/assets/images/logo.svg" alt="" />
+            <div class="stand-title">Naive Admin</div>
+          </div>
+          <div class="root-left-title">开箱即用，中后台前端/设计解决方案</div>
+          <div class="root-left-desc">多生态支持、功能丰富、高颜值模板</div> -->
+          <!-- <div class="coding-img"><img src="~@/assets/images/coding.png" alt="coding" /></div> -->
+          <div class="coding-img" style="width: 100%; margin: 0; display: flex; justify-content: center; align-items: center; height: 100%;">
+            <ToogoRobot />
+          </div>
+        </div>
+      </transition>
+    </n-el>
+    <n-el tag="div" class="account-root-item root-right-item">
+      <transition name="fade-bottom" appear mode="out-in">
+        <div class="account-form">
+          <div class="account-top">
+            <div class="user-account">{{ type === 'login' ? '登录' : '注册' }}你的账户</div>
+            <div class="user-register">
+              <span>{{ type === 'login' ? '没有账户？' : '已有账户？' }}</span>
+              <n-button text type="info" icon-placement="right" @click="toggleType">
+                {{ type === 'login' ? '免费注册' : '前去登录' }}
+
+                <template #icon>
+                  <n-icon>
+                    <ChevronForwardCircle />
+                  </n-icon>
+                </template>
+              </n-button>
+            </div>
+          </div>
+          <template v-if="type === 'login'">
+            <!-- 登录方式切换 -->
+            <div class="account-tabs">
+              <div
+                class="account-tabs-item on-item"
+                >账号密码登录</div
+              >
+              <div
+                class="account-tabs-item disabled-item"
+                @click="handleMobileLoginClick"
+                >手机验证码登录(未开放)</div
+              >
+            </div>
+            <!-- 账号密码登录 -->
+            <transition name="fade-bottom" appear mode="out-in">
+              <HotgoLoginForm mode="account" @updateActiveModule="handleUpdateActiveModule" />
+            </transition>
+
+          </template>
+
+          <!-- 注册 -->
+          <template v-else>
+            <div class="account-tabs">
+              <div class="account-tabs-item on-item">邮箱注册</div>
+              <div class="account-tabs-item disabled-item" @click="handleMobileRegisterClick">手机注册(未开放)</div>
+            </div>
+            <transition name="fade-bottom" appear mode="out-in">
+              <RegisterForm @updateActiveModule="handleRegisterUpdateActiveModule" />
+            </transition>
+          </template>
+        </div>
+      </transition>
+    </n-el>
+  </div>
+</template>
+
+<script lang="ts" setup>
+  import { ref } from 'vue';
+  import HotgoLoginForm from '../components/HotgoLoginForm.vue';
+  import { ChevronForwardCircle } from '@vicons/ionicons5';
+  import { useMessage } from 'naive-ui';
+  import ToogoRobot from '@/components/ToogoRobot/index.vue';
+  import RegisterForm from '@/views/login/register/index.vue';
+
+  const tab = ref('login');
+  const type = ref('login');
+  const message = useMessage();
+
+  function handleUpdateActiveModule(key: string) {
+    if (key === 'register') {
+      type.value = 'register';
+      return;
+    }
+    if (key === 'login') {
+      type.value = 'login';
+      tab.value = 'login';
+    }
+  }
+
+  function toggleType() {
+    type.value = type.value === 'login' ? 'register' : 'login';
+  }
+
+  function handleRegisterUpdateActiveModule(key: string) {
+    // register 组件内部成功后会 emit('updateActiveModule','login')
+    if (key === 'login') {
+      type.value = 'login';
+      tab.value = 'login';
+    }
+  }
+
+  function handleMobileRegisterClick() {
+    message.warning('手机注册默认未开放');
+  }
+
+  function handleMobileLoginClick() {
+    message.warning('手机验证码登录默认未开放');
+  }
+</script>
+
+<style lang="less" scoped>
+  .account-root {
+    box-sizing: border-box;
+    display: flex;
+    flex-flow: row wrap;
+    width: 100%;
+    height: 100vh;
+
+    @media (min-width: 600px) {
+      &-item {
+        flex-basis: 100%;
+        flex-grow: 0;
+        max-width: 100%;
+      }
+    }
+
+    @media (min-width: 320px) {
+      .root-right-item {
+        .account-form {
+          flex-basis: 60%;
+          flex-grow: 0;
+          max-width: 60%;
+        }
+      }
+    }
+
+    @media (min-width: 1200px) {
+      &-item {
+        flex-basis: 40%;
+        flex-grow: 0;
+        max-width: 40%;
+      }
+
+      .root-right-item {
+        flex-basis: 60%;
+        flex-grow: 0;
+        max-width: 60%;
+
+        .account-form {
+          flex-basis: 32%;
+          flex-grow: 0;
+          max-width: 32%;
+        }
+      }
+    }
+
+    &-item {
+      box-sizing: border-box;
+      margin: 0;
+      flex-direction: row;
+      flex-grow: 0;
+      background: #2d8cf0;
+
+      &-img {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+
+        img {
+          width: 70%;
+          display: inline-block;
+          margin: 0 auto;
+        }
+      }
+    }
+
+    .root-left-item {
+      width: 780px;
+      display: flex;
+      align-items: center;
+      justify-content: center; /* Add justify-content center */
+      padding: 20px 0;
+      background: linear-gradient(140.02deg, #f9f9fa, #f7f8ff);
+
+      .root-left-logo {
+        margin: 0 auto 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+
+        .stand-title {
+          font-size: 28px;
+          line-height: 1.25;
+          font-weight: 600;
+          background: linear-gradient(92.06deg, #33c2ff -17.9%, #1e6fff 43.39%, #1e6fff 99.4%);
+          background-clip: text;
+          -webkit-text-fill-color: transparent;
+        }
+
+        img {
+          width: 35px;
+          height: 35px;
+          margin-right: 5px;
+        }
+      }
+
+      .root-left-title {
+        height: 80px;
+        margin: 0 auto 0;
+        font-weight: 600;
+        font-size: 1.5rem;
+        line-height: 80px;
+        color: var(--text-color-base);
+        text-align: center;
+      }
+
+      .root-left-desc {
+        height: 34px;
+        margin: 0 auto 0;
+        font-size: 1.1rem;
+        line-height: 34px;
+        text-align: center;
+        color: var(--text-color-base);
+      }
+    }
+
+    .root-right-item {
+      flex: 1 1;
+      background: var(--card-color);
+      box-sizing: border-box;
+      flex-flow: row wrap;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+
+      .account-form {
+        width: 348px;
+
+        .account-top {
+          text-align: left;
+          margin: 20px 0;
+
+          .user-account {
+            font-family: SourceHanSansCN_Bold, serif;
+            color: var(--text-color-base);
+            font-size: 1.5rem;
+            line-height: 30px;
+            margin-bottom: 5px;
+          }
+
+          .user-register {
+            span {
+              color: var(--text-color-base);
+              opacity: 0.7;
+              margin-right: 10px;
+            }
+          }
+        }
+
+        .account-tabs {
+          background-color: #f3f7fb;
+          border-radius: 10px;
+          padding: 4px;
+          display: flex;
+          align-items: center;
+          width: fit-content;
+          margin-bottom: 26px;
+          margin-top: 30px;
+
+          &-item {
+            opacity: 0.7;
+            padding: 5px 10px;
+            font-weight: 400;
+
+            &:hover {
+              cursor: pointer;
+            }
+          }
+
+          .on-item {
+            background-color: #fff;
+            opacity: 1;
+            border-radius: 4px;
+            box-shadow: 0 2px 4px rgba(23, 28, 39, 0.14);
+          }
+
+          .disabled-item {
+            cursor: not-allowed !important;
+            opacity: 0.45 !important;
+          }
+        }
+
+        .qrcodes-login {
+          .qrcodes-img {
+            width: 192px;
+            height: 192px;
+            display: inline-block;
+          }
+
+          p {
+            width: 192px;
+            opacity: 0.7;
+            padding-top: 10px;
+            text-align: center;
+          }
+        }
+      }
+    }
+  }
+
+  html[data-theme='dark'] {
+    .account-root {
+      .root-left-item {
+        background: var(--card-color);
+      }
+      .account-form {
+        .account-tabs {
+          background: var(--card-color);
+          .on-item {
+            background-color: var(--table-header-color);
+          }
+        }
+      }
+    }
+  }
+
+  .coding-img {
+    width: 70%;
+    margin: 50px auto 20px;
+  }
+</style>

@@ -1,0 +1,3 @@
+﻿group_key	group_name
+official_btc_usdt_v12	BTCUSDT-V12推荐策略，选择适合自己的 - 12个月回测验证版
+official_btc_usdt_v8	BTCUSDT-v8官方推荐策略 - 半年数据优化版

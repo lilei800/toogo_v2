@@ -1,0 +1,4 @@
+﻿strategy_key	strategy_name
+v8_conservative_trend	[保守型] 趋势跟踪策略 - 顺势而为
+v8_conservative_volatile	[保守型] 区间震荡策略 - 高抛低吸
+v8_conservative_high_vol	[保守型] 高波动防守策略 - 最小仓位

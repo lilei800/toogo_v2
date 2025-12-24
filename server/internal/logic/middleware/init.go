@@ -25,15 +25,14 @@ import (
 	"hotgo/internal/model"
 	"hotgo/internal/service"
 	"hotgo/utility/simple"
-	"hotgo/utility/validate"
 	"net/http"
 	"strings"
 )
 
 type sMiddleware struct {
-	LoginUrl         string // 登录路由地址
-	DemoWhiteList    g.Map  // 演示模式放行的路由白名单
-	NotRecordRequest g.Map  // 不记录请求数据的路由（当前请求数据过大时会影响响应效率，可以将路径放到该选项中改善）
+	LoginUrl         string // 鐧诲綍璺敱鍦板潃
+	DemoWhiteList    g.Map  // 婕旂ず妯″紡鏀捐鐨勮矾鐢辩櫧鍚嶅崟
+	NotRecordRequest g.Map  // 涓嶈褰曡姹傛暟鎹殑璺敱锛堝綋鍓嶈姹傛暟鎹繃澶ф椂浼氬奖鍝嶅搷搴旀晥鐜囷紝鍙互灏嗚矾寰勬斁鍒拌閫夐」涓敼鍠勶級
 }
 
 func init() {
@@ -44,23 +43,23 @@ func NewMiddleware() *sMiddleware {
 	return &sMiddleware{
 		LoginUrl: "/common",
 		DemoWhiteList: g.Map{
-			"/admin/site/accountLogin": struct{}{}, // 账号登录
-			"/admin/site/mobileLogin":  struct{}{}, // 手机号登录
-			"/admin/genCodes/preview":  struct{}{}, // 预览代码
+			"/admin/site/accountLogin": struct{}{}, // 璐﹀彿鐧诲綍
+			"/admin/site/mobileLogin":  struct{}{}, // 鎵嬫満鍙风櫥褰?
+			"/admin/genCodes/preview":  struct{}{}, // 棰勮浠ｇ爜
 		},
 		NotRecordRequest: g.Map{
-			"/admin/upload/file":       struct{}{}, // 上传文件
-			"/admin/upload/uploadPart": struct{}{}, // 上传分片
+			"/admin/upload/file":       struct{}{}, // 涓婁紶鏂囦欢
+			"/admin/upload/uploadPart": struct{}{}, // 涓婁紶鍒嗙墖
 		},
 	}
 }
 
-// Ctx 初始化请求上下文
+// Ctx 鍒濆鍖栬姹備笂涓嬫枃
 func (s *sMiddleware) Ctx(r *ghttp.Request) {
-	// 国际化
+	// 鍥介檯鍖?
 	r.SetCtx(gi18n.WithLanguage(r.Context(), simple.GetHeaderLocale(r.Context())))
 
-	// 链路追踪
+	// 閾捐矾杩借釜
 	if g.Cfg().MustGet(r.Context(), "jaeger.switch").Bool() {
 		ctx, span := gtrace.NewSpan(r.Context(), "middleware.ctx")
 		span.SetAttributes(attribute.KeyValue{
@@ -111,7 +110,7 @@ func (s *sMiddleware) CORS(r *ghttp.Request) {
 	r.Middleware.Next()
 }
 
-// DemoLimit 演示系统操作限制
+// DemoLimit 婕旂ず绯荤粺鎿嶄綔闄愬埗
 func (s *sMiddleware) DemoLimit(r *ghttp.Request) {
 	if !simple.IsDemo(r.Context()) {
 		r.Middleware.Next()
@@ -123,14 +122,14 @@ func (s *sMiddleware) DemoLimit(r *ghttp.Request) {
 			r.Middleware.Next()
 			return
 		}
-		response.JsonExit(r, gcode.CodeNotSupported.Code(), "演示系统禁止操作！")
+		response.JsonExit(r, gcode.CodeNotSupported.Code(), "Demo system: operation is not allowed!")
 		return
 	}
 
 	r.Middleware.Next()
 }
 
-// Addon 插件中间件
+// Addon 鎻掍欢涓棿浠?
 func (s *sMiddleware) Addon(r *ghttp.Request) {
 	var ctx = r.Context()
 
@@ -139,7 +138,7 @@ func (s *sMiddleware) Addon(r *ghttp.Request) {
 		return
 	}
 
-	// 替换掉应用模块前缀
+	// 鏇挎崲鎺夊簲鐢ㄦā鍧楀墠缂€
 	path := gstr.Replace(r.URL.Path, "/"+contexts.Get(ctx).Module+"/", "", 1)
 	ss := gstr.Explode("/", path)
 	if len(ss) == 0 {
@@ -163,7 +162,7 @@ func (s *sMiddleware) Addon(r *ghttp.Request) {
 	r.Middleware.Next()
 }
 
-// DeliverUserContext 将用户信息传递到上下文中
+// DeliverUserContext 灏嗙敤鎴蜂俊鎭紶閫掑埌涓婁笅鏂囦腑
 func (s *sMiddleware) DeliverUserContext(r *ghttp.Request) (err error) {
 	user, err := token.ParseLoginUser(r)
 	if err != nil {
@@ -181,26 +180,54 @@ func (s *sMiddleware) DeliverUserContext(r *ghttp.Request) (err error) {
 	return
 }
 
-// IsExceptAuth 是否是不需要验证权限的路由地址
+// IsExceptAuth 鏄惁鏄笉闇€瑕侀獙璇佹潈闄愮殑璺敱鍦板潃
 func (s *sMiddleware) IsExceptAuth(ctx context.Context, appName, path string) bool {
 	pathList := g.Cfg().MustGet(ctx, fmt.Sprintf("router.%v.exceptAuth", appName)).Strings()
-
+	np := normalizeExceptPath(path)
 	for i := 0; i < len(pathList); i++ {
-		if validate.InSliceExistStr(pathList[i], path) {
+		if normalizeExceptPath(pathList[i]) == np {
 			return true
 		}
 	}
 	return false
 }
 
-// IsExceptLogin 是否是不需要登录的路由地址
+// IsExceptLogin 鏄惁鏄笉闇€瑕佺櫥褰曠殑璺敱鍦板潃
 func (s *sMiddleware) IsExceptLogin(ctx context.Context, appName, path string) bool {
 	pathList := g.Cfg().MustGet(ctx, fmt.Sprintf("router.%v.exceptLogin", appName)).Strings()
-
+	np := normalizeExceptPath(path)
 	for i := 0; i < len(pathList); i++ {
-		if validate.InSliceExistStr(pathList[i], path) {
+		if normalizeExceptPath(pathList[i]) == np {
 			return true
 		}
 	}
 	return false
+}
+
+// normalizeExceptPath makes exceptAuth/exceptLogin matching robust:
+// - trims spaces
+// - ensures leading "/"
+// - removes trailing "/" (except root)
+func normalizeExceptPath(p string) string {
+	// Trim common whitespace first.
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return ""
+	}
+	// Strip BOM/zero-width chars that sometimes sneak in via Windows editors.
+	p = strings.TrimPrefix(p, "\ufeff")
+	p = strings.Trim(p, "\u200b\u200c\u200d")
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return ""
+	}
+	// Ensure leading "/".
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	// Remove trailing "/" for stable matching, but keep "/" itself.
+	if len(p) > 1 {
+		p = strings.TrimRight(p, "/")
+	}
+	return p
 }

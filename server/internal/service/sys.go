@@ -403,6 +403,28 @@ type (
 		// Option 获取测试分类选项
 		Option(ctx context.Context) (opts []*model.Option, err error)
 	}
+	ISysSecurity interface {
+		// CheckLoginAttempts 检查登录尝试次数
+		CheckLoginAttempts(ctx context.Context, identifier string) error
+		// RecordLoginAttempt 记录登录尝试
+		RecordLoginAttempt(ctx context.Context, identifier string, success bool) error
+		// EncryptSensitiveData 加密敏感数据
+		EncryptSensitiveData(ctx context.Context, data string) (string, error)
+		// DecryptSensitiveData 解密敏感数据
+		DecryptSensitiveData(ctx context.Context, encryptedData string) (string, error)
+		// ValidateIPWhitelist 验证IP白名单
+		ValidateIPWhitelist(ctx context.Context, ip string, whitelist []string) bool
+		// LogSensitiveOperation 记录敏感操作
+		LogSensitiveOperation(ctx context.Context, userId int64, operation string, details string) error
+		// GenerateSecureToken 生成安全令牌
+		GenerateSecureToken(ctx context.Context, length int) (string, error)
+		// VerifyCSRFToken 验证CSRF令牌
+		VerifyCSRFToken(ctx context.Context, sessionId, token string) bool
+		// GenerateCSRFToken 生成CSRF令牌
+		GenerateCSRFToken(ctx context.Context, sessionId string) (string, error)
+		// MaskSensitiveString 遮蔽敏感字符串
+		MaskSensitiveString(data string, showFirst, showLast int) string
+	}
 )
 
 var (
@@ -427,6 +449,7 @@ var (
 	localSysServeLog       ISysServeLog
 	localSysSmsLog         ISysSmsLog
 	localSysTestCategory   ISysTestCategory
+	localSysSecurity       ISysSecurity
 )
 
 func SysAddons() ISysAddons {
@@ -658,4 +681,15 @@ func SysTestCategory() ISysTestCategory {
 
 func RegisterSysTestCategory(i ISysTestCategory) {
 	localSysTestCategory = i
+}
+
+func SysSecurity() ISysSecurity {
+	if localSysSecurity == nil {
+		panic("implement not found for interface ISysSecurity, forgot register?")
+	}
+	return localSysSecurity
+}
+
+func RegisterSysSecurity(i ISysSecurity) {
+	localSysSecurity = i
 }

@@ -4,7 +4,6 @@
       @register="register"
       @submit="handleSubmit"
       @reset="handleReset"
-      @keyup.enter="handleSubmit"
       ref="searchFormRef"
     >
       <template #statusSlot="{ model, field }">
@@ -369,14 +368,17 @@
       {
         label: '重置密码',
         key: 0,
+        auth: ['/member/resetPwd'],
       },
       {
         label: '变更余额',
         key: 100,
+        auth: ['/member/addBalance'],
       },
       {
         label: '变更积分',
         key: 101,
+        auth: ['/member/addIntegral'],
       },
     ];
 

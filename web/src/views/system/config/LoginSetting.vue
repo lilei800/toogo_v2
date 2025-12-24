@@ -128,9 +128,9 @@
     loginAvatar: '',
     loginProtocol: '',
     loginPolicy: '',
-    loginRoleId: null,
-    loginDeptId: null,
-    loginPostIds: [],
+    loginRoleId: null as number | null,
+    loginDeptId: null as number | null,
+    loginPostIds: [] as number[],
   });
 
   const options = ref<any>({
@@ -141,28 +141,42 @@
   });
 
   async function loadOptions() {
-    const dept = await getDeptOption();
-    if (dept.list !== undefined) {
-      options.value.dept = dept.list;
-    }
-
-    const role = await getRoleOption();
-    if (role.list !== undefined) {
-      options.value.role = role.list;
-      treeDataToCompressed(role.list);
-    }
-
-    const post = await getPostOption();
-    if (post.list !== undefined && post.list.length > 0) {
-      for (let i = 0; i < post.list.length; i++) {
-        post.list[i].label = post.list[i].name;
-        post.list[i].value = post.list[i].id;
+    try {
+      const dept = await getDeptOption();
+      if (dept && dept.list !== undefined) {
+        options.value.dept = dept.list;
       }
-      options.value.post = post.list;
+    } catch (e) {
+      console.error('加载部门选项失败:', e);
+    }
+
+    try {
+      const role = await getRoleOption();
+      if (role && role.list !== undefined) {
+        options.value.role = role.list;
+        treeDataToCompressed(role.list);
+      }
+    } catch (e) {
+      console.error('加载角色选项失败:', e);
+    }
+
+    try {
+      const post = await getPostOption();
+      if (post && post.list !== undefined && post.list.length > 0) {
+        for (let i = 0; i < post.list.length; i++) {
+          post.list[i].label = post.list[i].name;
+          post.list[i].value = post.list[i].id;
+        }
+        options.value.post = post.list;
+      }
+    } catch (e) {
+      console.error('加载岗位选项失败:', e);
     }
   }
 
   function treeDataToCompressed(source) {
+    if (!source || !Array.isArray(source)) return options.value.roleTabs;
+    
     for (const i in source) {
       options.value.roleTabs.push(source[i]);
       source[i].children && source[i].children.length > 0
@@ -182,7 +196,7 @@
             load();
           })
           .catch((error) => {
-            message.error(error.toString());
+            message.error(error.message || error.toString());
           });
       } else {
         message.error('验证失败，请填写完整信息');
@@ -194,7 +208,25 @@
     show.value = true;
     getConfig({ group: group.value })
       .then((res) => {
-        formValue.value = res.list;
+        if (res && res.list) {
+          // 确保类型正确
+          const data = res.list;
+          formValue.value = {
+            ...formValue.value,
+            ...data,
+            loginRoleId: data.loginRoleId ? Number(data.loginRoleId) : null,
+            loginDeptId: data.loginDeptId ? Number(data.loginDeptId) : null,
+            loginPostIds: Array.isArray(data.loginPostIds) ? data.loginPostIds.map(Number) : [],
+            loginRegisterSwitch: Number(data.loginRegisterSwitch) || 1,
+            loginCaptchaSwitch: Number(data.loginCaptchaSwitch) || 1,
+            loginCaptchaType: Number(data.loginCaptchaType) || 1,
+            loginForceInvite: Number(data.loginForceInvite) || 2,
+            loginAutoOpenId: Number(data.loginAutoOpenId) || 2,
+          };
+        }
+      })
+      .catch((error) => {
+        message.error('加载配置失败: ' + (error.message || error));
       })
       .finally(() => {
         show.value = false;
@@ -202,7 +234,7 @@
   }
 
   onMounted(async () => {
-    load();
     await loadOptions();
+    load();
   });
 </script>

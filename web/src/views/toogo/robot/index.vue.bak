@@ -1,0 +1,3837 @@
+<template>
+  <div class="robot-page">
+    <!-- 统计概览 -->
+    <n-grid cols="1 s:3 m:3 l:5 xl:5 2xl:5" :x-gap="12" :y-gap="12" responsive="screen" class="mb-3">
+      <n-gi>
+        <n-card :bordered="false" size="small">
+          <n-statistic label="总机器人" :value="total">
+            <template #prefix><n-icon :component="RobotOutlined" /></template>
+          </n-statistic>
+        </n-card>
+      </n-gi>
+      <n-gi>
+        <n-card :bordered="false" size="small" class="running-card">
+          <n-statistic label="运行中" :value="runningCount">
+            <template #prefix><n-icon :component="PlayCircleOutlined" color="var(--success-color)" /></template>
+          </n-statistic>
+        </n-card>
+      </n-gi>
+      <n-gi>
+        <n-card :bordered="false" size="small">
+          <n-statistic label="今日盈亏">
+            <template #default>
+              <n-text :type="todayPnl >= 0 ? 'success' : 'error'" strong>
+                {{ todayPnl >= 0 ? '+' : '' }}{{ todayPnl.toFixed(2) }}
+              </n-text>
+            </template>
+          </n-statistic>
+        </n-card>
+      </n-gi>
+      <n-gi>
+        <n-card :bordered="false" size="small">
+          <n-statistic label="累计盈亏">
+            <template #default>
+              <n-text :type="totalPnl >= 0 ? 'success' : 'error'" strong>
+                {{ totalPnl >= 0 ? '+' : '' }}{{ totalPnl.toFixed(2) }}
+              </n-text>
+            </template>
+          </n-statistic>
+        </n-card>
+      </n-gi>
+      <n-gi>
+        <n-card :bordered="false" size="small">
+          <n-statistic label="消耗算力" :value="totalPower.toFixed(2)">
+            <template #prefix><n-icon :component="ThunderboltOutlined" /></template>
+          </n-statistic>
+        </n-card>
+      </n-gi>
+    </n-grid>
+
+    <!-- 操作栏 -->
+    <n-card :bordered="false" size="small" class="mb-3">
+      <n-space justify="space-between" align="center">
+        <n-space align="center">
+          <n-select v-model:value="searchParams.status" :options="statusOptions" placeholder="状态筛选" style="width: 120px" clearable size="small" />
+          <n-select v-model:value="searchParams.platform" :options="platformOptions" placeholder="平台筛选" style="width: 120px" clearable size="small" />
+          <n-button size="small" @click="loadData">
+            <template #icon><n-icon :component="ReloadOutlined" /></template>
+            刷新
+          </n-button>
+        </n-space>
+        <n-button type="primary" @click="router.push('/toogo/robot/create')">
+          <template #icon><n-icon :component="PlusOutlined" /></template>
+          创建机器人
+        </n-button>
+      </n-space>
+    </n-card>
+
+    <!-- 机器人列表 -->
+    <n-grid cols="1 s:1 m:2 l:2 xl:2 2xl:3" :x-gap="16" :y-gap="16" responsive="screen" v-if="robotList.length > 0">
+      <n-gi v-for="robot in robotList" :key="robot.id">
+        <n-card 
+          class="robot-card" 
+          :class="{ 'running': robot.status === 2 }" 
+          :bordered="false"
+          hoverable
+          size="small"
+        >
+          <!-- 头部 -->
+          <template #header>
+            <n-space align="center" :size="8">
+              <n-tag :type="getStatusType(robot.status)" size="small">
+                {{ getStatusText(robot.status) }}
+              </n-tag>
+              <n-text strong>{{ robot.robotName }}</n-text>
+              <!-- 运行中：API连接状态 + 市场状态 + 风险偏好 -->
+              <template v-if="robot.status === 2">
+                <span class="header-connection" :class="getConnectionStatus(robot.id).class">
+                  <span class="conn-dot"></span>
+                  <span class="conn-text">{{ getConnectionStatus(robot.id).text }}</span>
+                </span>
+                <n-tag :type="getMarketStateType(analysisData[robot.id]?.config?.marketState || analysisData[robot.id]?.signal?.currentMarketState)" size="tiny" :bordered="false">
+                  {{ formatMarketState(analysisData[robot.id]?.config?.marketState || analysisData[robot.id]?.signal?.currentMarketState) }}
+                </n-tag>
+                <n-tag type="warning" size="tiny" :bordered="false">
+                  {{ formatRiskPref(analysisData[robot.id]?.config?.riskPreference) }}
+                </n-tag>
+              </template>
+            </n-space>
+          </template>
+          <template #header-extra>
+            <n-space :size="6">
+              <n-tag size="small">{{ robot.exchange?.toUpperCase() || robot.platform?.toUpperCase() }}</n-tag>
+              <n-tag size="small" type="info">{{ robot.symbol || robot.tradingPair }}</n-tag>
+            </n-space>
+          </template>
+
+          <!-- 运行中机器人 -->
+          <template v-if="robot.status === 2">
+            <!-- 账户+策略参数整合面板 -->
+            <div class="account-strategy-panel" v-if="analysisData[robot.id]">
+              <!-- 统计信息 -->
+              <n-grid :cols="4" :x-gap="12" :y-gap="12">
+                <n-gi>
+                  <n-statistic label="余额">
+                    <template #default>
+                      <span class="stat-value primary">{{ analysisData[robot.id]?.account?.availableBalance?.toFixed(2) || '--' }}</span>
+                    </template>
+                  </n-statistic>
+                </n-gi>
+                <n-gi>
+                  <n-statistic label="浮盈">
+                    <template #default>
+                      <n-text :type="(analysisData[robot.id]?.account?.unrealizedPnl || 0) >= 0 ? 'success' : 'error'" strong class="stat-value">
+                        {{ (analysisData[robot.id]?.account?.unrealizedPnl || 0) >= 0 ? '+' : '' }}{{ analysisData[robot.id]?.account?.unrealizedPnl?.toFixed(2) || '0.00' }}
+                      </n-text>
+                    </template>
+                  </n-statistic>
+                </n-gi>
+                <n-gi>
+                  <n-statistic label="算力">
+                    <template #default>
+                      <span class="stat-value warning">{{ walletPowerMap[robot.userId]?.toFixed(2) || '--' }}</span>
+                    </template>
+                  </n-statistic>
+                </n-gi>
+                <n-gi>
+                  <n-statistic label="累计">
+                    <template #default>
+                      <n-text :type="(analysisData[robot.id]?.config?.totalProfit || 0) >= 0 ? 'success' : 'error'" strong class="stat-value">
+                        {{ (analysisData[robot.id]?.config?.totalProfit || 0) >= 0 ? '+' : '' }}{{ (analysisData[robot.id]?.config?.totalProfit || 0).toFixed(2) }}
+                      </n-text>
+                    </template>
+                  </n-statistic>
+                </n-gi>
+              </n-grid>
+
+              <n-divider style="margin: 12px 0" />
+
+              <!-- 策略参数 -->
+              <n-grid :cols="5" :x-gap="8" :y-gap="8">
+                <n-gi>
+                  <div class="param-box highlight">
+                    <span class="label">窗口</span>
+                    <span class="value">{{ formatWindowTime(analysisData[robot.id]?.config?.timeWindow || analysisData[robot.id]?.signal?.strategyWindow) }}</span>
+                  </div>
+                </n-gi>
+                <n-gi>
+                  <div class="param-box highlight">
+                    <span class="label">波动</span>
+                    <span class="value">{{ (analysisData[robot.id]?.config?.threshold || analysisData[robot.id]?.signal?.strategyThreshold)?.toFixed(1) || '--' }}U</span>
+                  </div>
+                </n-gi>
+                <n-gi>
+                  <div class="param-box">
+                    <span class="label">杠杆</span>
+                    <span class="value">{{ analysisData[robot.id]?.config?.leverage || robot.leverage || '--' }}x</span>
+                  </div>
+                </n-gi>
+                <n-gi>
+                  <div class="param-box">
+                    <span class="label">保证金</span>
+                    <span class="value">{{ (analysisData[robot.id]?.config?.marginPercent || robot.marginPercent || 0).toFixed(0) }}%</span>
+                  </div>
+                </n-gi>
+                <n-gi>
+                  <div class="param-box error">
+                    <span class="label">止损</span>
+                    <span class="value">{{ (analysisData[robot.id]?.config?.stopLossPercent || robot.stopLossPercent || 0).toFixed(0) }}%</span>
+                  </div>
+                </n-gi>
+                <n-gi>
+                  <div class="param-box success">
+                    <span class="label">启盈</span>
+                    <span class="value">{{ (analysisData[robot.id]?.config?.autoStartRetreat || robot.autoStartRetreatPercent || 0).toFixed(0) }}%</span>
+                  </div>
+                </n-gi>
+                <n-gi>
+                  <div class="param-box success">
+                    <span class="label">回撤</span>
+                    <span class="value">{{ (analysisData[robot.id]?.config?.takeProfitPercent || robot.profitRetreatPercent || 0).toFixed(0) }}%</span>
+                  </div>
+                </n-gi>
+                <n-gi>
+                  <div class="param-box warning">
+                    <span class="label">亏反</span>
+                    <span class="value">{{ (analysisData[robot.id]?.config?.reverseLossRetreat || 0).toFixed(0) }}%</span>
+                  </div>
+                </n-gi>
+                <n-gi>
+                  <div class="param-box warning">
+                    <span class="label">盈反</span>
+                    <span class="value">{{ (analysisData[robot.id]?.config?.reverseProfitRetreat || 0).toFixed(0) }}%</span>
+                  </div>
+                </n-gi>
+                <n-gi>
+                   <div class="param-box">
+                     <span class="label">运行</span>
+                     <span class="value" style="font-size: 10px">{{ formatRuntime(robot.runtimeSeconds || analysisData[robot.id]?.config?.runtimeSeconds) }}</span>
+                   </div>
+                </n-gi>
+              </n-grid>
+
+              <n-divider style="margin: 12px 0" />
+              
+              <!-- 开关操作 -->
+              <n-space justify="space-between">
+                 <div class="switch-item" @click.stop="toggleAutoTrade(robot)">
+                  <n-tag :type="analysisData[robot.id]?.config?.autoTradeEnabled ? 'success' : 'default'" size="small" :bordered="false" class="clickable-tag" style="cursor: pointer">
+                    {{ analysisData[robot.id]?.config?.autoTradeEnabled ? '🤖 自动下单' : '✋ 手动下单' }}
+                  </n-tag>
+                </div>
+                <div class="switch-item" @click.stop="toggleAutoClose(robot)">
+                  <n-tag :type="analysisData[robot.id]?.config?.autoCloseEnabled ? 'success' : 'default'" size="small" :bordered="false" class="clickable-tag" style="cursor: pointer">
+                    {{ analysisData[robot.id]?.config?.autoCloseEnabled ? '📉 自动平仓' : '✋ 手动平仓' }}
+                  </n-tag>
+                </div>
+              </n-space>
+            </div>
+
+            <!-- 方向信号预警（三列布局：机器人 | 预警按钮 | 图表） -->
+            <div class="signal-alert-panel" v-if="analysisData[robot.id]">
+              <div class="signal-three-column">
+                <!-- 第一列：机器人动画 -->
+                <div class="column-robot">
+                  <div class="mini-robot-scene" :class="getRobotMoodClass(robot)">
+                    <svg class="mini-robot" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                      <defs>
+                        <linearGradient id="mini-metal" x1="0%" y1="0%" x2="100%" y2="100%">
+                          <stop offset="0%" style="stop-color: #ffffff" />
+                          <stop offset="50%" style="stop-color: #e0e0e0" />
+                          <stop offset="100%" style="stop-color: #b0b0b0" />
+                        </linearGradient>
+                        <radialGradient :id="'eye-glow-' + robot.id" cx="50%" cy="50%" r="50%">
+                          <stop offset="0%" :style="'stop-color:' + getRobotEyeColor(robot)" />
+                          <stop offset="100%" :style="'stop-color:' + getRobotEyeColor(robot)" />
+                        </radialGradient>
+                      </defs>
+                      <ellipse cx="50" cy="92" rx="18" ry="4" fill="rgba(0,0,0,0.15)" class="robot-shadow" />
+                      <g class="tail-group">
+                        <path d="M68 68 Q 78 60 82 50" stroke="#ccc" stroke-width="2" fill="none" stroke-linecap="round" class="tail" />
+                        <circle cx="82" cy="50" r="2" :fill="getRobotEyeColor(robot)" class="tail-tip" />
+                      </g>
+                      <rect x="35" y="55" width="30" height="25" rx="5" fill="url(#mini-metal)" class="body" />
+                      <rect x="40" y="60" width="20" height="15" rx="3" fill="#111" class="body-screen" />
+                      <text x="50" y="70" text-anchor="middle" :fill="getRobotEyeColor(robot)" font-size="4" class="logo-text">Toogo</text>
+                      <rect x="38" y="78" width="5" height="10" rx="2" fill="#bbb" />
+                      <rect x="57" y="78" width="5" height="10" rx="2" fill="#bbb" />
+                      <g class="head-group">
+                        <path d="M32 38 L 28 25 L 38 30 Z" fill="#ccc" class="ear left-ear" />
+                        <path d="M68 38 L 72 25 L 62 30 Z" fill="#ccc" class="ear right-ear" />
+                        <rect x="30" y="30" width="40" height="28" rx="8" fill="url(#mini-metal)" class="head-shell" />
+                        <rect x="34" y="34" width="32" height="20" rx="5" fill="#111" class="face-screen" />
+                        <path d="M40 40 L 45 40" :stroke="getRobotEyeColor(robot)" stroke-width="1" fill="none" class="eyebrow left-eyebrow" />
+                        <path d="M55 40 L 60 40" :stroke="getRobotEyeColor(robot)" stroke-width="1" fill="none" class="eyebrow right-eyebrow" />
+                        <circle cx="43" cy="45" r="3" :fill="'url(#eye-glow-' + robot.id + ')'" class="eye left-eye" :style="'filter: drop-shadow(0 0 2px ' + getRobotEyeColor(robot) + ')'" />
+                        <circle cx="57" cy="45" r="3" :fill="'url(#eye-glow-' + robot.id + ')'" class="eye right-eye" :style="'filter: drop-shadow(0 0 2px ' + getRobotEyeColor(robot) + ')'" />
+                        <path d="M45 51 Q 50 54 55 51" stroke="#00f3ff" stroke-width="1" fill="none" class="mouth-smile" />
+                      </g>
+                    </svg>
+                    <div class="robot-mood-text">{{ getRobotMoodText(robot) }}</div>
+                  </div>
+                </div>
+                
+                <!-- 第二列：方向预警按钮 + 距离信息 -->
+                <div class="column-signal">
+                  <!-- 做多预警 -->
+                  <div class="signal-block long" :class="{ active: analysisData[robot.id]?.signal?.direction === 'LONG' }">
+                    <div class="signal-header">
+                      <span class="signal-icon">📈</span>
+                      <span class="signal-label">做多</span>
+                    </div>
+                    <div class="signal-trigger">≤ {{ formatPrice(getLongTriggerPrice(analysisData[robot.id])) }}</div>
+                    <div class="signal-distance">距 {{ formatPriceUsdt(analysisData[robot.id]?.signal?.distanceFromMin) }}</div>
+                  </div>
+                  <!-- 做空预警 -->
+                  <div class="signal-block short" :class="{ active: analysisData[robot.id]?.signal?.direction === 'SHORT' }">
+                    <div class="signal-header">
+                      <span class="signal-icon">📉</span>
+                      <span class="signal-label">做空</span>
+                    </div>
+                    <div class="signal-trigger">≥ {{ formatPrice(getShortTriggerPrice(analysisData[robot.id])) }}</div>
+                    <div class="signal-distance">距 {{ formatPriceUsdt(analysisData[robot.id]?.signal?.distanceFromMax) }}</div>
+                  </div>
+                  <!-- 当前价格 -->
+                  <div class="current-price-block">
+                    <span class="price-value" :class="getPriceChangeClass(robot.id)">
+                      {{ formatPrice(tickerData[robot.id]?.lastPrice || analysisData[robot.id]?.signal?.currentPrice) }}
+                    </span>
+                    <span class="price-change" :class="getPriceChangeClass(robot.id)">
+                      {{ formatPriceChange(tickerData[robot.id]?.change24h) }}
+                    </span>
+                  </div>
+                </div>
+                
+                <!-- 第三列：价格图表（动态最大化） -->
+                <div class="column-chart" v-if="analysisData[robot.id]?.priceWindow?.length > 1">
+                   <svg class="chart-svg" viewBox="0 0 640 200" preserveAspectRatio="none">
+                    <!-- 价格区域填充 -->
+                    <path :d="getPriceChartFillPath(analysisData[robot.id])" class="chart-fill" />
+                    <!-- 价格曲线 -->
+                    <path :d="getPriceChartPath(analysisData[robot.id])" class="chart-line" />
+                    <!-- 基准线 -->
+                    <line x1="0" :y1="getBaselineY(analysisData[robot.id])" x2="640" :y2="getBaselineY(analysisData[robot.id])" class="chart-baseline" />
+                    <!-- 做空触发线 -->
+                    <line v-if="analysisData[robot.id]?.signal?.signalThreshold" x1="0" :y1="getShortThresholdY(analysisData[robot.id])" x2="640" :y2="getShortThresholdY(analysisData[robot.id])" class="chart-upper" />
+                    <!-- 做多触发线 -->
+                    <line v-if="analysisData[robot.id]?.signal?.signalThreshold" x1="0" :y1="getLongThresholdY(analysisData[robot.id])" x2="640" :y2="getLongThresholdY(analysisData[robot.id])" class="chart-lower" />
+                    
+                    <!-- 最低价点 + 标签 -->
+                    <circle :cx="getMinPriceX(analysisData[robot.id])" :cy="getMinPriceY(analysisData[robot.id])" r="4" class="point-min" />
+                    <text :x="getMinPriceX(analysisData[robot.id])" :y="getMinPriceY(analysisData[robot.id]) + 14" class="price-label price-label-min">
+                      低 {{ formatPrice(analysisData[robot.id]?.signal?.windowMinPrice) }}
+                    </text>
+                    
+                    <!-- 最高价点 + 标签 -->
+                    <circle :cx="getMaxPriceX(analysisData[robot.id])" :cy="getMaxPriceY(analysisData[robot.id])" r="4" class="point-max" />
+                    <text :x="getMaxPriceX(analysisData[robot.id])" :y="getMaxPriceY(analysisData[robot.id]) - 6" class="price-label price-label-max">
+                      高 {{ formatPrice(analysisData[robot.id]?.signal?.windowMaxPrice) }}
+                    </text>
+                    
+                    <!-- 实时价点 + 标签 -->
+                    <circle :cx="getCurrentPriceX(analysisData[robot.id])" :cy="getCurrentPriceY(analysisData[robot.id])" r="5" class="point-current" />
+                    <text :x="getCurrentPriceX(analysisData[robot.id]) + 8" :y="getCurrentPriceY(analysisData[robot.id]) + 4" class="price-label price-label-current">
+                      {{ formatPrice(analysisData[robot.id]?.signal?.currentPrice || tickerData[robot.id]?.lastPrice) }}
+                    </text>
+                  </svg>
+                  <div class="chart-labels">
+                    <span class="label-high">高 {{ formatPrice(analysisData[robot.id]?.signal?.windowMaxPrice) }}</span>
+                    <span class="label-low">低 {{ formatPrice(analysisData[robot.id]?.signal?.windowMinPrice) }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 信号说明 -->
+              <div v-if="analysisData[robot.id]?.signal?.reason" class="signal-reason">
+                {{ analysisData[robot.id]?.signal?.reason }}
+              </div>
+
+              <!-- 预警记录（可展开） -->
+              <n-collapse :default-expanded-names="[]" style="margin-top: 6px">
+                <n-collapse-item name="logs">
+                  <template #header>
+                    <span style="font-size: 12px">预警记录 ({{ signalLogs[robot.id]?.length || 0 }})</span>
+                  </template>
+                  <div class="signal-logs-list" v-if="signalLogs[robot.id]?.length > 0">
+                    <div v-for="(log, idx) in signalLogs[robot.id]?.slice(0, 10)" :key="idx" class="log-row-detail" :class="[log.signalType?.toLowerCase(), { 'not-executed': !log.executed }]">
+                      <div class="log-header">
+                        <span class="log-time">{{ formatLogTime(log.createdAt) }}</span>
+                        <n-tag :type="log.signalType?.toLowerCase() === 'long' ? 'success' : 'error'" size="tiny">
+                          {{ log.signalType?.toLowerCase() === 'long' ? '做多' : '做空' }}
+                        </n-tag>
+                        <span class="log-price">{{ log.currentPrice?.toFixed(2) }}</span>
+                        <n-tag v-if="log.executed" type="success" size="tiny" :bordered="false">✓ 已执行</n-tag>
+                        <n-tag v-else type="error" size="tiny" :bordered="false">✗ 未执行</n-tag>
+                      </div>
+                      <!-- 未执行原因（必须显示） -->
+                      <div class="log-reason" v-if="!log.executed">
+                        <n-text type="warning" style="font-size: 11px; font-weight: 500">
+                          ⚠️ {{ log.executeResult || '未知原因' }}
+                        </n-text>
+                      </div>
+                      <!-- 已执行结果 -->
+                      <div class="log-success" v-else-if="log.executeResult">
+                        <n-text type="success" style="font-size: 10px">
+                          {{ log.executeResult }}
+                        </n-text>
+                      </div>
+                      <div class="log-params">
+                        <span class="param-badge">窗口: {{ log.windowMinPrice?.toFixed(1) }} ~ {{ log.windowMaxPrice?.toFixed(1) }}</span>
+                        <span class="param-badge">阈值: {{ log.threshold?.toFixed(1) }}U</span>
+                      </div>
+                    </div>
+                  </div>
+                  <n-empty v-else description="暂无记录" size="small" />
+                </n-collapse-item>
+              </n-collapse>
+            </div>
+
+            <!-- 加载分析数据 -->
+            <div v-else class="analysis-loading">
+              <n-spin size="small" />
+              <n-text depth="3" style="font-size: 12px; margin-left: 8px">正在分析市场...</n-text>
+            </div>
+
+            <!-- 算法逻辑说明（可折叠） -->
+            <n-collapse :default-expanded-names="[]" class="algorithm-collapse" style="margin-top: 8px">
+              <n-collapse-item name="algorithm">
+                <template #header>
+                  <span style="font-size: 12px; font-weight: 500">📖 算法逻辑说明</span>
+                </template>
+                
+                <!-- 1. 方向判断 -->
+                <div class="algo-section">
+                  <div class="algo-title">📊 方向判断</div>
+                  <div class="algo-desc">根据时间窗口和波动点数分析实时行情，保持窗口内最高价和最低价</div>
+                  <div class="algo-rules">
+                    <div class="rule-item long">
+                      <span class="rule-icon">📈</span>
+                      <div class="rule-content">
+                        <span class="rule-name">做多预警</span>
+                        <span class="rule-formula">实时价格 - 窗口最低价 = 波动值</span>
+                        <span class="rule-note">（价格必须上升时触发）</span>
+                      </div>
+                    </div>
+                    <div class="rule-item short">
+                      <span class="rule-icon">📉</span>
+                      <div class="rule-content">
+                        <span class="rule-name">做空预警</span>
+                        <span class="rule-formula">窗口最高价 - 实时价格 = 波动值</span>
+                        <span class="rule-note">（价格必须下降时触发）</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="algo-warning">⚠️ 方向对冲时不给方向预警（多空同时满足条件时不触发）</div>
+                </div>
+                
+                <!-- 2. 全自动下单 -->
+                <div class="algo-section">
+                  <div class="algo-title">🤖 全自动下单</div>
+                  <div class="algo-list">
+                    <div class="algo-item">① 根据方向信号和对应的策略模板下单，<strong>每个方向只能有一单</strong></div>
+                    <div class="algo-item">② 反方向下单策略：根据机器人对应的<strong>策略模板里的策略配置</strong></div>
+                    <div class="algo-item">③ 当机器人状态为<n-tag type="success" size="tiny">运行中</n-tag>时开启自动下单功能</div>
+                  </div>
+                </div>
+                
+                <!-- 3. 全自动平仓 -->
+                <div class="algo-section">
+                  <div class="algo-title">📉 全自动平仓</div>
+                  <div class="algo-list">
+                    <div class="algo-item formula">
+                      <span class="item-label">① 止损：</span>
+                      <span class="item-formula">|未实现盈亏| / (保证金 × 止损%) ≥ 100%</span>
+                      <span class="item-action">→ 自动平仓</span>
+                    </div>
+                    <div class="algo-item formula">
+                      <span class="item-label">② 止盈回撤：</span>
+                      <span class="item-formula">(最高盈利 - 当前盈亏) / 最高盈利 ≥ 回撤%</span>
+                      <span class="item-action">→ 自动平仓</span>
+                      <span class="item-note">（需先开启止盈按钮）</span>
+                    </div>
+                    <div class="algo-item formula">
+                      <span class="item-label">③ 启动止盈：</span>
+                      <span class="item-formula">未实现盈亏 / 保证金 ≥ 启动%</span>
+                      <span class="item-action">→ 开启止盈按钮</span>
+                      <span class="item-note">（开启后无法关闭，直到平仓）</span>
+                    </div>
+                    <div class="algo-item">④ 机器人所有订单达到<strong>最大盈利/最大亏损额</strong>后，全部平仓</div>
+                    <div class="algo-item">⑤ 当机器人状态为<n-tag type="success" size="tiny">运行中</n-tag>时开启自动平仓功能</div>
+                  </div>
+                </div>
+              </n-collapse-item>
+            </n-collapse>
+
+            <!-- 实时持仓订单列表 -->
+            <div class="positions-section">
+              <div class="positions-header">
+                <h4 class="positions-title">实时持仓订单列表</h4>
+                <span class="positions-count">{{ positionData[robot.id]?.length || 0 }}</span>
+              </div>
+              <div class="positions-table-wrapper">
+                <table class="positions-table" v-if="positionData[robot.id]?.length > 0">
+                  <thead>
+                    <tr>
+                      <th class="col-time">下单时间</th>
+                      <th class="col-symbol">交易对</th>
+                      <th class="col-side">方向</th>
+                      <th class="col-quantity">持仓数量</th>
+                      <th class="col-price">开仓价格</th>
+                      <th class="col-price">市价</th>
+                      <th class="col-pl">未实现盈亏</th>
+                      <th class="col-margin">保证金</th>
+                      <th class="col-leverage">杠杆</th>
+                      <th class="col-monitor">监控</th>
+                      <th class="col-action">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(pos, idx) in positionData[robot.id]" :key="pos.symbol + pos.positionSide" 
+                        :class="['position-row', idx % 2 === 0 ? 'row-even' : 'row-odd']">
+                      <td class="col-time">{{ formatTime(pos.updateTime || pos.createTime) }}</td>
+                      <td class="col-symbol">{{ pos.symbol }}</td>
+                      <td class="col-side">
+                        <span :class="['side-tag', pos.positionSide === 'LONG' ? 'long' : 'short']">
+                          {{ pos.positionSide === 'LONG' ? '做多' : '做空' }}
+                        </span>
+                      </td>
+                      <td class="col-quantity">{{ Math.abs(pos.positionAmt).toFixed(4) }}</td>
+                      <td class="col-price">{{ pos.entryPrice?.toFixed(2) || '--' }}</td>
+                      <td class="col-price">{{ pos.markPrice?.toFixed(2) || analysisData[robot.id]?.analysis?.ticker?.lastPrice?.toFixed(2) || '--' }}</td>
+                      <td class="col-pl">
+                        <span :class="['pnl-value', pos.unrealizedPnl >= 0 ? 'profit' : 'loss']">
+                          {{ pos.unrealizedPnl >= 0 ? '+' : '' }}{{ pos.unrealizedPnl?.toFixed(4) || '0.0000' }} U
+                        </span>
+                      </td>
+                      <td class="col-margin">{{ pos.margin?.toFixed(2) || '--' }} U</td>
+                      <td class="col-leverage">{{ pos.leverage || '--' }}x</td>
+                      <td class="col-monitor">
+                        <div class="monitor-cell">
+                          <!-- 止损进度 -->
+                          <div class="monitor-item">
+                            <div class="monitor-label">止损</div>
+                            <div class="progress-bar-container">
+                              <div class="progress-bar progress-bar-danger" 
+                                   :style="{ width: calcStopLossProgress(pos, robot).toFixed(1) + '%' }"></div>
+                            </div>
+                            <div class="monitor-value" :class="{ 'text-danger': calcStopLossProgress(pos, robot) >= 100 }">
+                              {{ calcStopLossProgress(pos, robot) >= 100 ? '100%+' : calcStopLossProgress(pos, robot).toFixed(1) + '%' }}
+                            </div>
+                          </div>
+                          <!-- 止盈回撤进度 -->
+                          <div class="monitor-item">
+                            <div class="monitor-label">止盈回撤</div>
+                            <div class="progress-bar-container">
+                              <div class="progress-bar progress-bar-success" 
+                                   :style="{ width: calcProfitRetreatProgress(pos, robot).toFixed(1) + '%', opacity: 0.6 }"></div>
+                            </div>
+                            <div class="monitor-value">{{ calcProfitRetreatProgress(pos, robot).toFixed(1) }}%</div>
+                          </div>
+                          <!-- 启动止盈进度 -->
+                          <div class="monitor-item">
+                            <div class="monitor-label">启动止盈</div>
+                            <div class="progress-bar-container">
+                              <div class="progress-bar progress-bar-warning" 
+                                   :style="{ width: calcStartProfitProgress(pos, robot).toFixed(1) + '%' }"></div>
+                            </div>
+                            <div class="monitor-value" :class="{ 'text-success': calcStartProfitProgress(pos, robot) >= 100 }">
+                              {{ calcStartProfitProgress(pos, robot) >= 100 ? '100%+' : calcStartProfitProgress(pos, robot).toFixed(1) + '%' }}
+                            </div>
+                          </div>
+                          <!-- 最高盈利 -->
+                          <div class="monitor-item monitor-max-profit">
+                            <div class="monitor-label" style="font-size: 0.7rem;">最高盈利</div>
+                            <div class="monitor-value" style="font-size: 0.7rem; font-weight: 600; flex: 1; text-align: right;">
+                              <span v-if="(pos.maxProfitReached || 0) > 0" style="color: #22c55e; font-weight: 600;">
+                                {{ (pos.maxProfitReached || 0).toFixed(4) }}
+                              </span>
+                              <span v-else style="color: var(--text-color-3);">--</span>
+                              <span v-if="(pos.maxProfitReached || 0) > 0"> USDT</span>
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+                      <td class="col-action">
+                        <n-button size="tiny" type="warning" @click="closePosition(robot, pos)">平仓</n-button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div v-else class="empty-state">
+                  <div class="empty-icon">📊</div>
+                  <div class="empty-text">暂无持仓订单</div>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- 非运行状态显示核心配置 -->
+          <template v-else>
+            <n-grid :cols="3" :x-gap="12" :y-gap="8">
+              <n-gi>
+                <n-text depth="3" style="font-size: 12px">杠杆倍数</n-text>
+                <div style="font-size: 14px; font-weight: bold">{{ robot.leverage || '--' }}x</div>
+              </n-gi>
+              <n-gi>
+                <n-text depth="3" style="font-size: 12px">保证金比例</n-text>
+                <div style="font-size: 14px; font-weight: bold">{{ robot.marginRatio || '--' }}%</div>
+              </n-gi>
+              <n-gi>
+                <n-text depth="3" style="font-size: 12px">止损比例</n-text>
+                <div style="font-size: 14px; font-weight: bold; color: var(--error-color)">{{ robot.stopLossPercent || '--' }}%</div>
+              </n-gi>
+              <n-gi>
+                <n-text depth="3" style="font-size: 12px">止盈回撤</n-text>
+                <div style="font-size: 14px; font-weight: bold; color: var(--success-color)">{{ robot.takeProfitRetracePercent || '--' }}%</div>
+              </n-gi>
+              <n-gi>
+                <n-text depth="3" style="font-size: 12px">累计盈亏</n-text>
+                <n-text :type="(robot.totalPnl || 0) >= 0 ? 'success' : 'error'" strong>
+                  {{ (robot.totalPnl || 0) >= 0 ? '+' : '' }}{{ (robot.totalPnl || 0).toFixed(2) }} U
+                </n-text>
+              </n-gi>
+              <n-gi>
+                <n-text depth="3" style="font-size: 12px">消耗算力</n-text>
+                <div style="font-size: 14px">{{ robot.consumedPower?.toFixed(2) || '0.00' }}</div>
+              </n-gi>
+            </n-grid>
+          </template>
+
+          <!-- 操作按钮 -->
+          <template #action>
+            <n-space justify="space-between">
+              <n-space>
+                <n-button v-if="robot.status === 2" type="warning" size="small" @click="stopRobot(robot)">
+                  <template #icon><n-icon :component="PauseCircleOutlined" /></template>
+                  暂停运行
+                </n-button>
+                <n-button v-else-if="robot.status === 3 || robot.status === 1" type="primary" size="small" @click="startRobot(robot)">
+                  <template #icon><n-icon :component="PlayCircleOutlined" /></template>
+                  启动运行
+                </n-button>
+              </n-space>
+              <n-space>
+                <n-button size="small" @click="viewDetail(robot)">查看详情</n-button>
+                <n-button size="small" @click="openRiskConfig(robot)">
+                  <template #icon><n-icon :component="SettingOutlined" /></template>
+                  风险配置
+                </n-button>
+                <n-button type="error" ghost size="small" @click="deleteRobot(robot)" :disabled="robot.status === 2">删除</n-button>
+              </n-space>
+            </n-space>
+          </template>
+        </n-card>
+      </n-gi>
+    </n-grid>
+
+    <n-card v-else :bordered="false">
+      <n-empty description="暂无机器人，创建一个开始自动交易吧！" size="large">
+        <template #extra>
+          <n-button type="primary" size="large" @click="router.push('/toogo/robot/create')">
+            <template #icon><n-icon :component="PlusOutlined" /></template>
+            创建机器人
+          </n-button>
+        </template>
+      </n-empty>
+    </n-card>
+
+    <!-- 详情弹窗 -->
+    <n-modal v-model:show="showDetailModal" title="机器人详情" preset="card" style="width: 960px">
+      <n-tabs v-if="currentRobot" type="segment" animated>
+        <n-tab-pane name="info" tab="基本信息">
+          <!-- 基础信息 -->
+          <n-descriptions :column="3" label-placement="left" bordered size="small" class="mb-3">
+            <n-descriptions-item label="机器人名称">
+              <n-text strong>{{ currentRobot.robotName }}</n-text>
+            </n-descriptions-item>
+            <n-descriptions-item label="状态">
+              <n-tag :type="getStatusType(currentRobot.status)" size="small">{{ getStatusText(currentRobot.status) }}</n-tag>
+            </n-descriptions-item>
+            <n-descriptions-item label="创建时间">{{ currentRobot.createdAt }}</n-descriptions-item>
+          </n-descriptions>
+
+          <!-- 交易配置 -->
+          <n-card title="交易配置" size="small" :bordered="false" class="mb-3">
+            <n-grid :cols="5" :x-gap="12">
+              <n-gi>
+                <n-statistic label="交易平台">
+                  <template #default>
+                    <n-tag type="info" size="small">{{ (currentRobot.platform || currentRobot.exchange || '-').toUpperCase() }}</n-tag>
+                  </template>
+                </n-statistic>
+              </n-gi>
+              <n-gi>
+                <n-statistic label="交易对">
+                  <template #default>
+                    <n-text type="warning" strong>{{ currentRobot.tradingPair || currentRobot.symbol || '-' }}</n-text>
+                  </template>
+                </n-statistic>
+              </n-gi>
+              <n-gi>
+                <n-statistic label="交易类型" :value="currentRobot.tradeType === 'perpetual' || !currentRobot.tradeType ? '永续合约' : currentRobot.tradeType" />
+              </n-gi>
+              <n-gi>
+                <n-statistic label="订单类型" :value="currentRobot.orderType === 'market' || !currentRobot.orderType ? '市价单' : '限价单'" />
+              </n-gi>
+              <n-gi>
+                <n-statistic label="保证金模式" :value="currentRobot.marginMode === 'isolated' || !currentRobot.marginMode ? '逐仓' : '全仓'" />
+              </n-gi>
+            </n-grid>
+          </n-card>
+
+          <!-- 策略参数 -->
+          <n-card title="策略参数" size="small" :bordered="false" class="mb-3">
+            <n-grid :cols="4" :x-gap="12" :y-gap="8">
+              <n-gi>
+                <n-statistic label="杠杆倍数">
+                  <template #default>
+                    <n-text type="primary" strong>{{ currentRobot.leverage || 10 }}x</n-text>
+                  </template>
+                </n-statistic>
+              </n-gi>
+              <n-gi>
+                <n-statistic label="保证金比例" :value="`${currentRobot.marginRatio || currentRobot.marginPercent || 10}%`" />
+              </n-gi>
+              <n-gi>
+                <n-statistic label="止损比例">
+                  <template #default>
+                    <n-text type="error">{{ currentRobot.stopLossPercent || 5 }}%</n-text>
+                  </template>
+                </n-statistic>
+              </n-gi>
+              <n-gi>
+                <n-statistic label="止盈回撤">
+                  <template #default>
+                    <n-text type="success">{{ currentRobot.takeProfitRetracePercent || currentRobot.profitRetreatPercent || 30 }}%</n-text>
+                  </template>
+                </n-statistic>
+              </n-gi>
+              <n-gi>
+                <n-statistic label="最大盈利">
+                  <template #default>
+                    <n-text type="success">{{ currentRobot.maxProfit || currentRobot.maxProfitTarget || 100 }} USDT</n-text>
+                  </template>
+                </n-statistic>
+              </n-gi>
+              <n-gi>
+                <n-statistic label="最大亏损">
+                  <template #default>
+                    <n-text type="error">{{ currentRobot.maxLoss || currentRobot.maxLossAmount || 50 }} USDT</n-text>
+                  </template>
+                </n-statistic>
+              </n-gi>
+              <n-gi>
+                <n-statistic label="总盈亏">
+                  <template #default>
+                    <n-text :type="(currentRobot.totalPnl || 0) >= 0 ? 'success' : 'error'" strong>
+                      {{ (currentRobot.totalPnl || 0) >= 0 ? '+' : '' }}{{ (currentRobot.totalPnl || 0).toFixed(4) }} USDT
+                    </n-text>
+                  </template>
+                </n-statistic>
+              </n-gi>
+              <n-gi>
+                <n-statistic label="消耗算力" :value="(currentRobot.consumedPower || 0).toFixed(4)" />
+              </n-gi>
+            </n-grid>
+          </n-card>
+
+          <!-- 策略配置 -->
+          <n-card size="small" :bordered="false">
+            <template #header>
+              <n-space align="center">
+                <span>当前策略配置</span>
+                <n-tag v-if="currentRobotStrategy?.groupName" type="info" size="small">
+                  {{ currentRobotStrategy.groupName }}
+                </n-tag>
+                <n-tag v-else type="default" size="small">默认策略</n-tag>
+                <n-button type="primary" size="tiny" @click="openStrategySelector" :disabled="currentRobot.status === 2">
+                  切换策略模板
+                </n-button>
+              </n-space>
+            </template>
+            
+            <!-- 策略模板信息 -->
+            <n-alert v-if="currentRobotStrategy" type="info" size="small" style="margin-bottom: 12px" :show-icon="false">
+              <template #header>
+                <n-space align="center" :size="8">
+                  <n-icon :component="SettingOutlined" />
+                  <span>策略模板：{{ currentRobotStrategy.groupName || '默认策略' }}</span>
+                  <n-tag size="tiny" type="warning" v-if="currentRobotStrategy.isOfficial">官方</n-tag>
+                </n-space>
+              </template>
+              <div style="font-size: 12px; margin-top: 4px">
+                <n-space :size="12">
+                  <span>市场状态: {{ formatMarketState(currentRobot.marketState) }}</span>
+                  <n-divider vertical />
+                  <span>风险偏好: {{ formatRiskPref(currentRobot.riskPreference) }}</span>
+                  <n-divider vertical />
+                  <span>杠杆: {{ getStrategyLeverage() }}x</span>
+                  <n-divider vertical />
+                  <span>保证金: {{ getStrategyMarginPercent() }}%</span>
+                </n-space>
+              </div>
+            </n-alert>
+            
+            <n-space :size="12" :wrap="true">
+              <div class="strategy-tag">
+                <n-text depth="3" style="font-size: 12px">市场状态</n-text>
+                <n-tag type="info" size="small">
+                  {{ formatMarketState(currentRobot.marketState) }}
+                </n-tag>
+              </div>
+              <div class="strategy-tag">
+                <n-text depth="3" style="font-size: 12px">风险偏好</n-text>
+                <n-tag type="warning" size="small">
+                  {{ formatRiskPref(currentRobot.riskPreference) }}
+                </n-tag>
+              </div>
+              <div class="strategy-tag">
+                <n-text depth="3" style="font-size: 12px">自动市场分析</n-text>
+                <n-tag :type="currentRobot.autoMarketState === 1 ? 'success' : 'default'" size="small">
+                  {{ currentRobot.autoMarketState === 1 ? '开启' : '关闭' }}
+                </n-tag>
+              </div>
+              <div class="strategy-tag">
+                <n-text depth="3" style="font-size: 12px">信号监控</n-text>
+                <n-tag :type="currentRobot.useMonitorSignal !== 0 ? 'success' : 'default'" size="small">
+                  {{ currentRobot.useMonitorSignal !== 0 ? '开启' : '关闭' }}
+                </n-tag>
+              </div>
+              <div class="strategy-tag">
+                <n-text depth="3" style="font-size: 12px">反向下单</n-text>
+                <n-tag :type="currentRobot.enableReverseOrder !== 0 ? 'success' : 'default'" size="small">
+                  {{ currentRobot.enableReverseOrder !== 0 ? '开启' : '关闭' }}
+                </n-tag>
+              </div>
+            </n-space>
+          </n-card>
+        </n-tab-pane>
+        <n-tab-pane name="positions" tab="实时持仓">
+          <n-data-table :columns="positionColumns" :data="currentPositions" :loading="positionLoading" size="small" />
+        </n-tab-pane>
+        <n-tab-pane name="orders" tab="当前挂单">
+          <n-data-table :columns="openOrderColumns" :data="currentOpenOrders" :loading="orderLoading" size="small" />
+        </n-tab-pane>
+        <n-tab-pane name="history" tab="成交明细">
+          <n-data-table :columns="historyColumns" :data="orderHistory" :loading="historyLoading" size="small" />
+        </n-tab-pane>
+        <n-tab-pane name="power" tab="算力消耗">
+          <n-data-table :columns="powerColumns" :data="powerConsumeList" size="small" />
+        </n-tab-pane>
+      </n-tabs>
+    </n-modal>
+
+    <!-- 策略模板选择弹窗 -->
+    <n-modal v-model:show="showStrategySelector" preset="card" title="切换策略模板" style="width: 650px">
+      <n-alert type="info" style="margin-bottom: 16px" :show-icon="false">
+        为机器人 <strong>{{ currentRobot?.robotName }}</strong> 选择策略模板
+      </n-alert>
+
+      <n-spin :show="loadingStrategyGroups">
+        <!-- 我的策略模板 -->
+        <n-card v-if="myStrategyGroups.length > 0" title="我的策略模板" size="small" class="mb-3" :bordered="false">
+          <n-radio-group v-model:value="selectedGroupId" name="myGroups">
+            <n-space vertical :size="8">
+              <n-card 
+                v-for="group in myStrategyGroups" 
+                :key="group.id"
+                size="small"
+                hoverable 
+                :class="{ 'selected-strategy': selectedGroupId === group.id }"
+                @click="selectedGroupId = group.id"
+              >
+                <n-radio :value="group.id" style="width: 100%">
+                  <n-space align="center">
+                    <n-text strong>{{ group.groupName }}</n-text>
+                    <n-tag v-if="group.isDefault" type="success" size="tiny">默认</n-tag>
+                    <n-tag v-if="group.fromOfficial" type="warning" size="tiny">源自官方</n-tag>
+                    <n-text depth="3" style="font-size: 12px">{{ group.symbol }} · {{ group.strategyCount || 12 }}种策略</n-text>
+                  </n-space>
+                </n-radio>
+              </n-card>
+            </n-space>
+          </n-radio-group>
+        </n-card>
+
+        <!-- 官方策略模板 -->
+        <n-card v-if="officialStrategyGroups.length > 0" title="官方策略模板" size="small" :bordered="false">
+          <template #header-extra>
+            <n-text depth="3" style="font-size: 12px">选择后自动添加到我的策略</n-text>
+          </template>
+          <n-radio-group v-model:value="selectedGroupId" name="officialGroups">
+            <n-space vertical :size="8">
+              <n-card 
+                v-for="group in officialStrategyGroups" 
+                :key="'official_' + group.id"
+                size="small"
+                hoverable 
+                :class="{ 'selected-strategy': selectedGroupId === group.id }"
+                @click="selectOfficialGroup(group)"
+              >
+                <n-radio :value="group.id" style="width: 100%">
+                  <n-space align="center">
+                    <n-tag type="warning" size="tiny">官方</n-tag>
+                    <n-text strong>{{ group.groupName }}</n-text>
+                    <n-text depth="3" style="font-size: 12px">{{ group.symbol }} · {{ group.strategyCount || 12 }}种策略</n-text>
+                  </n-space>
+                </n-radio>
+              </n-card>
+            </n-space>
+          </n-radio-group>
+        </n-card>
+
+        <n-empty v-if="myStrategyGroups.length === 0 && officialStrategyGroups.length === 0" description="暂无可用策略模板">
+          <template #extra>
+            <n-button type="primary" @click="goToStrategy">去添加策略模板</n-button>
+          </template>
+        </n-empty>
+      </n-spin>
+
+      <template #footer>
+        <n-space justify="space-between" style="width: 100%">
+          <n-button quaternary @click="goToStrategy">管理我的策略</n-button>
+          <n-space>
+            <n-button @click="showStrategySelector = false">取消</n-button>
+            <n-button type="primary" @click="applyStrategyGroup" :loading="applyingStrategy" :disabled="!selectedGroupId">
+              应用此策略模板
+            </n-button>
+          </n-space>
+        </n-space>
+      </template>
+    </n-modal>
+
+    <!-- 风险偏好配置弹窗 -->
+    <RiskPreferenceConfig
+      ref="riskConfigRef"
+      :robot-id="riskConfigRobotId"
+      :robot-name="riskConfigRobotName"
+      @saved="loadData"
+    />
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, onMounted, onUnmounted, h } from 'vue';
+import { useRouter } from 'vue-router';
+import { useMessage, useDialog, NTag, NButton, NSpace, NPopconfirm } from 'naive-ui';
+import { ToogoRobotApi, ToogoExchangeApi, ToogoStrategyApi } from '@/api/toogo';
+import { http } from '@/utils/http/axios';
+import {
+  RobotOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  PauseCircleOutlined,
+  PlayCircleOutlined,
+  ThunderboltOutlined,
+  SettingOutlined,
+} from '@vicons/antd';
+import RiskPreferenceConfig from './components/RiskPreferenceConfig.vue';
+
+const router = useRouter();
+const message = useMessage();
+const dialog = useDialog();
+
+const robotList = ref<any[]>([]);
+const loading = ref(false);
+const total = ref(0);
+const showDetailModal = ref(false);
+const currentRobot = ref<any>(null);
+const currentRobotStrategy = ref<any>(null); // 当前机器人使用的策略组信息
+const currentStrategyTemplate = ref<any>(null); // 当前策略组对应的策略模板（用于显示参数）
+
+// 风险配置相关
+const riskConfigRef = ref<any>(null);
+const riskConfigRobotId = ref(0);
+const riskConfigRobotName = ref('');
+
+// 策略模板选择相关
+const showStrategySelector = ref(false);
+const selectedGroupId = ref<number | null>(null);
+const selectedIsOfficial = ref(false);
+const myStrategyGroups = ref<any[]>([]);
+const officialStrategyGroups = ref<any[]>([]);
+const loadingStrategyGroups = ref(false);
+const applyingStrategy = ref(false);
+
+// 算力余额缓存（按用户ID）
+const walletPowerMap = ref<Record<number, number>>({});
+
+// 统计数据
+const runningCount = ref(0);
+const todayPnl = ref(0);
+const totalPnl = ref(0);
+const totalPower = ref(0);
+
+// 实时数据
+const tickerData = ref<Record<number, any>>({});
+const positionData = ref<Record<number, any[]>>({});
+const robotStatusData = ref<Record<number, any>>({});  // 机器人运行状态数据
+const analysisData = ref<Record<number, any>>({});  // 策略分析数据
+const signalLogs = ref<Record<number, any[]>>({});  // 方向预警日志
+
+// 详情弹窗数据
+const currentPositions = ref<any[]>([]);
+const currentOpenOrders = ref<any[]>([]);
+const orderHistory = ref<any[]>([]);
+const powerConsumeList = ref<any[]>([]);
+const positionLoading = ref(false);
+const orderLoading = ref(false);
+const historyLoading = ref(false);
+
+// 定时器
+let refreshTimer: any = null;
+let fastRefreshTimer: any = null;  // 快速刷新（价格数据）
+
+const searchParams = ref({
+  status: null,
+  platform: null,
+  page: 1,
+  pageSize: 20,
+  perPage: 20,
+});
+
+const statusOptions = [
+  { label: '全部', value: null },
+  { label: '未启动', value: 1 },
+  { label: '运行中', value: 2 },
+  { label: '已暂停', value: 3 },
+  { label: '已停用', value: 4 },
+];
+
+const platformOptions = [
+  { label: '全部', value: null },
+  { label: 'Binance', value: 'binance' },
+  { label: 'Bitget', value: 'bitget' },
+  { label: 'OKX', value: 'okx' },
+  { label: 'Gate.io', value: 'gate' },
+];
+
+// 持仓列表列定义
+const positionColumns = [
+  { title: '交易对', key: 'symbol' },
+  {
+    title: '方向',
+    key: 'positionSide',
+    render: (row: any) => h(NTag, { type: row.positionSide === 'LONG' ? 'success' : 'error', size: 'small' }, { default: () => row.positionSide === 'LONG' ? '多' : '空' }),
+  },
+  { title: '数量', key: 'positionAmt', render: (row: any) => Math.abs(row.positionAmt).toFixed(4) },
+  { title: '开仓价', key: 'entryPrice', render: (row: any) => row.entryPrice.toFixed(4) },
+  { title: '标记价', key: 'markPrice', render: (row: any) => row.markPrice.toFixed(4) },
+  {
+    title: '未实现盈亏',
+    key: 'unrealizedPnl',
+    render: (row: any) => h('span', { style: { color: row.unrealizedPnl >= 0 ? 'var(--success-color)' : 'var(--error-color)' } }, `${row.unrealizedPnl >= 0 ? '+' : ''}${row.unrealizedPnl.toFixed(4)} USDT`),
+  },
+  { title: '杠杆', key: 'leverage', render: (row: any) => `${row.leverage}x` },
+  {
+    title: '操作',
+    key: 'actions',
+    render: (row: any) => h(NButton, { size: 'small', type: 'warning', onClick: () => closePositionInModal(row) }, { default: () => '平仓' }),
+  },
+];
+
+// 当前挂单列定义
+const openOrderColumns = [
+  { title: '订单ID', key: 'orderId', width: 160, ellipsis: { tooltip: true } },
+  { title: '交易对', key: 'symbol', width: 100 },
+  {
+    title: '方向',
+    key: 'side',
+    width: 80,
+    render: (row: any) => {
+      const sideMap: any = { BUY: '买入', SELL: '卖出' };
+      return h(NTag, { type: row.side === 'BUY' ? 'success' : 'error', size: 'small' }, { default: () => sideMap[row.side] || row.side });
+    },
+  },
+  {
+    title: '类型',
+    key: 'type',
+    width: 80,
+    render: (row: any) => {
+      const typeMap: any = { MARKET: '市价', LIMIT: '限价' };
+      return typeMap[row.type] || row.type;
+    },
+  },
+  {
+    title: '委托价',
+    key: 'price',
+    width: 100,
+    render: (row: any) => (row.price && row.price > 0 ? row.price.toFixed(2) : '市价'),
+  },
+  { title: '数量', key: 'quantity', width: 100, render: (row: any) => row.quantity?.toFixed(4) || '--' },
+  { title: '已成交', key: 'filledQty', width: 100, render: (row: any) => row.filledQty?.toFixed(4) || '0' },
+  {
+    title: '状态',
+    key: 'status',
+    width: 80,
+    render: (row: any) => {
+      const statusMap: any = {
+        NEW: { text: '待成交', type: 'warning' },
+        OPEN: { text: '待成交', type: 'warning' },
+        PARTIALLY_FILLED: { text: '部分成交', type: 'info' },
+      };
+      const status = statusMap[row.status] || { text: row.status, type: 'default' };
+      return h(NTag, { type: status.type, size: 'small' }, { default: () => status.text });
+    },
+  },
+  {
+    title: '操作',
+    key: 'actions',
+    width: 80,
+    render: (row: any) =>
+      h(
+        NPopconfirm,
+        {
+          onPositiveClick: () => cancelOrder(row.orderId),
+        },
+        {
+          trigger: () => h(NButton, { size: 'small', type: 'error' }, { default: () => '撤单' }),
+          default: () => '确定要撤销此订单吗？',
+        }
+      ),
+  },
+];
+
+// 成交明细列定义
+const historyColumns = [
+  { title: '成交ID', key: 'orderId', width: 160, ellipsis: { tooltip: true } },
+  {
+    title: '方向',
+    key: 'side',
+    width: 80,
+    render: (row: any) => {
+      const sideMap: any = { BUY: '买入', SELL: '卖出' };
+      const type = row.side === 'BUY' ? 'success' : 'error';
+      return h(NTag, { type, size: 'small' }, { default: () => sideMap[row.side] || row.side });
+    },
+  },
+  {
+    title: '类型',
+    key: 'type',
+    width: 80,
+    render: (row: any) => {
+      // 成交明细类型：开仓/平仓
+      const typeMap: any = { MARKET: '市价', LIMIT: '限价', '开仓': '开仓', '平仓': '平仓' };
+      return typeMap[row.type] || row.type || '--';
+    },
+  },
+  {
+    title: '流动性',
+    key: 'tradeScope',
+    width: 80,
+    render: (row: any) => {
+      const scopeMap: any = { maker: 'Maker', taker: 'Taker' };
+      const type = row.tradeScope === 'maker' ? 'success' : 'warning';
+      return h(NTag, { type, size: 'small' }, { default: () => scopeMap[row.tradeScope] || row.tradeScope || '--' });
+    },
+  },
+  {
+    title: '成交价',
+    key: 'price',
+    width: 100,
+    render: (row: any) => (row.price && row.price > 0 ? row.price.toFixed(2) : '--'),
+  },
+  {
+    title: '成交数量',
+    key: 'quantity',
+    width: 100,
+    render: (row: any) => row.quantity?.toFixed(4) || '--',
+  },
+  {
+    title: '手续费',
+    key: 'fee',
+    width: 120,
+    render: (row: any) => {
+      if (row.fee === undefined || row.fee === null) return '--';
+      const fee = parseFloat(row.fee);
+      const feeCoin = row.feeCoin || 'USDT';
+      return h('span', { style: { color: '#d03050' } }, fee.toFixed(6) + ' ' + feeCoin);
+    },
+  },
+  {
+    title: '成交时间',
+    key: 'createTime',
+    width: 160,
+    render: (row: any) => {
+      if (!row.createTime) return '--';
+      // Bitget 返回的是毫秒时间戳
+      const ts = row.createTime > 9999999999 ? row.createTime : row.createTime * 1000;
+      return new Date(ts).toLocaleString();
+    },
+  },
+];
+
+// 算力消耗列定义（积分不参与消耗，只从算力账户扣除）
+const powerColumns = [
+  { title: '订单号', key: 'orderSn' },
+  { title: '盈利金额', key: 'profitAmount', render: (row: any) => `${row.profitAmount?.toFixed(4)} USDT` },
+  { title: '消耗比例', key: 'consumeRate', render: (row: any) => `${(row.consumeRate * 100).toFixed(1)}%` },
+  { title: '消耗算力', key: 'consumePower', render: (row: any) => row.consumePower?.toFixed(4) },
+  { title: '扣除算力', key: 'fromPower', render: (row: any) => row.fromPower?.toFixed(4) },
+  { title: '时间', key: 'createdAt' },
+];
+
+const getStatusType = (status: number) => {
+  const types: any = { 1: 'default', 2: 'success', 3: 'warning', 4: 'error' };
+  return types[status] || 'default';
+};
+
+const getStatusText = (status: number) => {
+  const texts: any = { 1: '未启动', 2: '运行中', 3: '已暂停', 4: '已停用' };
+  return texts[status] || '未知';
+};
+
+// 获取连接状态
+const getConnectionStatus = (robotId: number) => {
+  const status = robotStatusData.value[robotId];
+  const hasTicker = tickerData.value[robotId]?.lastPrice;
+  
+  if (!status && !hasTicker) {
+    return { text: '连接中...', class: 'connecting' };
+  }
+  if (hasTicker) {
+    return { text: 'API已连接', class: 'connected' };
+  }
+  if (status?.connectionError) {
+    return { text: '连接失败', class: 'disconnected' };
+  }
+  return { text: '连接中...', class: 'connecting' };
+};
+
+// ==================== 机器人动画状态函数 ====================
+// 10种动画状态：happy, thinking, confused, tired, excited, focused, sad, conservative, balanced, aggressive
+
+// 获取机器人情绪类名（根据状态和分析数据自动切换）
+const getRobotMoodClass = (robot: any): string => {
+  const data = analysisData.value[robot.id];
+  const signal = data?.signal;
+  const config = data?.config;
+  
+  // 1. 根据信号方向
+  if (signal?.direction === 'LONG') return 'mood-excited';  // 做多信号 - 兴奋
+  if (signal?.direction === 'SHORT') return 'mood-focused'; // 做空信号 - 专注
+  
+  // 2. 根据风险偏好
+  const riskPref = config?.riskPreference || robot.riskPreference;
+  if (riskPref === 'conservative') return 'mood-conservative'; // 保守型
+  if (riskPref === 'aggressive') return 'mood-aggressive';     // 激进型
+  if (riskPref === 'balanced') return 'mood-balanced';         // 平衡型
+  
+  // 3. 根据市场状态
+  const marketState = config?.marketState || signal?.currentMarketState;
+  if (marketState === 'trend') return 'mood-happy';      // 趋势市场 - 开心
+  if (marketState === 'range') return 'mood-thinking';   // 震荡市场 - 思考
+  if (marketState === 'high_vol') return 'mood-excited'; // 高波动 - 兴奋
+  if (marketState === 'low_vol') return 'mood-tired';    // 低波动 - 疲惫
+  
+  // 4. 根据连接状态
+  const connStatus = getConnectionStatus(robot.id);
+  if (connStatus.class === 'disconnected') return 'mood-sad';       // 断开 - 失落
+  if (connStatus.class === 'connecting') return 'mood-thinking';    // 连接中 - 思考
+  
+  return 'mood-balanced'; // 默认 - 平衡型
+};
+
+// 获取机器人眼睛颜色（根据状态变化）
+const getRobotEyeColor = (robot: any): string => {
+  const moodClass = getRobotMoodClass(robot);
+  const colorMap: Record<string, string> = {
+    'mood-happy': '#00f3ff',
+    'mood-thinking': '#ff9f43',
+    'mood-confused': '#00f3ff',
+    'mood-tired': '#666666',
+    'mood-excited': '#ff0055',
+    'mood-focused': '#ff3333',
+    'mood-sad': '#4a69bd',
+    'mood-conservative': '#4cd137',
+    'mood-balanced': '#00a8ff',
+    'mood-aggressive': '#e84118',
+  };
+  return colorMap[moodClass] || '#00f3ff';
+};
+
+// 获取机器人情绪文字
+const getRobotMoodText = (robot: any): string => {
+  const moodClass = getRobotMoodClass(robot);
+  const textMap: Record<string, string> = {
+    'mood-happy': '🎉 市场趋势明朗',
+    'mood-thinking': '🤔 分析市场中...',
+    'mood-confused': '❓ 信号不明确',
+    'mood-tired': '😴 市场波动较低',
+    'mood-excited': '🔥 捕捉到信号!',
+    'mood-focused': '🎯 专注做空信号',
+    'mood-sad': '😢 连接已断开',
+    'mood-conservative': '🛡️ 保守策略运行中',
+    'mood-balanced': '⚖️ 平衡策略运行中',
+    'mood-aggressive': '🚀 激进策略运行中',
+  };
+  return textMap[moodClass] || '监控中...';
+};
+
+// ==================== 窗口价格曲线相关函数 ====================
+const CHART_WIDTH = 640;
+const CHART_HEIGHT = 200;
+
+// 获取信号方向文本
+const getSignalDirectionText = (direction: string) => {
+  if (direction === 'LONG') return '做多';
+  if (direction === 'SHORT') return '做空';
+  if (direction === 'NEUTRAL') return '监控中';
+  return '等待';
+};
+
+// 获取信号徽章样式类
+const getSignalBadgeClass = (direction: string) => {
+  if (direction === 'LONG') return 'badge-long';
+  if (direction === 'SHORT') return 'badge-short';
+  return 'badge-neutral';
+};
+
+// 获取信号图标
+const getSignalIcon = (direction: string) => {
+  if (direction === 'LONG') return '📈';
+  if (direction === 'SHORT') return '📉';
+  return '⏳';
+};
+
+// 获取市场状态标签类型
+const getMarketStateType = (state: string | undefined): 'success' | 'warning' | 'error' | 'info' | 'default' => {
+  if (state === 'trend') return 'success';
+  if (state === 'range') return 'warning';      // 添加 range 类型映射（震荡-警告色）
+  if (state === 'volatile') return 'warning';
+  if (state === 'high_vol') return 'error';
+  if (state === 'low_vol') return 'info';
+  return 'default';
+};
+
+// 格式化价格（2位小数）
+const formatPrice = (price: number | undefined) => {
+  if (typeof price !== 'number' || isNaN(price)) return '--';
+  return price.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
+
+// 格式化价格（带USDT单位）
+const formatPriceUsdt = (price: number | undefined) => {
+  if (typeof price !== 'number' || isNaN(price)) return '--';
+  return price.toFixed(4) + ' USDT';
+};
+
+// 格式化价格涨跌
+const formatPriceChange = (change: number | undefined) => {
+  if (typeof change !== 'number' || isNaN(change)) return '';
+  const sign = change >= 0 ? '+' : '';
+  return `${sign}${change.toFixed(2)}%`;
+};
+
+// 获取价格涨跌样式类
+const getPriceChangeClass = (robotId: number) => {
+  const ticker = tickerData.value[robotId];
+  if (!ticker) return '';
+  const change = ticker.change24h || 0;
+  return change >= 0 ? 'up' : 'down';
+};
+
+// 格式化时间窗口（秒转分钟/秒）
+const formatWindowTime = (seconds: number | undefined) => {
+  if (typeof seconds !== 'number' || isNaN(seconds) || seconds <= 0) return '--';
+  if (seconds >= 60) {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return secs > 0 ? `${mins}分${secs}秒` : `${mins}分钟`;
+  }
+  return `${seconds}秒`;
+};
+
+// 格式化运行时长
+const formatRuntime = (seconds: number | undefined) => {
+  if (!seconds || seconds <= 0) return '0秒';
+  
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  
+  if (days > 0) {
+    return `${days}天${hours}时`;
+  } else if (hours > 0) {
+    return `${hours}时${minutes}分`;
+  } else if (minutes > 0) {
+    return `${minutes}分`;
+  } else {
+    return `${seconds}秒`;
+  }
+};
+
+// 格式化市场状态（兼容多种格式）
+const formatMarketState = (state: string | undefined) => {
+  const stateMap: Record<string, string> = {
+    // 新格式（小写）
+    'trend': '趋势',
+    'range': '震荡',      // 添加 range 映射
+    'volatile': '震荡',
+    'high_vol': '高波动',
+    'low_vol': '低波动',
+    // 旧格式（大写）
+    'STRONG_UPTREND': '强势上涨',
+    'MILD_UPTREND': '温和上涨',
+    'RANGING': '震荡整理',
+    'MILD_DOWNTREND': '温和下跌',
+    'STRONG_DOWNTREND': '强势下跌',
+    'HIGH_VOLATILITY': '高波动',
+    'LOW_VOLATILITY': '低波动',
+  };
+  return stateMap[state || ''] || state || '--';
+};
+
+// 格式化风险偏好
+const formatRiskPref = (pref: string | undefined) => {
+  const prefMap: Record<string, string> = {
+    'aggressive': '🚀 激进',
+    'balanced': '⚖️ 平衡',
+    'conservative': '🛡️ 保守',
+  };
+  return prefMap[pref || ''] || pref || '--';
+};
+
+// 获取策略模板的杠杆值（优先使用策略模板的值，否则使用机器人配置的值）
+const getStrategyLeverage = () => {
+  if (currentStrategyTemplate.value) {
+    // 优先从configJson中获取
+    try {
+      const configJson = typeof currentStrategyTemplate.value.configJson === 'string'
+        ? JSON.parse(currentStrategyTemplate.value.configJson || '{}')
+        : (currentStrategyTemplate.value.configJson || {});
+      if (configJson.leverage) {
+        return configJson.leverage;
+      }
+    } catch (e) {
+      // 忽略解析错误
+    }
+    // 其次使用策略模板的leverageMin
+    if (currentStrategyTemplate.value.leverageMin) {
+      return currentStrategyTemplate.value.leverageMin;
+    }
+  }
+  // 最后使用机器人配置的值
+  return currentRobot.value?.leverage || '--';
+};
+
+// 获取策略模板的保证金比例（优先使用策略模板的值，否则使用机器人配置的值）
+const getStrategyMarginPercent = () => {
+  if (currentStrategyTemplate.value) {
+    // 优先从configJson中获取
+    try {
+      const configJson = typeof currentStrategyTemplate.value.configJson === 'string'
+        ? JSON.parse(currentStrategyTemplate.value.configJson || '{}')
+        : (currentStrategyTemplate.value.configJson || {});
+      if (configJson.marginPercent) {
+        return configJson.marginPercent;
+      }
+    } catch (e) {
+      // 忽略解析错误
+    }
+    // 其次使用策略模板的marginPercentMin
+    if (currentStrategyTemplate.value.marginPercentMin) {
+      return currentStrategyTemplate.value.marginPercentMin;
+    }
+  }
+  // 最后使用机器人配置的值
+  return currentRobot.value?.marginPercent || currentRobot.value?.marginRatio || '--';
+};
+
+// 格式化日志时间
+const formatLogTime = (time: string | number | undefined) => {
+  if (!time) return '--';
+  const date = new Date(time);
+  return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+};
+
+// 格式化持仓时间（日期+时间）
+const formatTime = (time: string | number | undefined) => {
+  if (!time) return '--';
+  const date = new Date(typeof time === 'number' ? time : time);
+  return date.toLocaleString('zh-CN', { 
+    month: '2-digit', 
+    day: '2-digit', 
+    hour: '2-digit', 
+    minute: '2-digit', 
+    second: '2-digit' 
+  });
+};
+
+// 计算止损进度（距离最大止损的百分比）
+// 公式：|未实现盈亏| / (保证金 × 止损百分比) × 100%
+const calcStopLossProgress = (pos: any, robot: any) => {
+  const unrealizedPL = pos.unrealizedPnl || 0;
+  const margin = pos.margin || 0;
+  const stopLossPercent = robot.stopLossPercent || 10; // 默认10%
+  
+  if (margin <= 0 || stopLossPercent <= 0 || unrealizedPL >= 0) return 0;
+  
+  const stopLossAmount = margin * stopLossPercent / 100;
+  const absUnrealizedPL = Math.abs(unrealizedPL);
+  const progress = (absUnrealizedPL / stopLossAmount) * 100;
+  
+  return Math.min(100, progress);
+};
+
+// 计算止盈回撤进度
+// 公式：100% - ((最高盈利 - 当前盈利) / 最高盈利) / 设定百分比 × 100%
+// 血条默认满条，随着回撤逐渐减少
+const calcProfitRetreatProgress = (pos: any, robot: any) => {
+  const unrealizedPL = pos.unrealizedPnl || 0;
+  const maxProfitReached = pos.maxProfitReached || 0;
+  const profitRetreatPercent = robot.takeProfitRetracePercent || 10; // 默认10%
+  
+  // 如果没有最高盈利记录或止盈未启用，返回100%（满条）
+  if (maxProfitReached <= 0 || profitRetreatPercent <= 0) return 100;
+  
+  // 计算回撤百分比
+  const retreatPercent = ((maxProfitReached - unrealizedPL) / maxProfitReached) * 100;
+  
+  // 血条进度 = 100% - (回撤百分比 / 设定百分比) × 100%
+  const progress = 100 - (retreatPercent / profitRetreatPercent) * 100;
+  
+  return Math.max(0, Math.min(100, progress));
+};
+
+// 计算启动止盈进度
+// 公式：(未实现盈亏 / 保证金) / 设定百分比 × 100%
+const calcStartProfitProgress = (pos: any, robot: any) => {
+  const unrealizedPL = pos.unrealizedPnl || 0;
+  const margin = pos.margin || 0;
+  const autoStartPercent = robot.autoStartProfitPercent || robot.takeProfitRetracePercent || 10; // 默认10%
+  
+  if (margin <= 0 || autoStartPercent <= 0 || unrealizedPL <= 0) return 0;
+  
+  const currentProfitPercent = (unrealizedPL / margin) * 100;
+  const progress = (currentProfitPercent / autoStartPercent) * 100;
+  
+  return Math.min(100, progress);
+};
+
+// 格式化更新时间（相对时间）
+const formatUpdateTime = (time: string | number | undefined) => {
+  if (!time) return '刚刚';
+  const now = Date.now();
+  const updateTime = typeof time === 'number' ? time : new Date(time).getTime();
+  const diff = Math.floor((now - updateTime) / 1000); // 秒
+  
+  if (diff < 5) return '刚刚';
+  if (diff < 60) return `${diff}秒前`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}分钟前`;
+  return new Date(updateTime).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+};
+
+// 加载方向预警日志（只显示有价值的信号：long/short）
+const loadSignalLogs = async (robotId: number) => {
+  try {
+    const res = await ToogoRobotApi.signalLogs({ robotId, limit: 10 });
+    if (res?.list) {
+      // API已经过滤只返回有价值的信号（long/short）
+      signalLogs.value[robotId] = res.list;
+    }
+  } catch (error: any) {
+    console.debug('加载方向预警日志失败:', error);
+    signalLogs.value[robotId] = [];
+  }
+};
+
+// 计算价格曲线路径
+const getPriceChartPath = (analysis: any) => {
+  const priceWindow = analysis?.priceWindow;
+  if (!priceWindow || priceWindow.length < 2) return '';
+  
+  const prices = priceWindow.map((p: any) => p.price);
+  const minPrice = Math.min(...prices);
+  const maxPrice = Math.max(...prices);
+  const threshold = analysis?.signal?.signalThreshold || 0;
+  
+  // 计算图表边界
+  const chartMin = Math.min(minPrice, minPrice - threshold * 0.1);
+  const chartMax = Math.max(maxPrice, maxPrice + threshold * 0.1);
+  const range = chartMax - chartMin || 1;
+  
+  const step = CHART_WIDTH / (priceWindow.length - 1);
+  
+  let path = '';
+  priceWindow.forEach((point: any, index: number) => {
+    const x = index * step;
+    const y = CHART_HEIGHT - ((point.price - chartMin) / range) * CHART_HEIGHT;
+    path += index === 0 ? `M ${x} ${y}` : ` L ${x} ${y}`;
+  });
+  
+  return path;
+};
+
+// 计算价格曲线填充路径
+const getPriceChartFillPath = (analysis: any) => {
+  const priceWindow = analysis?.priceWindow;
+  if (!priceWindow || priceWindow.length < 2) return '';
+  
+  const prices = priceWindow.map((p: any) => p.price);
+  const minPrice = Math.min(...prices);
+  const maxPrice = Math.max(...prices);
+  const threshold = analysis?.signal?.signalThreshold || 0;
+  
+  const chartMin = Math.min(minPrice, minPrice - threshold * 0.1);
+  const chartMax = Math.max(maxPrice, maxPrice + threshold * 0.1);
+  const range = chartMax - chartMin || 1;
+  
+  const step = CHART_WIDTH / (priceWindow.length - 1);
+  const basePrice = priceWindow[0].price;
+  const baseY = CHART_HEIGHT - ((basePrice - chartMin) / range) * CHART_HEIGHT;
+  
+  let path = '';
+  priceWindow.forEach((point: any, index: number) => {
+    const x = index * step;
+    const y = CHART_HEIGHT - ((point.price - chartMin) / range) * CHART_HEIGHT;
+    path += index === 0 ? `M ${x} ${y}` : ` L ${x} ${y}`;
+  });
+  
+  // 闭合路径
+  const lastX = (priceWindow.length - 1) * step;
+  path += ` L ${lastX} ${baseY} L 0 ${baseY} Z`;
+  
+  return path;
+};
+
+// 获取做多阈值线Y坐标
+const getLongThresholdY = (analysis: any) => {
+  const priceWindow = analysis?.priceWindow;
+  if (!priceWindow || priceWindow.length < 2) return CHART_HEIGHT;
+  
+  const prices = priceWindow.map((p: any) => p.price);
+  const minPrice = Math.min(...prices);
+  const maxPrice = Math.max(...prices);
+  const threshold = analysis?.signal?.signalThreshold || 0;
+  
+  const chartMin = Math.min(minPrice, minPrice - threshold * 0.1);
+  const chartMax = Math.max(maxPrice, maxPrice + threshold * 0.1);
+  const range = chartMax - chartMin || 1;
+  
+  const buyThresholdPrice = minPrice + threshold;
+  return CHART_HEIGHT - ((buyThresholdPrice - chartMin) / range) * CHART_HEIGHT;
+};
+
+// 获取做空阈值线Y坐标
+const getShortThresholdY = (analysis: any) => {
+  const priceWindow = analysis?.priceWindow;
+  if (!priceWindow || priceWindow.length < 2) return 0;
+  
+  const prices = priceWindow.map((p: any) => p.price);
+  const minPrice = Math.min(...prices);
+  const maxPrice = Math.max(...prices);
+  const threshold = analysis?.signal?.signalThreshold || 0;
+  
+  const chartMin = Math.min(minPrice, minPrice - threshold * 0.1);
+  const chartMax = Math.max(maxPrice, maxPrice + threshold * 0.1);
+  const range = chartMax - chartMin || 1;
+  
+  const sellThresholdPrice = maxPrice - threshold;
+  return CHART_HEIGHT - ((sellThresholdPrice - chartMin) / range) * CHART_HEIGHT;
+};
+
+// ==================== 垂直图表函数（三列布局用） ====================
+const VCHART_WIDTH = 200;
+const VCHART_HEIGHT = 140;
+
+// 垂直图表：价格曲线路径
+const getPriceChartPathVertical = (analysis: any) => {
+  const priceWindow = analysis?.priceWindow;
+  if (!priceWindow || priceWindow.length < 2) return '';
+  
+  const prices = priceWindow.map((p: any) => p.price);
+  const minPrice = Math.min(...prices);
+  const maxPrice = Math.max(...prices);
+  const threshold = analysis?.signal?.signalThreshold || 0;
+  
+  const chartMin = Math.min(minPrice, minPrice - threshold * 0.1);
+  const chartMax = Math.max(maxPrice, maxPrice + threshold * 0.1);
+  const range = chartMax - chartMin || 1;
+  
+  const step = VCHART_WIDTH / (priceWindow.length - 1);
+  let path = '';
+  priceWindow.forEach((point: any, index: number) => {
+    const x = index * step;
+    const y = VCHART_HEIGHT - ((point.price - chartMin) / range) * VCHART_HEIGHT;
+    path += index === 0 ? `M ${x} ${y}` : ` L ${x} ${y}`;
+  });
+  return path;
+};
+
+// 垂直图表：价格曲线填充路径
+const getPriceChartFillPathVertical = (analysis: any) => {
+  const priceWindow = analysis?.priceWindow;
+  if (!priceWindow || priceWindow.length < 2) return '';
+  
+  const prices = priceWindow.map((p: any) => p.price);
+  const minPrice = Math.min(...prices);
+  const maxPrice = Math.max(...prices);
+  const threshold = analysis?.signal?.signalThreshold || 0;
+  
+  const chartMin = Math.min(minPrice, minPrice - threshold * 0.1);
+  const chartMax = Math.max(maxPrice, maxPrice + threshold * 0.1);
+  const range = chartMax - chartMin || 1;
+  
+  const step = VCHART_WIDTH / (priceWindow.length - 1);
+  let path = '';
+  priceWindow.forEach((point: any, index: number) => {
+    const x = index * step;
+    const y = VCHART_HEIGHT - ((point.price - chartMin) / range) * VCHART_HEIGHT;
+    path += index === 0 ? `M ${x} ${y}` : ` L ${x} ${y}`;
+  });
+  
+  const lastX = (priceWindow.length - 1) * step;
+  path += ` L ${lastX} ${VCHART_HEIGHT} L 0 ${VCHART_HEIGHT} Z`;
+  return path;
+};
+
+// 垂直图表：做多阈值线Y坐标
+const getLongThresholdYVertical = (analysis: any) => {
+  const priceWindow = analysis?.priceWindow;
+  if (!priceWindow || priceWindow.length < 2) return VCHART_HEIGHT;
+  
+  const prices = priceWindow.map((p: any) => p.price);
+  const minPrice = Math.min(...prices);
+  const maxPrice = Math.max(...prices);
+  const threshold = analysis?.signal?.signalThreshold || 0;
+  
+  const chartMin = Math.min(minPrice, minPrice - threshold * 0.1);
+  const chartMax = Math.max(maxPrice, maxPrice + threshold * 0.1);
+  const range = chartMax - chartMin || 1;
+  
+  const buyThresholdPrice = minPrice + threshold;
+  return VCHART_HEIGHT - ((buyThresholdPrice - chartMin) / range) * VCHART_HEIGHT;
+};
+
+// 垂直图表：做空阈值线Y坐标
+const getShortThresholdYVertical = (analysis: any) => {
+  const priceWindow = analysis?.priceWindow;
+  if (!priceWindow || priceWindow.length < 2) return 0;
+  
+  const prices = priceWindow.map((p: any) => p.price);
+  const minPrice = Math.min(...prices);
+  const maxPrice = Math.max(...prices);
+  const threshold = analysis?.signal?.signalThreshold || 0;
+  
+  const chartMin = Math.min(minPrice, minPrice - threshold * 0.1);
+  const chartMax = Math.max(maxPrice, maxPrice + threshold * 0.1);
+  const range = chartMax - chartMin || 1;
+  
+  const sellThresholdPrice = maxPrice - threshold;
+  return VCHART_HEIGHT - ((sellThresholdPrice - chartMin) / range) * VCHART_HEIGHT;
+};
+
+// 获取做多触发价格
+const getLongTriggerPrice = (analysis: any) => {
+  const priceWindow = analysis?.priceWindow;
+  if (!priceWindow || priceWindow.length < 2) return 0;
+  
+  const prices = priceWindow.map((p: any) => p.price);
+  const minPrice = Math.min(...prices);
+  const threshold = analysis?.signal?.signalThreshold || 0;
+  
+  return minPrice + threshold;
+};
+
+// 获取做空触发价格
+const getShortTriggerPrice = (analysis: any) => {
+  const priceWindow = analysis?.priceWindow;
+  if (!priceWindow || priceWindow.length < 2) return 0;
+  
+  const prices = priceWindow.map((p: any) => p.price);
+  const maxPrice = Math.max(...prices);
+  const threshold = analysis?.signal?.signalThreshold || 0;
+  
+  return maxPrice - threshold;
+};
+
+// 获取最低价X坐标
+const getMinPriceX = (analysis: any) => {
+  const priceWindow = analysis?.priceWindow;
+  if (!priceWindow || priceWindow.length < 2) return 0;
+  
+  const prices = priceWindow.map((p: any) => p.price);
+  const minPrice = Math.min(...prices);
+  const minIndex = prices.indexOf(minPrice);
+  const step = CHART_WIDTH / (priceWindow.length - 1);
+  return minIndex * step;
+};
+
+// 获取最低价Y坐标
+const getMinPriceY = (analysis: any) => {
+  const priceWindow = analysis?.priceWindow;
+  if (!priceWindow || priceWindow.length < 2) return CHART_HEIGHT;
+  
+  const prices = priceWindow.map((p: any) => p.price);
+  const minPrice = Math.min(...prices);
+  const maxPrice = Math.max(...prices);
+  const threshold = analysis?.signal?.signalThreshold || 0;
+  
+  const chartMin = Math.min(minPrice, minPrice - threshold * 0.1);
+  const chartMax = Math.max(maxPrice, maxPrice + threshold * 0.1);
+  const range = chartMax - chartMin || 1;
+  
+  return CHART_HEIGHT - ((minPrice - chartMin) / range) * CHART_HEIGHT;
+};
+
+// 获取最高价X坐标
+const getMaxPriceX = (analysis: any) => {
+  const priceWindow = analysis?.priceWindow;
+  if (!priceWindow || priceWindow.length < 2) return 0;
+  
+  const prices = priceWindow.map((p: any) => p.price);
+  const maxPrice = Math.max(...prices);
+  const maxIndex = prices.indexOf(maxPrice);
+  const step = CHART_WIDTH / (priceWindow.length - 1);
+  return maxIndex * step;
+};
+
+// 获取最高价Y坐标
+const getMaxPriceY = (analysis: any) => {
+  const priceWindow = analysis?.priceWindow;
+  if (!priceWindow || priceWindow.length < 2) return 0;
+  
+  const prices = priceWindow.map((p: any) => p.price);
+  const minPrice = Math.min(...prices);
+  const maxPrice = Math.max(...prices);
+  const threshold = analysis?.signal?.signalThreshold || 0;
+  
+  const chartMin = Math.min(minPrice, minPrice - threshold * 0.1);
+  const chartMax = Math.max(maxPrice, maxPrice + threshold * 0.1);
+  const range = chartMax - chartMin || 1;
+  
+  return CHART_HEIGHT - ((maxPrice - chartMin) / range) * CHART_HEIGHT;
+};
+
+// 获取当前价Y坐标
+const getCurrentPriceY = (analysis: any) => {
+  const priceWindow = analysis?.priceWindow;
+  if (!priceWindow || priceWindow.length < 2) return CHART_HEIGHT / 2;
+  
+  const prices = priceWindow.map((p: any) => p.price);
+  const minPrice = Math.min(...prices);
+  const maxPrice = Math.max(...prices);
+  const currentPrice = prices[prices.length - 1];
+  const threshold = analysis?.signal?.signalThreshold || 0;
+  
+  const chartMin = Math.min(minPrice, minPrice - threshold * 0.1);
+  const chartMax = Math.max(maxPrice, maxPrice + threshold * 0.1);
+  const range = chartMax - chartMin || 1;
+  
+  return CHART_HEIGHT - ((currentPrice - chartMin) / range) * CHART_HEIGHT;
+};
+
+// 获取当前价X坐标
+const getCurrentPriceX = (analysis: any) => {
+  const priceWindow = analysis?.priceWindow;
+  if (!priceWindow || priceWindow.length < 2) return CHART_WIDTH;
+  
+  const step = CHART_WIDTH / (priceWindow.length - 1);
+  return (priceWindow.length - 1) * step;
+};
+
+// 获取基准线Y坐标（起始价）
+const getBaselineY = (analysis: any) => {
+  const priceWindow = analysis?.priceWindow;
+  if (!priceWindow || priceWindow.length < 2) return CHART_HEIGHT / 2;
+  
+  const prices = priceWindow.map((p: any) => p.price);
+  const minPrice = Math.min(...prices);
+  const maxPrice = Math.max(...prices);
+  const basePrice = priceWindow[0].price;
+  const threshold = analysis?.signal?.signalThreshold || 0;
+  
+  const chartMin = Math.min(minPrice, minPrice - threshold * 0.1);
+  const chartMax = Math.max(maxPrice, maxPrice + threshold * 0.1);
+  const range = chartMax - chartMin || 1;
+  
+  return CHART_HEIGHT - ((basePrice - chartMin) / range) * CHART_HEIGHT;
+};
+
+
+const loadData = async () => {
+  loading.value = true;
+  try {
+    const res = await ToogoRobotApi.list(searchParams.value);
+    robotList.value = res?.list || [];
+    total.value = res?.totalCount || 0;
+
+    // 计算统计数据
+    runningCount.value = robotList.value.filter((r: any) => r.status === 2).length;
+    totalPnl.value = robotList.value.reduce((sum: number, r: any) => sum + (r.totalPnl || 0), 0);
+    totalPower.value = robotList.value.reduce((sum: number, r: any) => sum + (r.consumedPower || 0), 0);
+
+    // 加载运行中机器人的实时数据
+    await loadRealtimeData();
+    
+    // 初始加载持仓数据
+    await loadPositionData();
+    
+    // 加载算力余额
+    await loadWalletPower();
+    
+    // 加载所有机器人的方向预警日志
+    for (const robot of robotList.value) {
+      loadSignalLogs(robot.id);
+    }
+  } catch (error) {
+    console.error('加载机器人列表失败:', error);
+  } finally {
+    loading.value = false;
+  }
+};
+
+// 加载用户算力余额
+const loadWalletPower = async () => {
+  try {
+    // 获取所有不重复的用户ID
+    const userIds = [...new Set(robotList.value.map((r: any) => r.userId))];
+    
+    for (const userId of userIds) {
+      try {
+        const res = await http.request({
+          url: '/toogo/wallet/overview',
+          method: 'get',
+          params: { userId },
+        });
+        if (res && res.totalPower !== undefined) {
+          walletPowerMap.value[userId] = res.totalPower;
+        }
+      } catch (e) {
+        console.error('加载用户算力失败:', userId, e);
+        // 单个用户加载失败不影响其他
+      }
+    }
+  } catch (error) {
+    console.error('加载算力余额失败:', error);
+  }
+};
+
+// 记录上次信号方向，用于检测方向变化
+const lastSignalDirection = ref<Record<number, string>>({});
+
+// 加载实时数据（轻量化，每秒刷新）
+const loadRealtimeData = async () => {
+  const runningRobots = robotList.value.filter((r: any) => r.status === 2);
+  if (runningRobots.length === 0) return;
+
+  // 批量获取机器人分析数据（包含实时价格、信号、市场分析等）
+  const robotIds = runningRobots.map((r: any) => r.id).join(',');
+  
+  try {
+    const batchRes = await ToogoExchangeApi.batchRobotAnalysis({ robotIds });
+    if (batchRes?.list) {
+      for (const item of batchRes.list) {
+        const robotId = item.robotId;
+        
+        // 更新连接状态
+        robotStatusData.value[robotId] = {
+          connected: item.connected,
+          connectionError: item.connectionError,
+          lastUpdate: new Date().toISOString()
+        };
+        
+        if (item.connected && item.ticker) {
+          // 更新实时行情数据
+          tickerData.value[robotId] = {
+            symbol: item.ticker.symbol,
+            lastPrice: item.ticker.lastPrice,
+            high24h: item.ticker.high24h,
+            low24h: item.ticker.low24h,
+            volume24h: item.ticker.volume24h,
+            change24h: item.ticker.change24h,
+            changePercent: item.ticker.changePercent,
+          };
+          
+          // 检测信号方向变化，有方向信号时刷新日志
+          const currentDirection = item.signal?.direction?.toUpperCase();
+          const prevDirection = lastSignalDirection.value[robotId];
+          if (currentDirection && (currentDirection === 'LONG' || currentDirection === 'SHORT')) {
+            // 有方向信号，且方向变化时刷新日志
+            if (currentDirection !== prevDirection) {
+              loadSignalLogs(robotId);
+            }
+          }
+          lastSignalDirection.value[robotId] = currentDirection || '';
+          
+          // 更新分析数据（包含价格窗口用于实时图表）
+          analysisData.value[robotId] = {
+            market: item.market,
+            risk: item.risk,
+            signal: item.signal,
+            account: item.account,
+            config: item.config,
+            priceWindow: item.priceWindow,
+            signalHistory: item.signalHistory,
+            lastUpdate: Date.now(), // 记录更新时间
+          };
+        }
+      }
+    }
+  } catch (error: any) {
+    // 静默失败，避免控制台刷屏
+    if (Math.random() < 0.1) {  // 只打印10%的错误
+      console.warn('实时数据刷新失败:', error.message);
+    }
+  }
+};
+
+const startRobot = async (robot: any) => {
+  try {
+    await ToogoRobotApi.start({ id: robot.id });
+    message.success('机器人已启动');
+    loadData();
+  } catch (error: any) {
+    message.error(error.message || '启动失败');
+  }
+};
+
+const stopRobot = async (robot: any) => {
+  dialog.warning({
+    title: '确认停止',
+    content: `确定要停止机器人 "${robot.robotName}" 吗？未平仓的订单需要手动处理！`,
+    positiveText: '确定',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        await ToogoRobotApi.stop({ id: robot.id });
+        message.success('机器人已停止');
+        loadData();
+      } catch (error: any) {
+        message.error(error.message || '停止失败');
+      }
+    },
+  });
+};
+
+// 快速切换自动下单开关
+const toggleAutoTrade = async (robot: any) => {
+  const currentStatus = analysisData.value[robot.id]?.config?.autoTradeEnabled;
+  const newStatus = currentStatus ? 0 : 1;
+  try {
+    await ToogoRobotApi.update({
+      id: robot.id,
+      autoTradeEnabled: newStatus,
+    });
+    // 更新本地状态
+    if (analysisData.value[robot.id]?.config) {
+      analysisData.value[robot.id].config.autoTradeEnabled = newStatus === 1;
+    }
+    message.success(newStatus ? '已开启全自动下单' : '已关闭全自动下单');
+  } catch (error: any) {
+    message.error(error.message || '切换失败');
+  }
+};
+
+// 快速切换自动平仓开关
+const toggleAutoClose = async (robot: any) => {
+  const currentStatus = analysisData.value[robot.id]?.config?.autoCloseEnabled;
+  const newStatus = currentStatus ? 0 : 1;
+  try {
+    await ToogoRobotApi.update({
+      id: robot.id,
+      autoCloseEnabled: newStatus,
+    });
+    // 更新本地状态
+    if (analysisData.value[robot.id]?.config) {
+      analysisData.value[robot.id].config.autoCloseEnabled = newStatus === 1;
+    }
+    message.success(newStatus ? '已开启全自动平仓' : '已关闭全自动平仓');
+  } catch (error: any) {
+    message.error(error.message || '切换失败');
+  }
+};
+
+const deleteRobot = (robot: any) => {
+  dialog.error({
+    title: '确认删除',
+    content: `确定要删除机器人 "${robot.robotName}" 吗？此操作不可恢复！`,
+    positiveText: '确定删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        await ToogoRobotApi.delete({ id: robot.id });
+        message.success('机器人已删除');
+        loadData();
+      } catch (error: any) {
+        message.error(error.message || '删除失败');
+      }
+    },
+  });
+};
+
+// 手动平仓 (列表中)
+const closePosition = async (robot: any, position: any) => {
+  dialog.warning({
+    title: '确认平仓',
+    content: `确定要平仓 ${position.positionSide === 'LONG' ? '多' : '空'} ${Math.abs(position.positionAmt).toFixed(4)} 吗？`,
+    positiveText: '确定平仓',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        await ToogoRobotApi.closePosition({
+          robotId: robot.id,
+          symbol: position.symbol,
+          positionSide: position.positionSide,
+          quantity: Math.abs(position.positionAmt),
+        });
+        message.success('平仓成功');
+        loadRealtimeData();
+      } catch (error: any) {
+        message.error(error.message || '平仓失败');
+      }
+    },
+  });
+};
+
+// 手动平仓 (详情弹窗中)
+const closePositionInModal = async (position: any) => {
+  if (!currentRobot.value) return;
+  await closePosition(currentRobot.value, position);
+  loadDetailData(currentRobot.value);
+};
+
+// 撤销挂单
+const cancelOrder = async (orderId: string) => {
+  if (!currentRobot.value) {
+    message.error('请先选择机器人');
+    return;
+  }
+  try {
+    await ToogoRobotApi.cancelOrder({ robotId: currentRobot.value.id, orderId });
+    message.success('撤单成功');
+    // 刷新挂单列表
+    loadDetailData(currentRobot.value);
+  } catch (error: any) {
+    message.error('撤单失败: ' + (error.message || '未知错误'));
+  }
+};
+
+// 查看详情
+const viewDetail = async (robot: any) => {
+  currentRobot.value = robot;
+  showDetailModal.value = true;
+  
+  // 加载机器人详情数据
+  loadDetailData(robot);
+  
+  // 尝试解析并加载策略组信息
+  if (robot.currentStrategy) {
+    try {
+      const strategyData = typeof robot.currentStrategy === 'string' 
+        ? JSON.parse(robot.currentStrategy) 
+        : robot.currentStrategy;
+      
+      // 如果有group_id，加载策略组信息和对应的策略模板
+      if (strategyData.group_id) {
+        try {
+          const groupList = await ToogoStrategyApi.groupList({ page: 1, pageSize: 1, id: strategyData.group_id });
+          if (groupList?.list && groupList.list.length > 0) {
+            currentRobotStrategy.value = groupList.list[0];
+            
+            // 加载策略组对应的策略模板（根据机器人的市场状态和风险偏好）
+            try {
+              const marketState = robot.marketState || 'trend';
+              const riskPreference = robot.riskPreference || 'balanced';
+              const templateRes = await ToogoStrategyApi.templateList({ 
+                groupId: strategyData.group_id, 
+                marketState: marketState,
+                riskPreference: riskPreference,
+                pageSize: 1 
+              });
+              if (templateRes?.list && templateRes.list.length > 0) {
+                currentStrategyTemplate.value = templateRes.list[0];
+              }
+            } catch (err) {
+              console.debug('加载策略模板失败:', err);
+            }
+          }
+        } catch (err) {
+          console.debug('加载策略组信息失败:', err);
+        }
+      } else {
+        // 如果没有group_id，尝试查找我的策略列表里的默认策略组
+        try {
+          const myGroupList = await ToogoStrategyApi.groupList({ page: 1, pageSize: 100, isOfficial: 0 });
+          const defaultGroup = myGroupList?.list?.find((g: any) => g.isDefault === 1);
+          if (defaultGroup) {
+            currentRobotStrategy.value = defaultGroup;
+          }
+        } catch (err) {
+          console.debug('查找我的默认策略组失败:', err);
+        }
+      }
+    } catch (err) {
+      console.debug('解析策略配置失败:', err);
+    }
+  } else {
+    // 如果没有currentStrategy，也尝试查找我的策略列表里的默认策略组
+    try {
+      const myGroupList = await ToogoStrategyApi.groupList({ page: 1, pageSize: 100, isOfficial: 0 });
+      const defaultGroup = myGroupList?.list?.find((g: any) => g.isDefault === 1);
+      if (defaultGroup) {
+        currentRobotStrategy.value = defaultGroup;
+      }
+    } catch (err) {
+      console.debug('查找我的默认策略组失败:', err);
+    }
+  }
+};
+
+
+// 打开风险配置
+const openRiskConfig = (robot: any) => {
+  riskConfigRobotId.value = robot.id;
+  riskConfigRobotName.value = robot.robotName || `机器人#${robot.id}`;
+  riskConfigRef.value?.open();
+};
+
+// 加载详情数据
+const loadDetailData = async (robot: any) => {
+  // 加载持仓
+  positionLoading.value = true;
+  try {
+    const posRes = await ToogoRobotApi.positions({ robotId: robot.id });
+    currentPositions.value = posRes?.list || [];
+  } catch (error) {
+    console.error('加载持仓失败:', error);
+  } finally {
+    positionLoading.value = false;
+  }
+
+  // 加载当前挂单
+  orderLoading.value = true;
+  try {
+    const orderRes = await ToogoRobotApi.orders({ robotId: robot.id });
+    currentOpenOrders.value = orderRes?.list || [];
+  } catch (error) {
+    console.error('加载挂单失败:', error);
+  } finally {
+    orderLoading.value = false;
+  }
+
+  // 加载成交明细
+  historyLoading.value = true;
+  try {
+    const historyRes = await ToogoRobotApi.orderHistory({ robotId: robot.id, limit: 50 });
+    orderHistory.value = historyRes?.list || [];
+  } catch (error) {
+    console.error('加载成交明细失败:', error);
+  } finally {
+    historyLoading.value = false;
+  }
+
+  // 加载算力消耗
+  try {
+    const powerRes = await ToogoStrategyApi.powerConsumeList({ robotId: robot.id, page: 1, perPage: 20 });
+    powerConsumeList.value = powerRes?.list || [];
+  } catch (error) {
+    console.error('加载算力消耗失败:', error);
+  }
+};
+
+// 开始定时刷新
+const startRefresh = () => {
+  // 快速刷新：每1秒更新价格和信号数据
+  fastRefreshTimer = setInterval(() => {
+    loadRealtimeData();
+  }, 1000);
+  
+  // 慢速刷新：每30秒更新持仓和日志数据
+  refreshTimer = setInterval(() => {
+    loadPositionData();
+    // 刷新所有机器人的方向预警日志
+    for (const robot of robotList.value) {
+      loadSignalLogs(robot.id);
+    }
+  }, 30000);
+};
+
+// 停止定时刷新
+const stopRefresh = () => {
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+  if (fastRefreshTimer) {
+    clearInterval(fastRefreshTimer);
+    fastRefreshTimer = null;
+  }
+};
+
+// 加载持仓数据（单独提取，避免影响实时价格刷新）
+const loadPositionData = async () => {
+  const runningRobots = robotList.value.filter((r: any) => r.status === 2);
+  for (const robot of runningRobots) {
+    try {
+      const posRes = await ToogoRobotApi.positions({ robotId: robot.id });
+      if (posRes?.list) {
+        positionData.value[robot.id] = posRes.list;
+      }
+    } catch (error: any) {
+      console.warn(`加载机器人 ${robot.id} 持仓失败:`, error);
+    }
+  }
+};
+
+// 打开策略模板选择器
+const openStrategySelector = async () => {
+  selectedGroupId.value = currentRobot.value?.strategyGroupId || null;
+  selectedIsOfficial.value = false;
+  await loadStrategyGroups();
+  showStrategySelector.value = true;
+};
+
+// 加载策略模板组
+const loadStrategyGroups = async () => {
+  loadingStrategyGroups.value = true;
+  try {
+    // 加载我的策略模板
+    const myRes = await ToogoStrategyApi.groupList({ page: 1, pageSize: 100, isOfficial: 0 });
+    myStrategyGroups.value = myRes?.list || [];
+    
+    // 加载官方策略模板
+    const officialRes = await ToogoStrategyApi.groupList({ page: 1, pageSize: 100, isOfficial: 1 });
+    officialStrategyGroups.value = officialRes?.list || [];
+  } catch (error) {
+    console.error('加载策略模板失败:', error);
+  } finally {
+    loadingStrategyGroups.value = false;
+  }
+};
+
+// 选择官方策略模板（标记为官方）
+const selectOfficialGroup = (group: any) => {
+  selectedGroupId.value = group.id;
+  selectedIsOfficial.value = true;
+};
+
+// 应用策略模板
+const applyStrategyGroup = async () => {
+  if (!selectedGroupId.value || !currentRobot.value) return;
+  
+  applyingStrategy.value = true;
+  try {
+    let groupIdToApply = selectedGroupId.value;
+    
+    // 如果选择的是官方策略，先复制到我的策略
+    if (selectedIsOfficial.value) {
+      try {
+        const copyRes = await ToogoStrategyApi.copyFromOfficial({ officialGroupId: selectedGroupId.value });
+        groupIdToApply = copyRes?.id || selectedGroupId.value;
+      } catch (copyError: any) {
+        const errorMsg = copyError?.message || copyError?.data?.message || '';
+        if (errorMsg.includes('已存在')) {
+          const myGroup = myStrategyGroups.value.find((g: any) => g.fromOfficialId === selectedGroupId.value);
+          if (myGroup) groupIdToApply = myGroup.id;
+        } else {
+          throw copyError;
+        }
+      }
+    }
+    
+    // 获取策略模板中的第一个策略作为默认配置应用到机器人
+    try {
+      const templateRes = await ToogoStrategyApi.templateList({ groupId: groupIdToApply, pageSize: 1 });
+      const firstStrategy = templateRes?.list?.[0];
+      
+      if (firstStrategy) {
+        let configData: any = {};
+        try {
+          configData = typeof firstStrategy.configJson === 'string' 
+            ? JSON.parse(firstStrategy.configJson || '{}') 
+            : (firstStrategy.configJson || {});
+        } catch {
+          configData = {};
+        }
+        
+        const updateData = {
+          id: currentRobot.value.id,
+          robotName: currentRobot.value.robotName,
+          exchange: configData.exchange || firstStrategy.exchange || 'bitget',
+          symbol: configData.symbol || firstStrategy.symbol || 'BTC-USDT',
+          tradeType: configData.tradeType || firstStrategy.tradeType || 'perpetual',
+          orderType: configData.orderType || firstStrategy.orderType || 'market',
+          marginMode: configData.marginMode || firstStrategy.marginMode || 'isolated',
+          maxProfitTarget: currentRobot.value.maxProfitTarget || 100,
+          maxLossAmount: currentRobot.value.maxLossAmount || 50,
+          maxRuntime: currentRobot.value.maxRuntime || 0,
+          riskPreference: firstStrategy.riskPreference || 'balanced',
+          autoRiskPreference: 1,
+          marketState: firstStrategy.marketState || 'trend',
+          autoMarketState: 1,
+          leverage: configData.leverage || firstStrategy.leverageMin || 10,
+          marginPercent: configData.marginPercent || firstStrategy.marginPercentMin || 10,
+          useMonitorSignal: 1,
+          enableReverseOrder: configData.reverseEnabled !== false ? 1 : 0,
+          stopLossPercent: configData.stopLossPercent || firstStrategy.stopLossPercent || 5,
+          profitRetreatPercent: configData.profitRetreatPercent || firstStrategy.profitRetreatPercent || 30,
+          autoStartRetreatPercent: configData.autoStartRetreatPercent || firstStrategy.autoStartRetreatPercent || 3,
+          remark: `策略模板: ${groupIdToApply}`,
+        };
+        
+        await ToogoRobotApi.update(updateData);
+        
+        // 如果机器人正在运行，通知后端重新加载策略配置
+        if (currentRobot.value.status === 2) {
+          try {
+            await ToogoRobotApi.reloadStrategy({ id: currentRobot.value.id });
+            message.success('策略模板已应用！运行中的机器人配置已更新');
+          } catch (reloadErr: any) {
+            message.warning('策略已更新，但运行中配置刷新失败，建议重启机器人');
+          }
+        } else {
+          message.success('策略模板已应用！配置已更新');
+        }
+        
+        // 立即更新本地显示数据
+        Object.assign(currentRobot.value, {
+          platform: updateData.exchange,
+          exchange: updateData.exchange,
+          tradingPair: updateData.symbol,
+          symbol: updateData.symbol,
+          tradeType: updateData.tradeType,
+          orderType: updateData.orderType,
+          marginMode: updateData.marginMode,
+          riskPreference: updateData.riskPreference,
+          marketState: updateData.marketState,
+          leverage: updateData.leverage,
+          marginPercent: updateData.marginPercent,
+          marginRatio: updateData.marginPercent,
+          stopLossPercent: updateData.stopLossPercent,
+          takeProfitRetracePercent: updateData.profitRetreatPercent,
+          autoRiskPreference: updateData.autoRiskPreference,
+          autoMarketState: updateData.autoMarketState,
+          useMonitorSignal: updateData.useMonitorSignal,
+          enableReverseOrder: updateData.enableReverseOrder,
+        });
+        
+      } else {
+        message.warning('策略模板中没有可用策略');
+      }
+    } catch (updateError: any) {
+      throw new Error(updateError?.message || '更新机器人配置失败');
+    }
+    
+    showStrategySelector.value = false;
+    loadData();
+  } catch (error: any) {
+    const errorMsg = error?.message || error?.data?.message || '应用失败';
+    message.error(errorMsg);
+  } finally {
+    applyingStrategy.value = false;
+  }
+};
+
+// 跳转到策略管理页
+const goToStrategy = () => {
+  showStrategySelector.value = false;
+  router.push('/toogo/strategy/my');
+};
+
+
+onMounted(() => {
+  loadData();
+  loadStrategyGroups();
+  startRefresh();
+});
+
+onUnmounted(() => {
+  stopRefresh();
+});
+</script>
+
+<style lang="less" scoped>
+.robot-page {
+  padding: 16px;
+  
+  /* ========== 夜间模式适配变量 ========== */
+  --robot-bg: #ffffff;
+  --robot-border: rgba(0, 0, 0, 0.08);
+  --robot-text-primary: rgba(0, 0, 0, 0.88);
+  --robot-text-secondary: #666666;
+  --robot-text-tertiary: #888888;
+  --robot-hover-bg: rgba(0, 0, 0, 0.02);
+  --robot-panel-bg: rgba(0, 0, 0, 0.02);
+  --robot-chart-bg: rgba(255, 255, 255, 0.6);
+  --robot-chart-line: #3b82f6;
+  --robot-chart-grid: rgba(0, 0, 0, 0.1);
+  
+  /* 自动适配深色模式 */
+  html.dark & {
+    --robot-bg: rgba(255, 255, 255, 0.05);
+    --robot-border: rgba(255, 255, 255, 0.12);
+    --robot-text-primary: rgba(255, 255, 255, 0.9);
+    --robot-text-secondary: rgba(255, 255, 255, 0.65);
+    --robot-text-tertiary: rgba(255, 255, 255, 0.45);
+    --robot-hover-bg: rgba(255, 255, 255, 0.05);
+    --robot-panel-bg: rgba(255, 255, 255, 0.03);
+    --robot-chart-bg: rgba(0, 0, 0, 0.3);
+    --robot-chart-line: #60a5fa;
+    --robot-chart-grid: rgba(255, 255, 255, 0.1);
+  }
+}
+
+.mb-3 {
+  margin-bottom: 12px;
+}
+
+.robot-card {
+  transition: all 0.3s;
+
+  &.running {
+    border: 1px solid var(--success-color);
+  }
+}
+
+/* ==================== 头部连接状态样式 ==================== */
+.header-connection {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 500;
+  
+  .conn-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+  }
+  
+  &.connected {
+    background: rgba(87, 202, 34, 0.15);
+    color: rgb(87, 202, 34);
+    .conn-dot {
+      background: rgb(87, 202, 34);
+      box-shadow: 0 0 4px rgba(87, 202, 34, 0.6);
+      animation: pulse-green 2s infinite;
+    }
+  }
+  
+  &.connecting {
+    background: rgba(245, 158, 11, 0.15);
+    color: rgb(245, 158, 11);
+    .conn-dot {
+      background: rgb(245, 158, 11);
+      animation: pulse-yellow 1s infinite;
+    }
+  }
+  
+  &.disconnected {
+    background: rgba(239, 68, 68, 0.15);
+    color: rgb(239, 68, 68);
+    .conn-dot {
+      background: rgb(239, 68, 68);
+    }
+  }
+}
+
+/* ==================== 三列布局信号面板 ==================== */
+.signal-three-column {
+  display: grid;
+  grid-template-columns: 130px auto 1fr;
+  gap: 16px;
+  padding: 12px;
+  background: var(--card-color);
+  border: 1px solid rgba(0,0,0,0.05);
+  border-radius: 8px;
+  min-height: 150px;
+  align-items: center;
+}
+
+/* 第一列：机器人动画 */
+.column-robot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+}
+
+/* 第二列：方向预警按钮 */
+.column-signal {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  justify-content: center;
+  height: 100%;
+  min-width: 130px;
+  
+  .signal-block {
+    padding: 8px 12px;
+    border-radius: 6px;
+    transition: all 0.2s ease;
+    background: rgba(0,0,0,0.02);
+    border: 1px solid transparent;
+    
+    &.long {
+      .signal-header { color: #059669; }
+      .signal-trigger { color: #10b981; }
+      
+      &.active {
+        background: rgba(16, 185, 129, 0.1);
+        border-color: rgba(16, 185, 129, 0.2);
+      }
+    }
+    
+    &.short {
+      .signal-header { color: #dc2626; }
+      .signal-trigger { color: #ef4444; }
+      
+      &.active {
+        background: rgba(239, 68, 68, 0.1);
+        border-color: rgba(239, 68, 68, 0.2);
+      }
+    }
+    
+    .signal-header {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-weight: 600;
+      font-size: 12px;
+      margin-bottom: 2px;
+      
+      .signal-icon { font-size: 14px; }
+    }
+    
+    .signal-trigger {
+      font-size: 13px;
+      font-weight: 700;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    
+    .signal-distance {
+      font-size: 10px;
+      color: #888;
+      margin-top: 2px;
+    }
+  }
+  
+  .current-price-block {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 6px 12px;
+    background: rgba(0, 0, 0, 0.02);
+    border-radius: 6px;
+    
+    .price-value {
+      font-size: 16px;
+      font-weight: 700;
+      font-family: 'JetBrains Mono', monospace;
+      
+      &.up { color: #10b981; }
+      &.down { color: #ef4444; }
+    }
+    
+    .price-change {
+      font-size: 11px;
+      font-weight: 500;
+      
+      &.up { color: #10b981; }
+      &.down { color: #ef4444; }
+    }
+  }
+}
+
+/* 第三列：价格图表 */
+.column-chart {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 6px;
+  height: 100%;
+  min-width: 200px;
+  
+  .chart-svg {
+    width: 100%;
+    height: 120px;
+    display: block;
+  }
+  
+  .chart-svg-vertical {
+     width: 100%;
+     height: 100%;
+     min-height: 100px;
+     display: block;
+  }
+  
+  .chart-line { fill: none; stroke: #3b82f6; stroke-width: 1.5; }
+  .chart-fill { fill: #3b82f6; fill-opacity: 0.15; }
+  .chart-baseline { stroke: #3b82f6; stroke-width: 1; stroke-dasharray: 3,3; opacity: 0.3; }
+  .chart-upper { stroke: #ef4444; stroke-width: 1; stroke-dasharray: 2,2; }
+  .chart-lower { stroke: #10b981; stroke-width: 1; stroke-dasharray: 2,2; }
+  
+  .chart-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 9px;
+    margin-top: 4px;
+    
+    .label-high { color: #ef4444; }
+    .label-low { color: #10b981; }
+  }
+}
+
+.mini-robot-scene {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  
+  .mini-robot {
+    width: 120px;
+    height: 120px;
+    transition: all 0.3s ease;
+  }
+  
+  .robot-mood-text {
+    font-size: 11px;
+    color: var(--robot-text-secondary);
+    font-weight: 500;
+    text-align: center;
+    max-width: 120px;
+    line-height: 1.2;
+  }
+  
+  .robot-shadow {
+    transition: all 0.3s ease;
+  }
+  
+  .tail-group {
+    transition: all 0.3s ease;
+  }
+  
+  .head-group {
+    transition: all 0.3s ease;
+  }
+  
+  .body-screen {
+    transition: all 0.5s ease;
+  }
+  
+  /* 动画状态样式 */
+  &.mood-happy {
+    .mini-robot { animation: mini-jump 0.6s infinite alternate ease-in-out; }
+    .tail-group { animation: mini-wag 0.3s infinite ease-in-out; }
+    .eye { display: none; }
+  }
+  
+  &.mood-thinking {
+    .head-group { transform: rotate(8deg); transform-origin: center bottom; }
+    .left-eyebrow { transform: rotate(-8deg) translateY(-1px); }
+    .right-eyebrow { transform: rotate(8deg) translateY(1px); }
+  }
+  
+  &.mood-confused {
+    .head-group { animation: mini-shake 1.5s infinite ease-in-out; }
+    .right-ear { transform: rotate(15deg) translate(2px, -2px); }
+  }
+  
+  &.mood-tired {
+    .mini-robot { filter: grayscale(0.4); animation: mini-float 4s ease-in-out infinite; }
+    .head-group { transform: translateY(3px) rotate(-3deg); }
+  }
+  
+  &.mood-excited {
+    .mini-robot { animation: mini-vibrate 0.15s infinite; }
+    .tail-group { animation: mini-wag 0.15s infinite; }
+    .body-screen { animation: mini-rainbow 1s infinite; }
+  }
+  
+  &.mood-focused {
+    .eye { fill: #ff3333 !important; }
+    .eyebrow { transform: rotate(10deg) translateY(2px); }
+  }
+  
+  &.mood-sad {
+    .mini-robot { transform: scale(0.95); }
+    .head-group { transform: translateY(5px) rotate(-5deg); }
+    .tail-group { transform: rotate(20deg); }
+  }
+  
+  &.mood-conservative {
+    .eye { fill: #4cd137 !important; }
+    .mini-robot { animation: mini-float 3s ease-in-out infinite; }
+  }
+  
+  &.mood-balanced {
+    .eye { fill: #00a8ff !important; }
+    .head-group { animation: mini-balance 3s infinite ease-in-out; }
+  }
+  
+  &.mood-aggressive {
+    .mini-robot { animation: mini-vibrate 0.1s infinite; transform: translateY(-3px); }
+    .eye { fill: #e84118 !important; filter: drop-shadow(0 0 3px #e84118) !important; }
+    .eyebrow { transform: rotate(15deg) translateY(3px); }
+  }
+}
+
+/* 机器人动画关键帧 */
+@keyframes mini-jump {
+  0% { transform: translateY(0); }
+  100% { transform: translateY(-5px); }
+}
+
+@keyframes mini-wag {
+  0%, 100% { transform: rotate(-5deg); }
+  50% { transform: rotate(5deg); }
+}
+
+@keyframes mini-shake {
+  0%, 100% { transform: rotate(0); }
+  25% { transform: rotate(-5deg); }
+  75% { transform: rotate(5deg); }
+}
+
+@keyframes mini-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+
+@keyframes mini-vibrate {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-1px); }
+  75% { transform: translateX(1px); }
+}
+
+@keyframes mini-rainbow {
+  0% { fill: #111; }
+  25% { fill: #1a1a3e; }
+  50% { fill: #111; }
+  75% { fill: #1e1e3e; }
+  100% { fill: #111; }
+}
+
+@keyframes mini-balance {
+  0%, 100% { transform: rotate(0); }
+  25% { transform: rotate(-3deg); }
+  75% { transform: rotate(3deg); }
+}
+
+.status-section {
+  background: linear-gradient(135deg, var(--card-color) 0%, var(--hover-color) 100%);
+  padding: 10px 16px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border-color);
+
+  .status-indicator-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+
+    .indicator-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      
+      &.connected {
+        background-color: rgb(87, 202, 34);
+        box-shadow: 0 0 8px rgba(87, 202, 34, 0.6);
+        animation: pulse-green 2s infinite;
+      }
+      
+      &.connecting {
+        background-color: rgb(240, 160, 32);
+        animation: pulse-yellow 1s infinite;
+      }
+      
+      &.disconnected {
+        background-color: rgb(208, 48, 80);
+      }
+    }
+
+    .indicator-label {
+      font-size: 12px;
+      color: var(--text-color-2);
+    }
+  }
+}
+
+@keyframes pulse-green {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+@keyframes pulse-yellow {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.2); }
+}
+
+/* ==================== 方向信号预警面板 ==================== */
+// 市场状态分析块
+.market-analysis-panel {
+  background: var(--robot-bg);
+  border: 1px solid var(--robot-border);
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 12px;
+  
+  .market-analysis-header {
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid rgba(0,0,0,0.05);
+  }
+  
+  .strategy-params-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px 12px;
+    margin-bottom: 8px;
+    
+    &.expanded {
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+    }
+    
+    .param-item {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      
+      .param-label {
+        font-size: 11px;
+        color: var(--robot-text-tertiary);
+        font-weight: 500;
+      }
+      
+      .param-value {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--robot-text-primary);
+        font-family: 'JetBrains Mono', 'Consolas', monospace;
+        
+        &.error {
+          color: #ef4444;
+        }
+        
+        &.success {
+          color: #10b981;
+        }
+        
+        &.warning {
+          color: #f59e0b;
+        }
+        
+        &.primary {
+          color: #6366f1;
+        }
+      }
+      
+      &.highlight {
+        background: rgba(0,0,0,0.02);
+        border-radius: 6px;
+        padding: 6px 8px;
+        
+        .param-label {
+          color: #6366f1;
+        }
+        
+        .param-value {
+          color: #6366f1;
+          font-size: 14px;
+        }
+      }
+    }
+  }
+  
+  .strategy-update-time {
+    text-align: center;
+    padding-top: 6px;
+    border-top: 1px solid rgba(0,0,0,0.05);
+  }
+}
+
+.market-analysis-collapse {
+  margin-bottom: 8px;
+  
+  :deep(.n-collapse-item__header) {
+    padding: 8px 12px;
+    background: linear-gradient(135deg, #e8f4fd 0%, #f0f9ff 100%);
+    border-radius: 8px;
+  }
+  
+  :deep(.n-collapse-item__content-inner) {
+    padding: 12px;
+    background: rgba(99, 102, 241, 0.03);
+    border-radius: 0 0 8px 8px;
+  }
+}
+
+.signal-alert-panel {
+  background: var(--robot-bg);
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 12px;
+  border: 1px solid var(--robot-border);
+  
+  .signal-alert-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+  
+  .signal-badge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    border-radius: 16px;
+    font-weight: 600;
+    
+    &.badge-long {
+      background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+      color: white;
+      box-shadow: 0 2px 6px rgba(16, 185, 129, 0.35);
+    }
+    
+    &.badge-short {
+      background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+      color: white;
+      box-shadow: 0 2px 6px rgba(239, 68, 68, 0.35);
+    }
+    
+    &.badge-neutral {
+      background: linear-gradient(135deg, #6b7280 0%, #4b5563 100%);
+      color: white;
+    }
+    
+    .badge-icon { font-size: 16px; }
+    .badge-text { font-size: 13px; }
+    .badge-strength {
+      background: rgba(255, 255, 255, 0.2);
+      padding: 1px 6px;
+      border-radius: 8px;
+      font-size: 11px;
+    }
+  }
+  
+  .signal-tags {
+    display: flex;
+    gap: 5px;
+  }
+  
+  .signal-price-row {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 10px;
+    padding: 8px;
+    background: var(--robot-panel-bg);
+    border-radius: 8px;
+    
+    .price-current {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 6px 12px;
+      background: rgba(99, 102, 241, 0.1);
+      border-radius: 6px;
+      min-width: 90px;
+      
+      .price-label { font-size: 10px; color: #888; }
+      .price-value {
+        font-size: 16px;
+        font-weight: 700;
+        font-family: 'JetBrains Mono', monospace;
+        &.up { color: #10b981; }
+        &.down { color: #ef4444; }
+      }
+      .price-change {
+        font-size: 10px;
+        &.up { color: #10b981; }
+        &.down { color: #ef4444; }
+      }
+    }
+    
+    .price-window {
+      flex: 1;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+      
+      .window-item {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        font-size: 10px;
+        color: var(--robot-text-secondary);
+        
+        strong {
+          font-size: 11px;
+          font-family: 'JetBrains Mono', monospace;
+          color: var(--robot-text-primary);
+        }
+        
+        &.low strong { color: #10b981; }
+        &.high strong { color: #ef4444; }
+        &.highlight strong { color: #6366f1; }
+      }
+    }
+  }
+  
+  .signal-triggers {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 8px;
+    
+    .trigger {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      
+      &.long {
+        background: rgba(16, 185, 129, 0.12);
+        border: 1px solid rgba(16, 185, 129, 0.25);
+        .trigger-name { color: #059669; }
+        .trigger-price { color: #10b981; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+        .trigger-dist { color: #10b981; font-size: 9px; opacity: 0.8; }
+      }
+      
+      &.short {
+        background: rgba(239, 68, 68, 0.12);
+        border: 1px solid rgba(239, 68, 68, 0.25);
+        .trigger-name { color: #dc2626; }
+        .trigger-price { color: #ef4444; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+        .trigger-dist { color: #ef4444; font-size: 9px; opacity: 0.8; }
+      }
+    }
+  }
+  
+  .signal-chart {
+    background: var(--robot-chart-bg);
+    backdrop-filter: blur(8px);
+    border-radius: 6px;
+    padding: 8px;
+    margin-bottom: 6px;
+    border: 1px solid var(--robot-border);
+    
+    .chart-svg {
+      width: 100%;
+      height: 120px;
+      display: block;
+    }
+    
+    .chart-line { fill: none; stroke: var(--robot-chart-line); stroke-width: 2; filter: drop-shadow(0 1px 2px rgba(59, 130, 246, 0.3)); }
+    .chart-fill { fill: var(--robot-chart-line); opacity: 0.15; }
+    .chart-baseline { stroke: var(--robot-chart-line); stroke-width: 1.5; stroke-dasharray: 4,4; opacity: 0.5; }
+    .chart-upper { stroke: #ef4444; stroke-width: 1.5; stroke-dasharray: 4,3; opacity: 0.7; }
+    .chart-lower { stroke: #10b981; stroke-width: 1.5; stroke-dasharray: 4,3; opacity: 0.7; }
+    .point-min { fill: var(--robot-chart-line); stroke: var(--robot-bg); stroke-width: 2; }
+    .point-max { fill: #ef4444; stroke: var(--robot-bg); stroke-width: 2; }
+    .point-current { fill: #10b981; stroke: var(--robot-bg); stroke-width: 2.5; }
+    
+    /* 价格标签样式 */
+    .price-label {
+      font-size: 10px;
+      font-weight: 600;
+      text-anchor: middle;
+    }
+    .price-label-min { fill: var(--robot-chart-line); }
+    .price-label-max { fill: #ef4444; }
+    .price-label-current { 
+      fill: #10b981; 
+      font-weight: 700;
+      text-anchor: start;
+    }
+    
+    /* 图例说明 */
+    .chart-legend {
+      display: flex;
+      justify-content: center;
+      gap: 12px;
+      margin-top: 4px;
+      font-size: 10px;
+      
+      .legend-item {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+      }
+      .legend-max { color: #ef4444; }
+      .legend-current { color: #10b981; }
+      .legend-min { color: #3b82f6; }
+    }
+  }
+  
+  .signal-reason {
+    padding: 6px 10px;
+    background: rgba(99, 102, 241, 0.08);
+    border-radius: 5px;
+    font-size: 11px;
+    color: var(--robot-text-secondary);
+    line-height: 1.4;
+    margin-bottom: 6px;
+  }
+  
+  .signal-logs-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    
+    .log-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 8px;
+      background: var(--robot-panel-bg);
+      border-radius: 4px;
+      font-size: 11px;
+      border-left: 2px solid var(--robot-text-tertiary);
+      
+      &.long { border-left-color: #10b981; }
+      &.short { border-left-color: #ef4444; }
+      
+      .log-time { color: #888; font-family: 'JetBrains Mono', monospace; font-size: 10px; }
+      .log-pct { font-weight: 600; color: #6366f1; }
+      .log-price { font-family: 'JetBrains Mono', monospace; color: #333; margin-left: auto; }
+    }
+    
+    .log-row-detail {
+      padding: 8px 10px;
+      background: var(--robot-panel-bg);
+      border-radius: 6px;
+      border-left: 3px solid var(--robot-text-tertiary);
+      
+      &.long { border-left-color: #10b981; background: rgba(16, 185, 129, 0.05); }
+      &.short { border-left-color: #ef4444; background: rgba(239, 68, 68, 0.05); }
+      
+      &.not-executed {
+        background: rgba(251, 191, 36, 0.08);
+        border-left-color: #f59e0b;
+      }
+      
+      .log-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 4px;
+        
+        .log-time { 
+          color: #666; 
+          font-family: 'JetBrains Mono', monospace; 
+          font-size: 11px; 
+        }
+        .log-price { 
+          font-family: 'JetBrains Mono', monospace; 
+          color: #333; 
+          font-weight: 600;
+          font-size: 12px;
+        }
+      }
+      
+      .log-reason {
+        padding: 6px 8px;
+        background: rgba(251, 191, 36, 0.15);
+        border-radius: 4px;
+        margin-top: 6px;
+      }
+      
+      .log-success {
+        padding: 4px 0;
+        margin-top: 4px;
+      }
+      
+      .log-params {
+        display: flex;
+        gap: 8px;
+        margin-top: 6px;
+        
+        .param-badge {
+          font-size: 10px;
+          color: #666;
+          background: rgba(0, 0, 0, 0.05);
+          padding: 2px 6px;
+          border-radius: 4px;
+        }
+      }
+    }
+  }
+}
+
+.analysis-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background-color: var(--card-color);
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+
+/* 账户+策略参数整合面板 */
+.account-strategy-panel {
+  background: var(--robot-bg);
+  border-radius: 8px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid var(--robot-border);
+  
+  .stat-value {
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 600;
+      font-size: 14px;
+      
+      &.primary { color: var(--primary-color); }
+      &.warning { color: #f59e0b; }
+  }
+
+  .param-box {
+    text-align: center;
+    padding: 6px 4px;
+    background: var(--robot-panel-bg);
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    
+    &:hover {
+        background: var(--robot-hover-bg);
+    }
+    
+    .label {
+      font-size: 10px;
+      color: var(--robot-text-tertiary);
+      margin-bottom: 2px;
+      transform: scale(0.9);
+    }
+    
+    .value {
+      font-size: 12px;
+      font-weight: 600;
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--robot-text-primary);
+    }
+    
+    /* Variations */
+    &.highlight {
+        background: rgba(99, 102, 241, 0.08);
+        .value { color: #6366f1; }
+    }
+    &.error {
+        background: rgba(239, 68, 68, 0.08);
+        .value { color: #ef4444; }
+    }
+    &.success {
+        background: rgba(16, 185, 129, 0.08);
+        .value { color: #10b981; }
+    }
+    &.warning {
+        background: rgba(245, 158, 11, 0.08);
+        .value { color: #f59e0b; }
+    }
+  }
+  
+  .switch-item {
+      cursor: pointer;
+      transition: all 0.2s;
+      &:hover { 
+          transform: translateY(-1px);
+      }
+  }
+}
+
+.account-section {
+  background: linear-gradient(135deg, rgba(32, 128, 240, 0.08) 0%, rgba(24, 160, 88, 0.08) 100%);
+  padding: 12px 16px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border-color);
+
+  .account-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+}
+
+.config-section {
+  background-color: var(--card-color);
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  
+  .quick-switch {
+    cursor: pointer;
+    transition: all 0.2s ease;
+    
+    &:hover {
+      transform: scale(1.05);
+    }
+    
+    &:active {
+      transform: scale(0.98);
+    }
+    
+    .clickable-tag {
+      cursor: pointer;
+      transition: all 0.2s ease;
+      
+      &:hover {
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+      }
+    }
+  }
+  
+  :deep(.n-tag) {
+    &:not(.clickable-tag) {
+      cursor: default;
+    }
+  }
+}
+
+.ticker-section {
+  background-color: var(--card-color);
+  padding: 12px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+
+  .ticker-item {
+    text-align: center;
+  }
+
+  .price {
+    font-size: 18px;
+    font-weight: bold;
+
+    &.up { color: var(--success-color); }
+    &.down { color: var(--error-color); }
+  }
+}
+
+.position-section {
+  background-color: var(--card-color);
+  padding: 12px;
+  border-radius: 8px;
+
+  .position-item {
+    padding: 10px 12px;
+    background-color: var(--body-color);
+    border-radius: 6px;
+    margin-bottom: 8px;
+
+    &:last-child {
+      margin-bottom: 0;
+    }
+  }
+}
+
+/* 实时持仓订单列表样式 - 参考 toogo 项目 */
+.positions-section {
+  margin-bottom: 16px;
+}
+
+.positions-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--divider-color);
+}
+
+.positions-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--text-color-1);
+}
+
+.positions-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 20px;
+  padding: 0 6px;
+  background: linear-gradient(135deg, var(--primary-color), var(--primary-color-hover));
+  color: white;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.positions-table-wrapper {
+  border-radius: 8px;
+  overflow-x: auto;
+  border: 1px solid var(--divider-color);
+  background: var(--body-color);
+}
+
+.positions-table-wrapper::-webkit-scrollbar {
+  height: 8px;
+}
+
+.positions-table-wrapper::-webkit-scrollbar-track {
+  background: var(--body-color);
+  border-radius: 4px;
+}
+
+.positions-table-wrapper::-webkit-scrollbar-thumb {
+  background: var(--primary-color-suppl);
+  border-radius: 4px;
+}
+
+.positions-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  min-width: 800px;
+}
+
+.positions-table thead {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(99, 102, 241, 0.05));
+}
+
+.positions-table th {
+  padding: 10px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-color-3);
+  white-space: nowrap;
+  text-align: left;
+  border-bottom: 2px solid var(--divider-color);
+}
+
+.positions-table td {
+  padding: 10px 8px;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--divider-color);
+  white-space: nowrap;
+  color: var(--text-color-2);
+}
+
+.position-row {
+  transition: background-color 0.2s ease;
+}
+
+.position-row.row-even {
+  background: var(--card-color);
+}
+
+.position-row.row-odd {
+  background: var(--body-color);
+}
+
+.position-row:hover {
+  background: rgba(99, 102, 241, 0.08) !important;
+}
+
+/* 列宽定义 */
+.col-time { width: 110px; min-width: 110px; }
+.col-symbol { width: 80px; min-width: 80px; }
+.col-side { width: 60px; min-width: 60px; }
+.col-quantity { width: 80px; min-width: 80px; }
+.col-price { width: 90px; min-width: 90px; }
+.col-pl { width: 100px; min-width: 100px; }
+.col-margin { width: 80px; min-width: 80px; }
+.col-leverage { width: 50px; min-width: 50px; text-align: center; }
+.col-monitor { width: 180px; min-width: 180px; max-width: 180px; }
+.col-action { width: 60px; min-width: 60px; text-align: center; }
+
+/* 监控列样式 */
+.monitor-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 0;
+}
+
+.monitor-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.monitor-label {
+  width: 50px;
+  min-width: 50px;
+  max-width: 50px;
+  font-size: 0.75rem;
+  color: var(--text-color-3);
+  white-space: nowrap;
+}
+
+.progress-bar-container {
+  flex: 1;
+  height: 5px;
+  min-width: 40px;
+  background: rgba(148, 163, 184, 0.15);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.progress-bar-danger {
+  background: linear-gradient(90deg, #ef4444, #dc2626);
+}
+
+.progress-bar-success {
+  background: linear-gradient(90deg, #22c55e, #16a34a);
+}
+
+.progress-bar-warning {
+  background: linear-gradient(90deg, #f59e0b, #d97706);
+}
+
+.monitor-value {
+  width: 35px;
+  min-width: 35px;
+  max-width: 35px;
+  font-size: 0.7rem;
+  text-align: right;
+  color: var(--text-color-2);
+  white-space: nowrap;
+}
+
+.monitor-value.text-danger {
+  color: #ef4444;
+  font-weight: bold;
+}
+
+.monitor-value.text-success {
+  color: #22c55e;
+  font-weight: bold;
+}
+
+.monitor-max-profit {
+  border-top: 1px solid rgba(148, 163, 184, 0.2);
+  padding-top: 4px;
+  margin-top: 2px;
+}
+
+/* 方向标签 */
+.side-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.side-tag.long {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+}
+
+.side-tag.short {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+/* 盈亏显示 */
+.pnl-value {
+  font-weight: 600;
+}
+
+.pnl-value.profit {
+  color: #10b981;
+}
+
+.pnl-value.loss {
+  color: #ef4444;
+}
+
+/* 空状态 */
+.positions-table-wrapper .empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  color: var(--text-color-3);
+}
+
+.empty-icon {
+  font-size: 32px;
+  margin-bottom: 12px;
+  opacity: 0.6;
+}
+
+.empty-text {
+  font-size: 13px;
+}
+
+/* 算法逻辑说明面板样式 */
+.algorithm-collapse {
+  background: var(--robot-bg);
+  border-radius: 8px;
+  
+  .algo-section {
+    background: rgba(99, 102, 241, 0.05);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 12px;
+    border: 1px solid rgba(99, 102, 241, 0.15);
+    
+    &:last-child { margin-bottom: 0; }
+    
+    .algo-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--robot-text-primary);
+      margin-bottom: 6px;
+    }
+    
+    .algo-desc {
+      font-size: 11px;
+      color: var(--robot-text-secondary);
+      margin-bottom: 10px;
+      line-height: 1.4;
+    }
+    
+    .algo-warning {
+      font-size: 10px;
+      color: #f59e0b;
+      text-align: center;
+      margin-top: 8px;
+      padding: 4px 8px;
+      background: rgba(245, 158, 11, 0.1);
+      border-radius: 4px;
+    }
+    
+    .algo-rules {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      
+      .rule-item {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        padding: 10px;
+        border-radius: 6px;
+        
+        &.long {
+          background: linear-gradient(135deg, rgba(16, 185, 129, 0.08) 0%, rgba(16, 185, 129, 0.02) 100%);
+          border: 1px solid rgba(16, 185, 129, 0.2);
+        }
+        
+        &.short {
+          background: linear-gradient(135deg, rgba(239, 68, 68, 0.08) 0%, rgba(239, 68, 68, 0.02) 100%);
+          border: 1px solid rgba(239, 68, 68, 0.2);
+        }
+        
+        .rule-icon {
+          font-size: 18px;
+        }
+        
+        .rule-content {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+          
+          .rule-name {
+            font-size: 12px;
+            font-weight: 600;
+          }
+          
+          .rule-formula {
+            font-size: 11px;
+            color: var(--robot-text-primary);
+            font-family: 'JetBrains Mono', monospace;
+            background: var(--robot-panel-bg);
+            padding: 2px 6px;
+            border-radius: 3px;
+          }
+          
+          .rule-note {
+            font-size: 10px;
+            color: var(--robot-text-tertiary);
+          }
+        }
+      }
+    }
+    
+    .algo-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      
+      .algo-item {
+        font-size: 11px;
+        color: var(--robot-text-secondary);
+        padding: 6px 8px;
+        background: var(--robot-panel-bg);
+        border-radius: 4px;
+        line-height: 1.5;
+        
+        strong {
+          color: #6366f1;
+        }
+        
+        &.formula {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          gap: 4px;
+          
+          .item-label {
+            font-weight: 500;
+            color: #333;
+            min-width: 70px;
+          }
+          
+          .item-formula {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px;
+            background: rgba(99, 102, 241, 0.08);
+            padding: 2px 6px;
+            border-radius: 3px;
+            color: #6366f1;
+          }
+          
+          .item-action {
+            font-weight: 500;
+            color: #059669;
+          }
+          
+          .item-note {
+            font-size: 10px;
+            color: #888;
+            width: 100%;
+            padding-left: 70px;
+            margin-top: 2px;
+          }
+        }
+      }
+    }
+  }
+}
+
+.selected-strategy {
+  border-color: var(--primary-color) !important;
+}
+
+.strategy-tag {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px;
+  background-color: var(--card-color);
+  border-radius: 6px;
+}
+</style>
+
+

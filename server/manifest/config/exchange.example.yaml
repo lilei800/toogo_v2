@@ -1,0 +1,91 @@
+# ===========================================
+# 交易所API配置说明
+# 支持: Binance, OKX, Bitget, Gate.io
+# ===========================================
+
+# 注意: 实际的API密钥存储在数据库 hg_trading_api_config 表中
+# 此文件仅作为配置说明
+
+# ===========================================
+# Binance 币安
+# ===========================================
+# 官网: https://www.binance.com
+# API文档: https://binance-docs.github.io/apidocs/futures/cn/
+# 
+# 申请步骤:
+# 1. 登录币安，进入 API管理
+# 2. 创建API Key，选择"系统生成"
+# 3. 启用"允许合约"权限
+# 4. 设置IP白名单（推荐）
+#
+# 测试网: https://testnet.binancefuture.com
+
+# ===========================================
+# OKX 欧易
+# ===========================================
+# 官网: https://www.okx.com
+# API文档: https://www.okx.com/docs-v5/zh/
+#
+# 申请步骤:
+# 1. 登录OKX，进入 API
+# 2. 创建API Key
+# 3. 设置交易权限
+# 4. 记录 Passphrase（必需）
+#
+# 模拟交易: 使用相同API，Header添加 x-simulated-trading: 1
+
+# ===========================================
+# Bitget
+# ===========================================
+# 官网: https://www.bitget.com
+# API文档: https://bitgetlimited.github.io/apidoc/zh/mix/
+#
+# 申请步骤:
+# 1. 登录Bitget，进入 API管理
+# 2. 创建API Key
+# 3. 设置合约交易权限
+# 4. 记录 Passphrase（必需）
+
+# ===========================================
+# Gate.io
+# ===========================================
+# 官网: https://www.gate.io
+# API文档: https://www.gate.io/docs/developers/apiv4/
+#
+# 申请步骤:
+# 1. 登录Gate.io，进入 API管理
+# 2. 创建API Key
+# 3. 设置合约交易权限
+
+# ===========================================
+# 数据库存储结构 (hg_trading_api_config)
+# ===========================================
+# platform:    交易所平台 (binance/okx/bitget/gate)
+# api_key:     API Key
+# secret_key:  Secret Key (加密存储)
+# passphrase:  Passphrase (OKX/Bitget需要)
+# is_testnet:  是否测试网 (1=是, 0=否)
+# is_default:  是否默认API
+
+# ===========================================
+# 代理配置 (SOCKS5)
+# ===========================================
+# 如果需要通过代理访问交易所API，请配置以下参数
+exchange:
+  proxy:
+    enabled: true                    # 是否启用代理
+    type: "socks5"                   # 代理类型: socks5, http
+    host: "127.0.0.1"                # 代理地址
+    port: 10808                      # 代理端口
+    # username: ""                   # 代理用户名(可选)
+    # password: ""                   # 代理密码(可选)
+
+# ===========================================
+# 安全建议
+# ===========================================
+# 1. 仅开启必要权限（合约交易、读取）
+# 2. 禁止开启提现权限
+# 3. 设置IP白名单
+# 4. 定期更换API Key
+# 5. Secret Key和Passphrase务必加密存储
+

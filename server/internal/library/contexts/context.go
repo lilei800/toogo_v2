@@ -105,6 +105,14 @@ func GetDeptType(ctx context.Context) string {
 	return user.DeptType
 }
 
+// GetTenantId 获取租户ID
+func GetTenantId(ctx context.Context) int64 {
+	if IsTenantDept(ctx) {
+		return GetUserId(ctx)
+	}
+	return 0
+}
+
 // IsCompanyDept 是否为公司部门
 func IsCompanyDept(ctx context.Context) bool {
 	return GetDeptType(ctx) == consts.DeptTypeCompany

@@ -115,7 +115,8 @@ func loadPermissions(ctx context.Context) {
 		WhereNot(q("r", dao.AdminRole.Columns().Key), consts.SuperRoleKey).
 		Scan(&polices)
 	if err != nil {
-		g.Log().Fatalf(ctx, "loadPermissions Scan err:%v", err)
+		// 运行期错误不应直接退出进程
+		g.Log().Errorf(ctx, "loadPermissions Scan err:%v", err)
 		return
 	}
 
@@ -131,7 +132,8 @@ func loadPermissions(ctx context.Context) {
 	}
 
 	if _, err = Enforcer.AddPolicies(rules); err != nil {
-		g.Log().Fatalf(ctx, "loadPermissions AddPolicies err:%v", err)
+		// 运行期错误不应直接退出进程
+		g.Log().Errorf(ctx, "loadPermissions AddPolicies err:%v", err)
 		return
 	}
 }

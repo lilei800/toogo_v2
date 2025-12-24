@@ -1,13 +1,12 @@
 <template>
   <div>
     <n-card :bordered="false" class="proCard">
-      <BasicForm
-        @register="register"
-        @submit="handleSubmit"
-        @reset="handleReset"
-        @keyup.enter="handleSubmit"
-        ref="searchFormRef"
-      >
+    <BasicForm
+      @register="register"
+      @submit="handleSubmit"
+      @reset="handleReset"
+      ref="searchFormRef"
+    >
         <template #statusSlot="{ model, field }">
           <n-input v-model:value="model[field]" />
         </template>

@@ -3,11 +3,12 @@ import type { RouteLocationRaw, Router } from 'vue-router';
 import { PageEnum } from '@/enums/pageEnum';
 import { RedirectName } from '@/router/constant';
 
-import { useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { isString } from '@/utils/is';
 import { unref } from 'vue';
+import { isObject } from 'lodash-es';
 
-export type RouteLocationRawEx = Omit<RouteLocationRaw, 'path'> & { path: PageEnum };
+export type RouteLocationRawEx = Omit<RouteLocationRaw, 'path'> & { path: PageEnum; name?: string };
 
 function handleError(e: Error) {
   console.error(e);
@@ -18,12 +19,21 @@ function handleError(e: Error) {
  */
 export function useGo(_router?: Router) {
   let router;
+  const route = useRoute();
   if (!_router) {
     router = useRouter();
   }
   const { push, replace } = _router || router;
   function go(opt: PageEnum | RouteLocationRawEx | string = PageEnum.BASE_HOME, isReplace = false) {
     if (!opt) {
+      return;
+    }
+    // 处理重复跳转当前路由
+    const { name, path } = unref(route);
+    if (
+      (isObject(opt) && (name === opt.name || path === opt.path)) ||
+      (isString(opt) && (name === opt || path === opt))
+    ) {
       return;
     }
     if (isString(opt)) {

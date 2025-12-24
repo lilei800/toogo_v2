@@ -195,9 +195,12 @@ func (s *sAdminOrder) PayNotify(ctx context.Context, in *payin.NotifyCallFuncInp
 
 // Create 创建充值订单
 func (s *sAdminOrder) Create(ctx context.Context, in *adminin.OrderCreateInp) (res *adminin.OrderCreateModel, err error) {
+	orderSn, err := payment.GenOrderSn(ctx)
+	if err != nil {
+		return
+	}
 	var (
 		subject = "支付订单"
-		orderSn = payment.GenOrderSn(ctx)
 	)
 
 	switch in.OrderType {

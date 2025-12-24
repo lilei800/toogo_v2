@@ -124,26 +124,26 @@ var (
 func (c CGenDao) Dao(ctx context.Context, in CGenDaoInput) (out *CGenDaoOutput, err error) {
 	in.genItems = newCGenDaoInternalGenItems()
 	if in.Link != "" {
-		doGenDaoForArray(ctx, -1, in)
+		DoGenDaoForArray(ctx, -1, in)
 	} else if g.Cfg().Available(ctx) {
 		v := g.Cfg().MustGet(ctx, CGenDaoConfig)
 		if v.IsSlice() {
 			for i := 0; i < len(v.Interfaces()); i++ {
-				doGenDaoForArray(ctx, i, in)
+				DoGenDaoForArray(ctx, i, in)
 			}
 		} else {
-			doGenDaoForArray(ctx, -1, in)
+			DoGenDaoForArray(ctx, -1, in)
 		}
 	} else {
-		doGenDaoForArray(ctx, -1, in)
+		DoGenDaoForArray(ctx, -1, in)
 	}
 	doClear(in.genItems)
 	mlog.Print("done!")
 	return
 }
 
-// doGenDaoForArray implements the "gen dao" command for configuration array.
-func doGenDaoForArray(ctx context.Context, index int, in CGenDaoInput) {
+// DoGenDaoForArray implements the "gen dao" command for configuration array.
+func DoGenDaoForArray(ctx context.Context, index int, in CGenDaoInput) {
 	if in.genItems == nil {
 		in.genItems = newCGenDaoInternalGenItems()
 	}

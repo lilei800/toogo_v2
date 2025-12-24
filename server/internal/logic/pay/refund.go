@@ -77,7 +77,10 @@ func (s *sPayRefund) Refund(ctx context.Context, in *payin.PayRefundInp) (res *p
 	}
 	traceIds = append(traceIds, gctx.CtxId(ctx))
 
-	refundSn := payment.GenRefundSn(ctx)
+	refundSn, err := payment.GenRefundSn(ctx)
+	if err != nil {
+		return
+	}
 
 	// 创建第三方平台退款
 	req := payin.RefundInp{

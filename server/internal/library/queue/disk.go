@@ -125,7 +125,8 @@ func (d *DiskProducerMq) getProducer(topic string) *disk.Queue {
 
 func NewDiskQueue(topic string, config *disk.Config) *disk.Queue {
 	conf := &disk.Config{
-		Path:         fmt.Sprintf(config.Path + "/" + config.GroupName + "/" + topic),
+		// 这里不需要 fmt.Sprintf，直接拼接即可（避免 go vet: non-constant format string）
+		Path:         config.Path + "/" + config.GroupName + "/" + topic,
 		BatchSize:    config.BatchSize,
 		BatchTime:    config.BatchTime * time.Second,
 		SegmentSize:  config.SegmentSize,

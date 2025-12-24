@@ -7,16 +7,18 @@ package cmd
 
 import (
 	"context"
+	"hotgo/internal/library/addons"
+	"hotgo/internal/library/casbin"
+	"hotgo/internal/library/hggen"
+	"hotgo/internal/logic/toogo"
+	"hotgo/internal/router"
+	"hotgo/internal/service"
+	"hotgo/internal/websocket"
+
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/net/ghttp"
 	"github.com/gogf/gf/v2/os/gcmd"
 	"github.com/gogf/gf/v2/util/gmode"
-	"hotgo/internal/library/addons"
-	"hotgo/internal/library/casbin"
-	"hotgo/internal/library/hggen"
-	"hotgo/internal/router"
-	"hotgo/internal/service"
-	"hotgo/internal/websocket"
 )
 
 var (
@@ -83,6 +85,18 @@ var (
 			// 注册支付成功回调方法
 			service.Pay().RegisterNotifyCall()
 
+			// 启动Toogo机器人任务管理器
+			if err := toogo.GetRobotTaskManager().Start(ctx); err != nil {
+				g.Log().Warningf(ctx, "启动机器人任务管理器失败: %v", err)
+			} else {
+				g.Log().Info(ctx, "机器人任务管理器已启动")
+			}
+
+			// 注册Toogo定时任务（订单同步等）
+			if err := toogo.RegisterAllCronTasks(ctx); err != nil {
+				g.Log().Warningf(ctx, "注册定时任务失败: %v", err)
+			}
+
 			serverWg.Add(1)
 
 			// 信号监听
@@ -90,10 +104,12 @@ var (
 
 			go func() {
 				<-serverCloseSignal
-				websocket.Stop()              // 关闭websocket
-				service.TCPServer().Stop(ctx) // 关闭tcp服务器
-				addons.StopModules(ctx)       // 停止插件
-				_ = s.Shutdown()              // 关闭http服务，主服务建议放在最后一个关闭
+				toogo.StopAllCronTasks(ctx)        // 停止定时任务
+				toogo.GetRobotTaskManager().Stop() // 停止机器人任务管理器
+				websocket.Stop()                   // 关闭websocket
+				service.TCPServer().Stop(ctx)      // 关闭tcp服务器
+				addons.StopModules(ctx)            // 停止插件
+				_ = s.Shutdown()                   // 关闭http服务，主服务建议放在最后一个关闭
 				g.Log().Debug(ctx, "http successfully closed ..")
 				serverWg.Done()
 			}()

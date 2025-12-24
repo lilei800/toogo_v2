@@ -45,12 +45,18 @@
       </n-input>
     </n-form-item>
 
+    <n-form-item path="email">
+      <n-input @keyup.enter="handleSubmit" v-model:value="formInline.email" placeholder="请输入邮箱">
+        <template #prefix>
+          <n-icon size="18" color="#808695">
+            <MailOutlined />
+          </n-icon>
+        </template>
+      </n-input>
+    </n-form-item>
+
     <n-form-item path="mobile">
-      <n-input
-        @keyup.enter="handleSubmit"
-        v-model:value="formInline.mobile"
-        placeholder="请输入手机号码"
-      >
+      <n-input @keyup.enter="handleSubmit" v-model:value="formInline.mobile" placeholder="请输入手机号">
         <template #prefix>
           <n-icon size="18" color="#808695">
             <MobileOutlined />
@@ -59,33 +65,28 @@
       </n-input>
     </n-form-item>
 
-    <n-form-item path="code">
+    <!-- 邮箱验证码暂时关闭 -->
+    <!-- <n-form-item path="emailCode">
       <n-input-group>
         <n-input
           @keyup.enter="handleSubmit"
-          v-model:value="formInline.code"
-          placeholder="请输入验证码"
+          v-model:value="formInline.emailCode"
+          placeholder="请输入邮箱验证码"
         >
           <template #prefix>
             <n-icon size="18" color="#808695" :component="SafetyCertificateOutlined" />
           </template>
         </n-input>
-        <n-button
-          type="primary"
-          ghost
-          @click="sendMobileCode"
-          :disabled="isCounting"
-          :loading="sendLoading"
-        >
+        <n-button type="primary" ghost @click="sendEmailCode" :disabled="isCounting" :loading="sendLoading">
           {{ sendLabel }}
         </n-button>
       </n-input-group>
-    </n-form-item>
+    </n-form-item> -->
 
     <n-form-item path="inviteCode">
       <n-input
         :style="{ width: '100%' }"
-        placeholder="邀请码(选填)"
+        placeholder="邀请码(必填)"
         @keyup.enter="handleSubmit"
         v-model:value="formInline.inviteCode"
         :disabled="inviteCodeDisabled"
@@ -108,8 +109,6 @@
         注册
       </n-button>
     </n-form-item>
-
-    <FormOther moduleKey="login" tag="登录账号" @updateActiveModule="updateActiveModule" />
   </n-form>
 
   <n-modal
@@ -145,13 +144,12 @@
   import { useMessage } from 'naive-ui';
   import { ResultEnum } from '@/enums/httpEnum';
   import { PersonOutline, LockClosedOutline } from '@vicons/ionicons5';
-  import { SafetyCertificateOutlined, MobileOutlined, TagOutlined } from '@vicons/antd';
+  import { SafetyCertificateOutlined, TagOutlined, MailOutlined, MobileOutlined } from '@vicons/antd';
   import { aesEcb } from '@/utils/encrypt';
   import Agreement from './agreement.vue';
-  import FormOther from '../components/form-other.vue';
   import { useSendCode } from '@/hooks/common';
   import { validate } from '@/utils/validateUtil';
-  import { register, SendSms } from '@/api/system/user';
+  import { register, SendRegisterEmail } from '@/api/system/user';
   import { useUserStore } from '@/store/modules/user';
   import { adaModalWidth } from '@/utils/hotgo';
 
@@ -159,8 +157,9 @@
     username: string;
     pass: string;
     confirmPwd: string;
+    email: string;
     mobile: string;
-    code: string;
+    emailCode: string;
     inviteCode: string;
     password: string;
   }
@@ -185,8 +184,9 @@
     username: '',
     pass: '',
     confirmPwd: '',
+    email: '',
     mobile: '',
-    code: '',
+    emailCode: '',
     inviteCode: '',
     password: '',
   });
@@ -194,8 +194,10 @@
   const rules = {
     username: { required: true, message: '请输入用户名', trigger: 'blur' },
     pass: { required: true, message: '请输入密码', trigger: 'blur' },
-    mobile: { required: true, message: '请输入手机号码', trigger: 'blur' },
-    code: { required: true, message: '请输入验证码', trigger: 'blur' },
+    email: { required: true, message: '请输入邮箱', trigger: 'blur' },
+    mobile: { required: true, message: '请输入手机号', trigger: 'blur' },
+    // emailCode: { required: true, message: '请输入邮箱验证码', trigger: 'blur' }, // 暂时关闭邮箱验证
+    inviteCode: { required: true, message: '请输入邀请码', trigger: 'blur' },
   };
 
   const handleSubmit = (e) => {
@@ -219,8 +221,9 @@
           const { code, message: msg } = await register({
             username: formInline.value.username,
             password: aesEcb.encrypt(formInline.value.pass),
+            email: formInline.value.email,
             mobile: formInline.value.mobile,
-            code: formInline.value.code,
+            // emailCode: formInline.value.emailCode, // 暂时关闭邮箱验证
             inviteCode: formInline.value.inviteCode,
           });
           message.destroyAll();
@@ -234,7 +237,7 @@
           loading.value = false;
         }
       } else {
-        message.error('请填写完整信息，并且进行验证码校验');
+        message.error('请填写完整信息');
       }
     });
   };
@@ -251,10 +254,10 @@
     emit('updateActiveModule', key);
   }
 
-  function sendMobileCode() {
-    validate.phone(rules.mobile, formInline.value.mobile, function (error?: Error) {
+  function sendEmailCode() {
+    validate.email(rules.email, formInline.value.email, function (error?: Error) {
       if (error === undefined) {
-        activateSend(SendSms({ mobile: formInline.value.mobile, event: 'register' }));
+        activateSend(SendRegisterEmail({ email: formInline.value.email }));
         return;
       }
       message.error(error.message);

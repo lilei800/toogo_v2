@@ -104,6 +104,8 @@ type (
 		MemberLoginStat(ctx context.Context, in *adminin.MemberLoginStatInp) (res *adminin.MemberLoginStatModel, err error)
 		// GetIdByCode 通过邀请码获取用户ID
 		GetIdByCode(ctx context.Context, in *adminin.GetIdByCodeInp) (res *adminin.GetIdByCodeModel, err error)
+		// GeneratePermanentInviteCode 生成永久邀请码
+		GeneratePermanentInviteCode() string
 		// Select 获取可选的用户选项
 		Select(ctx context.Context, in *adminin.MemberSelectInp) (res []*adminin.MemberSelectModel, err error)
 		// GetLowerIds 获取指定用户的所有下级ID集合

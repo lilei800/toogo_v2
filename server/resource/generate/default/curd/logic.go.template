@@ -152,11 +152,11 @@ func (s *s@{.servFunName}) Delete(ctx context.Context, in *@{.templateGroup}in.@
 		return gerror.New("请先删除该@{.tableComment}下的所有下级！")
 	}@{end}
 	@{ if eq .deletedUpdate "" }
-	if _, err = s.Model(ctx@{ if eq .options.Step.HasNotFilterAuth true } ,&handler.Option{FilterAuth: false}@{end}).WherePri(in.@{.pk.GoName}).Unscoped().Delete();err != nil {
+	if _, err = s.Model(ctx@{ if eq .options.Step.HasNotFilterAuth true } ,&handler.Option{FilterAuth: false}@{end}).Where("id", in.@{.pk.GoName}).Unscoped().Delete();err != nil {
 		err = gerror.Wrap(err, "删除@{.tableComment}失败，请稍后重试！")
     	return
 	}@{else}
-	if _, err = s.Model(ctx@{ if eq .options.Step.HasNotFilterAuth true } ,&handler.Option{FilterAuth: false}@{end}).WherePri(in.@{.pk.GoName}).Data(@{.deletedUpdate}).Unscoped().Update();err != nil {
+	if _, err = s.Model(ctx@{ if eq .options.Step.HasNotFilterAuth true } ,&handler.Option{FilterAuth: false}@{end}).Where("id", in.@{.pk.GoName}).Data(@{.deletedUpdate}).Unscoped().Update();err != nil {
 		err = gerror.Wrap(err, "删除@{.tableComment}失败，请稍后重试！")
 		return
 	}@{end}
@@ -183,7 +183,7 @@ func (s *s@{.servFunName}) MaxSort(ctx context.Context, in *@{.templateGroup}in.
 @{ if or (eq .options.Step.HasView true) (eq .options.Step.HasEdit true) }
 // View 获取@{.tableComment}指定信息
 func (s *s@{.servFunName}) View(ctx context.Context, in *@{.templateGroup}in.@{.varName}ViewInp) (res *@{.templateGroup}in.@{.varName}ViewModel, err error) {
-    if err = s.Model(ctx@{ if eq .options.Step.HasNotFilterAuth true } ,&handler.Option{FilterAuth: false}@{end}).WherePri(in.@{.pk.GoName})@{ if eq .options.Step.HasHookMemberSummary true }.Hook(hook.MemberSummary)@{end}.Scan(&res);err != nil {
+    if err = s.Model(ctx@{ if eq .options.Step.HasNotFilterAuth true } ,&handler.Option{FilterAuth: false}@{end}).Where("id", in.@{.pk.GoName})@{ if eq .options.Step.HasHookMemberSummary true }.Hook(hook.MemberSummary)@{end}.Scan(&res);err != nil {
 		err = gerror.Wrap(err, "获取@{.tableComment}信息，请稍后重试！")
 		return
     }
@@ -193,7 +193,7 @@ func (s *s@{.servFunName}) View(ctx context.Context, in *@{.templateGroup}in.@{.
 @{ if eq .options.Step.HasStatus true }
 // Status 更新@{.tableComment}状态
 func (s *s@{.servFunName}) Status(ctx context.Context, in *@{.templateGroup}in.@{.varName}StatusInp) (err error) {
-	if _, err = s.Model(ctx@{ if eq .options.Step.HasNotFilterAuth true } ,&handler.Option{FilterAuth: false}@{end}).WherePri(in.@{.pk.GoName}).Data(@{.statusUpdate}).Update();err != nil {
+	if _, err = s.Model(ctx@{ if eq .options.Step.HasNotFilterAuth true } ,&handler.Option{FilterAuth: false}@{end}).Where("id", in.@{.pk.GoName}).Data(@{.statusUpdate}).Update();err != nil {
 		err = gerror.Wrap(err, "更新@{.tableComment}状态失败，请稍后重试！")
 		return
 	}
@@ -213,7 +213,7 @@ func (s *s@{.servFunName}) Switch(ctx context.Context, in *@{.templateGroup}in.@
 		return
 	}
 
-	if _, err = s.Model(ctx@{ if eq .options.Step.HasNotFilterAuth true } ,&handler.Option{FilterAuth: false}@{end}).WherePri(in.@{.pk.GoName}).Data(@{.switchUpdate}).Update();err != nil {
+	if _, err = s.Model(ctx@{ if eq .options.Step.HasNotFilterAuth true } ,&handler.Option{FilterAuth: false}@{end}).Where("id", in.@{.pk.GoName}).Data(@{.switchUpdate}).Update();err != nil {
 		err = gerror.Wrap(err, "更新@{.tableComment}开关失败，请稍后重试！")
 		return
 	}

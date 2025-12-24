@@ -108,7 +108,7 @@ func (s *sSysTestCategory) Edit(ctx context.Context, in *sysin.TestCategoryEditI
 // Delete 删除测试分类
 func (s *sSysTestCategory) Delete(ctx context.Context, in *sysin.TestCategoryDeleteInp) (err error) {
 
-	if _, err = s.Model(ctx).WherePri(in.Id).Unscoped().Delete(); err != nil {
+	if _, err = s.Model(ctx).Where("id", in.Id).Unscoped().Delete(); err != nil {
 		err = gerror.Wrap(err, "删除测试分类失败，请稍后重试！")
 		return
 	}
@@ -132,7 +132,7 @@ func (s *sSysTestCategory) MaxSort(ctx context.Context, in *sysin.TestCategoryMa
 
 // View 获取测试分类指定信息
 func (s *sSysTestCategory) View(ctx context.Context, in *sysin.TestCategoryViewInp) (res *sysin.TestCategoryViewModel, err error) {
-	if err = s.Model(ctx).WherePri(in.Id).Scan(&res); err != nil {
+	if err = s.Model(ctx).Where("id", in.Id).Scan(&res); err != nil {
 		err = gerror.Wrap(err, "获取测试分类信息，请稍后重试！")
 		return
 	}
@@ -141,7 +141,7 @@ func (s *sSysTestCategory) View(ctx context.Context, in *sysin.TestCategoryViewI
 
 // Status 更新测试分类状态
 func (s *sSysTestCategory) Status(ctx context.Context, in *sysin.TestCategoryStatusInp) (err error) {
-	if _, err = s.Model(ctx).WherePri(in.Id).Data(g.Map{
+	if _, err = s.Model(ctx).Where("id", in.Id).Data(g.Map{
 		dao.TestCategory.Columns().Status: in.Status,
 	}).Update(); err != nil {
 		err = gerror.Wrap(err, "更新测试分类状态失败，请稍后重试！")
