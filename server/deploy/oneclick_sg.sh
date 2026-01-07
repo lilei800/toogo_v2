@@ -82,41 +82,65 @@ prepare_files() {
 
   mkdir -p deploy_data/certbot/www deploy_data/certbot/conf deploy_data/nginx_logs logs storage
 
-  # Create .env if missing
-  if [[ ! -f ".env" ]]; then
-    cp -f deploy/env.prod.example .env
-  fi
-
   # Generate token secret if not set
   if [[ -z "${TOKEN_SECRET_KEY}" ]]; then
     TOKEN_SECRET_KEY="$(openssl rand -hex 32)"
   fi
 
-  # Write required envs (overwrite/add)
-  # shellcheck disable=SC2016
-  sed -i \
-    -e "s/^TZ=.*/TZ=${TZ}/" \
-    -e "s/^PG_DB=.*/PG_DB=${PG_DB}/" \
-    -e "s/^PG_USER=.*/PG_USER=${PG_USER}/" \
-    -e "s/^PG_PASSWORD=.*/PG_PASSWORD=${PG_PASSWORD}/" \
-    -e "s/^REDIS_PASSWORD=.*/REDIS_PASSWORD=${REDIS_PASSWORD}/" \
-    -e "s/^TOKEN_SECRET_KEY=.*/TOKEN_SECRET_KEY=${TOKEN_SECRET_KEY}/" \
-    -e "s/^TCP_CRON_SECRET_KEY=.*/TCP_CRON_SECRET_KEY=${TCP_CRON_SECRET_KEY}/" \
-    -e "s/^TCP_AUTH_SECRET_KEY=.*/TCP_AUTH_SECRET_KEY=${TCP_AUTH_SECRET_KEY}/" \
-    .env
+  # Create/overwrite .env in a safe way (avoid sed delimiter issues like TZ=Asia/Singapore).
+  if [[ -f ".env" ]]; then
+    cp -f ".env" ".env.bak.$(date +%Y%m%d_%H%M%S)" || true
+  fi
+  cat > .env <<EOF
+TZ=${TZ}
+
+# ===== PostgreSQL =====
+PG_DB=${PG_DB}
+PG_USER=${PG_USER}
+PG_PASSWORD=${PG_PASSWORD}
+
+# ===== Redis =====
+REDIS_PASSWORD=${REDIS_PASSWORD}
+
+# ===== App secrets =====
+TOKEN_SECRET_KEY=${TOKEN_SECRET_KEY}
+TCP_CRON_SECRET_KEY=${TCP_CRON_SECRET_KEY}
+TCP_AUTH_SECRET_KEY=${TCP_AUTH_SECRET_KEY}
+
+# ===== Optional proxy for exchange APIs =====
+PROXY_ENABLED=false
+PROXY_TYPE=socks5
+PROXY_HOST=127.0.0.1
+PROXY_PORT=10808
+
+# ===== Runtime =====
+GOMAXPROCS=2
+EOF
 
   # Ensure docker config is active as config.yaml
   if [[ -f "manifest/config/config.docker.yaml" ]]; then
     cp -f manifest/config/config.docker.yaml manifest/config/config.yaml
   fi
 
+  esc_sed_repl() {
+    # Escape replacement for sed with '|' delimiter: \, &, |
+    printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
+  }
+
+  local pg_pw redis_pw token_sk cron_sk auth_sk
+  pg_pw="$(esc_sed_repl "${PG_PASSWORD}")"
+  redis_pw="$(esc_sed_repl "${REDIS_PASSWORD}")"
+  token_sk="$(esc_sed_repl "${TOKEN_SECRET_KEY}")"
+  cron_sk="$(esc_sed_repl "${TCP_CRON_SECRET_KEY}")"
+  auth_sk="$(esc_sed_repl "${TCP_AUTH_SECRET_KEY}")"
+
   # Replace placeholders in config.yaml (gf won't expand ${VAR:default} reliably per repo notes)
   sed -i \
-    -e "s/CHANGE_ME_PG_PASSWORD/${PG_PASSWORD//\//\\/}/g" \
-    -e "s/CHANGE_ME_REDIS_PASSWORD/${REDIS_PASSWORD//\//\\/}/g" \
-    -e "s/CHANGE_ME_TOKEN_SECRET_KEY/${TOKEN_SECRET_KEY//\//\\/}/g" \
-    -e "s/CHANGE_ME_TCP_CRON_SECRET_KEY/${TCP_CRON_SECRET_KEY//\//\\/}/g" \
-    -e "s/CHANGE_ME_TCP_AUTH_SECRET_KEY/${TCP_AUTH_SECRET_KEY//\//\\/}/g" \
+    -e "s|CHANGE_ME_PG_PASSWORD|${pg_pw}|g" \
+    -e "s|CHANGE_ME_REDIS_PASSWORD|${redis_pw}|g" \
+    -e "s|CHANGE_ME_TOKEN_SECRET_KEY|${token_sk}|g" \
+    -e "s|CHANGE_ME_TCP_CRON_SECRET_KEY|${cron_sk}|g" \
+    -e "s|CHANGE_ME_TCP_AUTH_SECRET_KEY|${auth_sk}|g" \
     manifest/config/config.yaml
 }
 
