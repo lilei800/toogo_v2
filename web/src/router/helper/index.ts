@@ -37,13 +37,13 @@ export const routerGenerator = (routerMap, parent?): any[] => {
     // 为了防止出现后端返回结果不规范，处理有可能出现拼接出两个 反斜杠
     currentRouter.path = currentRouter.path.replace('//', '/');
     // 重定向 ,菜单类型为目录默认默认跳转
-    if(item.meta.type === 1){
+    if (item.meta.type === 1) {
       item.redirect && (currentRouter.redirect = item.redirect);
     }
     // 是否有子菜单，并递归处理
     if (item.children && item.children.length > 0) {
       //如果未定义 redirect 默认第一个子路由为 redirect
-      if(item.meta.type === 1) {
+      if (item.meta.type === 1) {
         !item.redirect && (currentRouter.redirect = `${item.path}/${item.children[0].path}`);
       }
       // Recursion
@@ -104,7 +104,7 @@ export const asyncImportRoute = (routes: AppRouteRecordRaw[] | undefined): void 
  * */
 export const dynamicImport = (
   viewsModules: Record<string, () => Promise<Recordable>>,
-  component: string
+  component: string,
 ) => {
   const keys = Object.keys(viewsModules);
   const matchKeys = keys.filter((key) => {
@@ -119,7 +119,7 @@ export const dynamicImport = (
   }
   if (matchKeys?.length > 1) {
     console.warn(
-      'Please do not create `.vue` and `.TSX` files with the same file name in the same hierarchical directory under the views folder. This will cause dynamic introduction failure'
+      'Please do not create `.vue` and `.TSX` files with the same file name in the same hierarchical directory under the views folder. This will cause dynamic introduction failure',
     );
     return;
   }

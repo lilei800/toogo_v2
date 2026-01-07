@@ -32,6 +32,13 @@ type WebSocketConfig struct {
 	MaxReconnects     int                                          // 最大重连次数
 	MessageBufferSize int                                          // 消息缓冲区大小
 	ProxyDialer       func(network, addr string) (net.Conn, error) // 代理拨号器（可选）
+
+	// PingAsText:
+	// - false: 使用 WS 协议层 ping frame（websocket.PingMessage）
+	// - true : 使用“业务级心跳”（TextMessage），内容为 PingMessage
+	// 说明：部分交易所要求业务级 ping（如 {"op":"ping"} 或 "ping"），仅发 WS ping 可能会被服务端断开（1006）。
+	PingAsText  bool
+	PingMessage interface{} // PingAsText=true 时发送；可为 string/[]byte/struct/map
 }
 
 // DefaultWebSocketConfig 默认配置
@@ -42,6 +49,8 @@ func DefaultWebSocketConfig() *WebSocketConfig {
 		ReconnectDelay:    1 * time.Second,
 		MaxReconnects:     100,
 		MessageBufferSize: 1000,
+		PingAsText:        false,
+		PingMessage:       nil,
 	}
 }
 
@@ -301,6 +310,9 @@ func (c *WebSocketConnection) processLoop(ctx context.Context) {
 
 // pingLoop 心跳循环（使用写入锁防止并发写入）
 func (c *WebSocketConnection) pingLoop(ctx context.Context) {
+	if c.config.PingInterval <= 0 {
+		return
+	}
 	ticker := time.NewTicker(c.config.PingInterval)
 	defer ticker.Stop()
 
@@ -319,7 +331,25 @@ func (c *WebSocketConnection) pingLoop(ctx context.Context) {
 
 			// 使用写入锁保护 WriteMessage，防止 concurrent write to websocket connection
 			c.writeMu.Lock()
-			err := conn.WriteMessage(websocket.PingMessage, nil)
+			var err error
+			if c.config.PingAsText {
+				var msg []byte
+				switch v := c.config.PingMessage.(type) {
+				case nil:
+					msg = []byte("ping")
+				case []byte:
+					msg = v
+				case string:
+					msg = []byte(v)
+				default:
+					msg, err = json.Marshal(v)
+				}
+				if err == nil {
+					err = conn.WriteMessage(websocket.TextMessage, msg)
+				}
+			} else {
+				err = conn.WriteMessage(websocket.PingMessage, nil)
+			}
 			c.writeMu.Unlock()
 
 			if err != nil {

@@ -29,7 +29,11 @@
               </n-gi>
               <n-gi span="2">
                 <n-form-item label="描述" path="description">
-                  <n-input type="textarea" placeholder="描述" v-model:value="formValue.description" />
+                  <n-input
+                    type="textarea"
+                    placeholder="描述"
+                    v-model:value="formValue.description"
+                  />
                 </n-form-item>
               </n-gi>
               <n-gi span="2">
@@ -54,8 +58,11 @@
               </n-gi>
               <n-gi span="1">
                 <n-form-item label="显示开关" path="switch">
-                  <n-switch :unchecked-value="2" :checked-value="1" v-model:value="formValue.switch"
-        />
+                  <n-switch
+                    :unchecked-value="2"
+                    :checked-value="1"
+                    v-model:value="formValue.switch"
+                  />
                 </n-form-item>
               </n-gi>
               <n-gi span="1">
@@ -69,10 +76,13 @@
       </n-scrollbar>
       <template #action>
         <n-space>
-          <n-button @click="closeForm">
-            取消
-          </n-button>
-          <n-button type="info" :loading="formBtnLoading" :disabled="!isFormValid" @click="confirmForm">
+          <n-button @click="closeForm"> 取消 </n-button>
+          <n-button
+            type="info"
+            :loading="formBtnLoading"
+            :disabled="!isFormValid"
+            @click="confirmForm"
+          >
             确定
           </n-button>
         </n-space>

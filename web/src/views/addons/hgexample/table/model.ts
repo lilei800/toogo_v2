@@ -336,7 +336,7 @@ export const columns = [
         },
         {
           default: () => getFileExt(row.attachfile),
-        }
+        },
       );
     },
   },
@@ -358,7 +358,7 @@ export const columns = [
           },
           {
             default: () => getFileExt(attachfile),
-          }
+          },
         );
       });
     },
@@ -397,7 +397,7 @@ export const columns = [
         },
         {
           default: () => row.price.toFixed(2),
-        }
+        },
       );
     },
   },

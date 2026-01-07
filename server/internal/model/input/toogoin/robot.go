@@ -126,6 +126,12 @@ type PositionModel struct {
 	LiquidationPrice  float64 `json:"liquidationPrice" description:"强平价格"`
 	MaxProfitReached  float64 `json:"maxProfitReached" description:"最高盈利金额"`
 	TakeProfitEnabled bool    `json:"takeProfitEnabled" description:"止盈是否已启动"`
+	// ===== 血条/进度（后端计算，前端只展示；断开客户端后仍可运行）=====
+	RealTimeProfitPercent    float64 `json:"realTimeProfitPercent" description:"实时盈利百分比=未实现盈亏/保证金×100(%)"`
+	TakeProfitStartProgress  float64 `json:"takeProfitStartProgress" description:"启动止盈血条进度(0-100)，达到100%后锁定不再变化，直到平仓"`
+	TakeProfitRetreatPercent float64 `json:"takeProfitRetreatPercent" description:"止盈回撤百分比=(最高盈利-未实现盈亏)/最高盈利×100(%)"`
+	TakeProfitRetreatBar     float64 `json:"takeProfitRetreatBar" description:"止盈回撤血条(0-100)，默认100回撤到0触发止盈"`
+	StopLossProgress         float64 `json:"stopLossProgress" description:"止损血条进度(0-100)，>=100触发止损"`
 	CreateTime        int64   `json:"createTime" description:"开仓时间(毫秒时间戳)"`
 	// 订单创建时的策略参数（用于血条计算，优先使用订单创建时的参数）
 	// 注意：不使用 omitempty，确保即使值为 nil 也会返回 null，前端可以检测到

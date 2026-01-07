@@ -35,10 +35,10 @@
             <stop offset="100%" style="stop-color: #000000; stop-opacity: 0" />
           </radialGradient>
           <!-- 护盾渐变 -->
-           <radialGradient id="shield-gradient" cx="50%" cy="50%" r="50%">
-                <stop offset="0%" style="stop-color:#4cd137;stop-opacity:0" />
-                <stop offset="100%" style="stop-color:#4cd137;stop-opacity:0.2" />
-            </radialGradient>
+          <radialGradient id="shield-gradient" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" style="stop-color: #4cd137; stop-opacity: 0" />
+            <stop offset="100%" style="stop-color: #4cd137; stop-opacity: 0.2" />
+          </radialGradient>
         </defs>
 
         <!-- 阴影 -->
@@ -86,8 +86,9 @@
             font-size="14"
             class="logo-text"
             style="filter: drop-shadow(0 0 2px #00f3ff)"
-            >Toogo.Ai</text
           >
+            Toogo.Ai
+          </text>
           <!-- 数据流效果 (专注模式用) -->
           <g class="data-stream" style="opacity: 0">
             <rect
@@ -169,7 +170,11 @@
                   d="M0 5 q-5 -10 -10 -5 t 10 10 t 10 -10 t -10 5"
                   fill="#ff0055"
                   class="eye-heart"
-                  style="display: none; transform: scale(1.5) translate(-5px, -5px); filter: drop-shadow(0 0 5px #ff0055)"
+                  style="
+                    display: none;
+                    transform: scale(1.5) translate(-5px, -5px);
+                    filter: drop-shadow(0 0 5px #ff0055);
+                  "
                 />
                 <!-- 眯眼线 (默认隐藏) -->
                 <path
@@ -196,7 +201,11 @@
                   d="M0 5 q-5 -10 -10 -5 t 10 10 t 10 -10 t -10 5"
                   fill="#ff0055"
                   class="eye-heart"
-                  style="display: none; transform: scale(1.5) translate(-5px, -5px); filter: drop-shadow(0 0 5px #ff0055)"
+                  style="
+                    display: none;
+                    transform: scale(1.5) translate(-5px, -5px);
+                    filter: drop-shadow(0 0 5px #ff0055);
+                  "
                 />
                 <path
                   d="M-10 0 L 10 0"
@@ -393,8 +402,8 @@
     setMood(moods[currentIndex]);
 
     moodInterval = setInterval(() => {
-        currentIndex = (currentIndex + 1) % moods.length;
-        setMood(moods[currentIndex]);
+      currentIndex = (currentIndex + 1) % moods.length;
+      setMood(moods[currentIndex]);
     }, 5000); // 每5秒切换一次
   }
 
@@ -447,27 +456,26 @@
   function initInteractions() {
     const robot = robotRef.value;
     if (!robot) return;
-    
+
     const head = robot.querySelector('.head-group') as HTMLElement;
     const body = robot.querySelector('.body-group') as HTMLElement;
 
-
     // 点击头部 -> 害羞/开心
     if (head) {
-        head.addEventListener('click', (e) => {
+      head.addEventListener('click', (e) => {
         e.stopPropagation(); // 防止冒泡
         setMood('happy');
         setTimeout(() => setMood('normal'), 2000);
-        });
+      });
     }
 
     // 点击身体 -> 疑惑/震动
     if (body) {
-        body.addEventListener('click', (e) => {
+      body.addEventListener('click', (e) => {
         e.stopPropagation();
         setMood('excited');
         setTimeout(() => setMood('normal'), 2000);
-        });
+      });
     }
   }
 
@@ -495,7 +503,7 @@
     --sad-color: #4a69bd;
     --excited-color: #f6b93b;
   }
-  
+
   /* Helper vars since we can't use :root in scoped style effectively for vars unless global.
      We will replace vars with values or define host vars.
   */
@@ -520,7 +528,6 @@
     width: 100%;
   }
 
-
   header h1 {
     margin: 0;
     font-size: 2.5rem;
@@ -532,7 +539,7 @@
   }
 
   header p {
-      text-align: center;
+    text-align: center;
   }
 
   .scene {
@@ -681,37 +688,45 @@
   /* --- 心情状态: 开心 (Happy) --- */
   /* Need deep selectors because SVG is complex? No, just normal scoped styles if elements are inside. */
   /* Note: In scoped CSS, we need to match elements inside child components or use :deep(). But here everything is in the same component. */
-  
-  :deep(.mood-happy) #toogo-robot, .mood-happy #toogo-robot {
+
+  :deep(.mood-happy) #toogo-robot,
+  .mood-happy #toogo-robot {
     animation: jump 0.8s infinite alternate;
   }
 
-  :deep(.mood-happy) .tail-group, .mood-happy .tail-group {
+  :deep(.mood-happy) .tail-group,
+  .mood-happy .tail-group {
     animation: wag 0.5s infinite ease-in-out;
   }
 
-  :deep(.mood-happy) .eye-ball, .mood-happy .eye-ball {
+  :deep(.mood-happy) .eye-ball,
+  .mood-happy .eye-ball {
     display: none;
   }
 
-  :deep(.mood-happy) .eye-squint, .mood-happy .eye-squint {
+  :deep(.mood-happy) .eye-squint,
+  .mood-happy .eye-squint {
     display: block !important;
     transform: scale(1.2);
   }
 
-  :deep(.mood-happy) .mouth-smile, .mood-happy .mouth-smile {
+  :deep(.mood-happy) .mouth-smile,
+  .mood-happy .mouth-smile {
     opacity: 1 !important;
   }
 
-  :deep(.mood-happy) .cheeks, .mood-happy .cheeks {
+  :deep(.mood-happy) .cheeks,
+  .mood-happy .cheeks {
     opacity: 1 !important;
   }
 
-  :deep(.mood-happy) .eyebrow, .mood-happy .eyebrow {
+  :deep(.mood-happy) .eyebrow,
+  .mood-happy .eyebrow {
     transform: translateY(-5px);
   }
 
-  :deep(.mood-happy) .shadow, .mood-happy .shadow {
+  :deep(.mood-happy) .shadow,
+  .mood-happy .shadow {
     animation: shadow-jump 0.8s infinite alternate;
   }
 
@@ -751,28 +766,34 @@
   }
 
   /* --- 心情状态: 思考 (Thinking) --- */
-  :deep(.mood-thinking) .head-group, .mood-thinking .head-group {
+  :deep(.mood-thinking) .head-group,
+  .mood-thinking .head-group {
     transform: rotate(15deg);
   }
 
-  :deep(.mood-thinking) .indicator-light, .mood-thinking .indicator-light {
+  :deep(.mood-thinking) .indicator-light,
+  .mood-thinking .indicator-light {
     animation: flash-light 0.5s infinite;
     fill: #ff9f43;
   }
 
-  :deep(.mood-thinking) .eye-ball, .mood-thinking .eye-ball {
+  :deep(.mood-thinking) .eye-ball,
+  .mood-thinking .eye-ball {
     transform: scale(1.2);
   }
 
-  :deep(.mood-thinking) .mouth-line, .mood-thinking .mouth-line {
+  :deep(.mood-thinking) .mouth-line,
+  .mood-thinking .mouth-line {
     opacity: 1 !important;
   }
 
-  :deep(.mood-thinking) .left-eyebrow, .mood-thinking .left-eyebrow {
+  :deep(.mood-thinking) .left-eyebrow,
+  .mood-thinking .left-eyebrow {
     transform: translateY(-3px) rotate(-10deg);
   }
 
-  :deep(.mood-thinking) .right-eyebrow, .mood-thinking .right-eyebrow {
+  :deep(.mood-thinking) .right-eyebrow,
+  .mood-thinking .right-eyebrow {
     transform: translateY(3px) rotate(10deg);
   }
 
@@ -788,29 +809,35 @@
   }
 
   /* --- 心情状态: 疑惑 (Confused) --- */
-  :deep(.mood-confused) .head-group, .mood-confused .head-group {
+  :deep(.mood-confused) .head-group,
+  .mood-confused .head-group {
     animation: shake-head 2s infinite ease-in-out;
   }
 
-  :deep(.mood-confused) .question-mark, .mood-confused .question-mark {
+  :deep(.mood-confused) .question-mark,
+  .mood-confused .question-mark {
     opacity: 1 !important;
     animation: float-up 2s infinite;
   }
 
-  :deep(.mood-confused) .right-ear, .mood-confused .right-ear {
+  :deep(.mood-confused) .right-ear,
+  .mood-confused .right-ear {
     transform: rotate(20deg) translate(10px, -10px);
   }
 
-  :deep(.mood-confused) .mouth-open, .mood-confused .mouth-open {
+  :deep(.mood-confused) .mouth-open,
+  .mood-confused .mouth-open {
     opacity: 1 !important;
     transform: scale(0.8);
   }
 
-  :deep(.mood-confused) .left-eyebrow, .mood-confused .left-eyebrow {
+  :deep(.mood-confused) .left-eyebrow,
+  .mood-confused .left-eyebrow {
     transform: translateY(-5px);
   }
 
-  :deep(.mood-confused) .right-eyebrow, .mood-confused .right-eyebrow {
+  :deep(.mood-confused) .right-eyebrow,
+  .mood-confused .right-eyebrow {
     transform: translateY(2px);
   }
 
@@ -842,25 +869,30 @@
   }
 
   /* --- 心情状态: 疲惫 (Tired) --- */
-  :deep(.mood-tired) #toogo-robot, .mood-tired #toogo-robot {
+  :deep(.mood-tired) #toogo-robot,
+  .mood-tired #toogo-robot {
     animation: float 6s ease-in-out infinite; /* Slower float */
     filter: grayscale(0.5);
   }
 
-  :deep(.mood-tired) .eye, .mood-tired .eye {
+  :deep(.mood-tired) .eye,
+  .mood-tired .eye {
     animation: sleepy-blink 3s infinite;
   }
 
-  :deep(.mood-tired) .head-group, .mood-tired .head-group {
+  :deep(.mood-tired) .head-group,
+  .mood-tired .head-group {
     transform: translateY(10px) rotate(-5deg);
   }
 
-  :deep(.mood-tired) .mouth-open, .mood-tired .mouth-open {
+  :deep(.mood-tired) .mouth-open,
+  .mood-tired .mouth-open {
     opacity: 1 !important;
     animation: yawn 3s infinite;
   }
 
-  :deep(.mood-tired) .eyebrow, .mood-tired .eyebrow {
+  :deep(.mood-tired) .eyebrow,
+  .mood-tired .eyebrow {
     transform: rotate(10deg) translateY(2px); /* 八字眉 */
   }
 
@@ -889,33 +921,40 @@
   }
 
   /* --- 心情状态: 兴奋 (Excited) --- */
-  :deep(.mood-excited) #toogo-robot, .mood-excited #toogo-robot {
+  :deep(.mood-excited) #toogo-robot,
+  .mood-excited #toogo-robot {
     animation: vibrate 0.2s infinite;
   }
 
-  :deep(.mood-excited) .face-screen, .mood-excited .face-screen {
+  :deep(.mood-excited) .face-screen,
+  .mood-excited .face-screen {
     animation: rainbow-bg 1s infinite;
   }
 
-  :deep(.mood-excited) .tail-group, .mood-excited .tail-group {
+  :deep(.mood-excited) .tail-group,
+  .mood-excited .tail-group {
     animation: wag 0.2s infinite;
   }
 
-  :deep(.mood-excited) .eye-ball, .mood-excited .eye-ball {
+  :deep(.mood-excited) .eye-ball,
+  .mood-excited .eye-ball {
     display: none;
   }
 
-  :deep(.mood-excited) .eye-heart, .mood-excited .eye-heart {
+  :deep(.mood-excited) .eye-heart,
+  .mood-excited .eye-heart {
     display: block !important;
     animation: pulse-heart 0.4s infinite alternate;
   }
 
-  :deep(.mood-excited) .mouth-smile, .mood-excited .mouth-smile {
+  :deep(.mood-excited) .mouth-smile,
+  .mood-excited .mouth-smile {
     opacity: 1 !important;
     transform: scale(1.2);
   }
 
-  :deep(.mood-excited) .cheeks, .mood-excited .cheeks {
+  :deep(.mood-excited) .cheeks,
+  .mood-excited .cheeks {
     opacity: 1 !important;
   }
 
@@ -965,25 +1004,30 @@
   }
 
   /* --- 心情状态: 专注 (Focused) --- */
-  :deep(.mood-focused) .data-stream, .mood-focused .data-stream {
+  :deep(.mood-focused) .data-stream,
+  .mood-focused .data-stream {
     opacity: 1 !important;
     animation: spin-data 4s linear infinite;
   }
 
-  :deep(.mood-focused) .eye-ball, .mood-focused .eye-ball {
+  :deep(.mood-focused) .eye-ball,
+  .mood-focused .eye-ball {
     fill: #ff3333; /* Red focus */
     r: 8; /* Smaller pupil */
   }
 
-  :deep(.mood-focused) .head-group, .mood-focused .head-group {
+  :deep(.mood-focused) .head-group,
+  .mood-focused .head-group {
     transform: translateZ(0); /* Fix for sharpness if needed */
   }
 
-  :deep(.mood-focused) .mouth-line, .mood-focused .mouth-line {
+  :deep(.mood-focused) .mouth-line,
+  .mood-focused .mouth-line {
     opacity: 1 !important;
   }
 
-  :deep(.mood-focused) .eyebrow, .mood-focused .eyebrow {
+  :deep(.mood-focused) .eyebrow,
+  .mood-focused .eyebrow {
     transform: rotate(15deg) translateY(5px); /* 紧皱 */
   }
 
@@ -997,54 +1041,66 @@
   }
 
   /* --- 心情状态: 失落 (Sad) --- */
-  :deep(.mood-sad) .head-group, .mood-sad .head-group {
+  :deep(.mood-sad) .head-group,
+  .mood-sad .head-group {
     transform: translateY(20px) rotate(-10deg);
   }
 
-  :deep(.mood-sad) .tail-group, .mood-sad .tail-group {
+  :deep(.mood-sad) .tail-group,
+  .mood-sad .tail-group {
     transform: rotate(40deg); /* Tail down */
   }
 
-  :deep(.mood-sad) .face-screen, .mood-sad .face-screen {
+  :deep(.mood-sad) .face-screen,
+  .mood-sad .face-screen {
     fill: #0a0a15;
   }
 
-  :deep(.mood-sad) .eye-ball, .mood-sad .eye-ball {
+  :deep(.mood-sad) .eye-ball,
+  .mood-sad .eye-ball {
     fill: var(--sad-color);
   }
 
-  :deep(.mood-sad) #toogo-robot, .mood-sad #toogo-robot {
+  :deep(.mood-sad) #toogo-robot,
+  .mood-sad #toogo-robot {
     transform: scale(0.95);
   }
 
-  :deep(.mood-sad) .mouth-sad, .mood-sad .mouth-sad {
+  :deep(.mood-sad) .mouth-sad,
+  .mood-sad .mouth-sad {
     opacity: 1 !important;
   }
 
-  :deep(.mood-sad) .eyebrow, .mood-sad .eyebrow {
+  :deep(.mood-sad) .eyebrow,
+  .mood-sad .eyebrow {
     transform: rotate(-10deg) translateY(-2px); /* 悲伤眉 */
   }
 
   /* --- 交易状态: 保守型 (Conservative) --- */
-  :deep(.mood-conservative) .shield-group, .mood-conservative .shield-group {
+  :deep(.mood-conservative) .shield-group,
+  .mood-conservative .shield-group {
     opacity: 1 !important;
     animation: shield-pulse 3s infinite ease-in-out;
   }
 
-  :deep(.mood-conservative) .eye-ball, .mood-conservative .eye-ball {
+  :deep(.mood-conservative) .eye-ball,
+  .mood-conservative .eye-ball {
     fill: #4cd137; /* 绿色安全 */
   }
 
-  :deep(.mood-conservative) .mouth-line, .mood-conservative .mouth-line {
+  :deep(.mood-conservative) .mouth-line,
+  .mood-conservative .mouth-line {
     opacity: 1 !important;
     stroke: #4cd137;
   }
 
-  :deep(.mood-conservative) .body-screen, .mood-conservative .body-screen {
+  :deep(.mood-conservative) .body-screen,
+  .mood-conservative .body-screen {
     fill: #1e272e; /* 深沉背景 */
   }
 
-  :deep(.mood-conservative) .eyebrow, .mood-conservative .eyebrow {
+  :deep(.mood-conservative) .eyebrow,
+  .mood-conservative .eyebrow {
     stroke: #4cd137;
   }
 
@@ -1061,28 +1117,34 @@
   }
 
   /* --- 交易状态: 平衡型 (Balanced) --- */
-  :deep(.mood-balanced) .head-group, .mood-balanced .head-group {
+  :deep(.mood-balanced) .head-group,
+  .mood-balanced .head-group {
     animation: balance-head 4s infinite ease-in-out;
   }
 
-  :deep(.mood-balanced) .eye-ball, .mood-balanced .eye-ball {
+  :deep(.mood-balanced) .eye-ball,
+  .mood-balanced .eye-ball {
     fill: #00a8ff; /* 蓝色冷静 */
   }
 
-  :deep(.mood-balanced) .chart-group, .mood-balanced .chart-group {
+  :deep(.mood-balanced) .chart-group,
+  .mood-balanced .chart-group {
     opacity: 1 !important;
   }
 
-  :deep(.mood-balanced) .chart-line, .mood-balanced .chart-line {
+  :deep(.mood-balanced) .chart-line,
+  .mood-balanced .chart-line {
     stroke: #00a8ff;
     animation: draw-chart 2s infinite alternate;
   }
 
-  :deep(.mood-balanced) .chart-dot, .mood-balanced .chart-dot {
+  :deep(.mood-balanced) .chart-dot,
+  .mood-balanced .chart-dot {
     fill: #00a8ff;
   }
 
-  :deep(.mood-balanced) .mouth-smile, .mood-balanced .mouth-smile {
+  :deep(.mood-balanced) .mouth-smile,
+  .mood-balanced .mouth-smile {
     opacity: 1 !important;
     stroke: #00a8ff;
     transform: scale(0.8);
@@ -1111,49 +1173,59 @@
   }
 
   /* --- 交易状态: 激进型 (Aggressive) --- */
-  :deep(.mood-aggressive) #toogo-robot, .mood-aggressive #toogo-robot {
+  :deep(.mood-aggressive) #toogo-robot,
+  .mood-aggressive #toogo-robot {
     animation: aggressive-shake 0.1s infinite;
     transform: translateY(-20px); /* 升空 */
   }
 
-  :deep(.mood-aggressive) .fire-group, .mood-aggressive .fire-group {
+  :deep(.mood-aggressive) .fire-group,
+  .mood-aggressive .fire-group {
     opacity: 1 !important;
   }
 
-  :deep(.mood-aggressive) .flame, .mood-aggressive .flame {
+  :deep(.mood-aggressive) .flame,
+  .mood-aggressive .flame {
     animation: fire-burn 0.1s infinite alternate;
   }
 
-  :deep(.mood-aggressive) .eye-ball, .mood-aggressive .eye-ball {
+  :deep(.mood-aggressive) .eye-ball,
+  .mood-aggressive .eye-ball {
     fill: #e84118; /* 红色激进 */
     filter: drop-shadow(0 0 8px #e84118);
   }
 
-  :deep(.mood-aggressive) .eyebrow, .mood-aggressive .eyebrow {
+  :deep(.mood-aggressive) .eyebrow,
+  .mood-aggressive .eyebrow {
     stroke: #e84118;
     transform: rotate(20deg) translateY(10px); /* 怒目/专注 */
   }
 
-  :deep(.mood-aggressive) .mouth-smile, .mood-aggressive .mouth-smile {
+  :deep(.mood-aggressive) .mouth-smile,
+  .mood-aggressive .mouth-smile {
     opacity: 1 !important;
     stroke: #e84118;
     transform: scale(1.2); /* 自信大笑 */
   }
 
-  :deep(.mood-aggressive) .chart-group, .mood-aggressive .chart-group {
+  :deep(.mood-aggressive) .chart-group,
+  .mood-aggressive .chart-group {
     opacity: 1 !important;
     transform: translate(280px, 150px) scale(1.5); /* 更大的图表 */
   }
 
-  :deep(.mood-aggressive) .chart-line, .mood-aggressive .chart-line {
+  :deep(.mood-aggressive) .chart-line,
+  .mood-aggressive .chart-line {
     stroke: #e84118;
   }
 
-  :deep(.mood-aggressive) .chart-dot, .mood-aggressive .chart-dot {
+  :deep(.mood-aggressive) .chart-dot,
+  .mood-aggressive .chart-dot {
     fill: #e84118;
   }
 
-  :deep(.mood-aggressive) .shadow, .mood-aggressive .shadow {
+  :deep(.mood-aggressive) .shadow,
+  .mood-aggressive .shadow {
     transform: scale(0.6);
     opacity: 0.4;
     animation: shadow-shake 0.1s infinite;
@@ -1207,4 +1279,3 @@
 
   /* @media removed */
 </style>
-

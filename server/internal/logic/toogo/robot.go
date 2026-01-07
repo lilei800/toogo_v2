@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	"hotgo/internal/dao"
@@ -29,6 +30,32 @@ type sToogoRobot struct{}
 
 func init() {
 	service.RegisterToogoRobot(NewToogoRobot())
+}
+
+// ===================== “空持仓强制直拉”节流（不保留旧内容，只是限频） =====================
+
+// emptyPositionsForceFetchAt: when positions are empty, we periodically force a direct exchange fetch
+// to catch manual opens / missed private WS events.
+var emptyPositionsForceFetchAt sync.Map // key: int64(robotId) -> time.Time
+
+func shouldForceFetchEmptyPositions(robotId int64, every time.Duration) bool {
+	if robotId <= 0 {
+		return false
+	}
+	now := time.Now()
+	if v, ok := emptyPositionsForceFetchAt.Load(robotId); ok {
+		if t0, ok2 := v.(time.Time); ok2 && now.Sub(t0) < every {
+			return false
+		}
+	}
+	emptyPositionsForceFetchAt.Store(robotId, now)
+	return true
+}
+
+func invalidateRobotPositionsCache(robotId int64) {
+	// 历史上这里用于“positions UI 去抖缓存”的失效。
+	// 该缓存已移除（避免展示保留旧内容），保留空实现以兼容各处调用点。
+	_ = robotId
 }
 
 // NewToogoRobot 创建机器人服务
@@ -81,12 +108,31 @@ func (s *sToogoRobot) StartRobot(ctx context.Context, in *toogoin.StartRobotInp)
 		return gerror.Newf("算力不足，当前算力: %.2f，请充值", totalPower)
 	}
 
-	// 更新机器人状态
+	// 更新机器人状态和启动时间
+	now := gtime.Now()
 	_, err = dao.TradingRobot.Ctx(ctx).Where(dao.TradingRobot.Columns().Id, in.RobotId).Data(g.Map{
-		"status": 2, // 运行中
+		"status":     2,   // 运行中
+		"start_time": now, // 记录启动时间
 	}).Update()
 	if err != nil {
 		return gerror.Wrap(err, "更新机器人状态失败")
+	}
+
+	// 创建运行区间记录
+	_, err = dao.TradingRobotRunSession.Ctx(ctx).Data(g.Map{
+		"robot_id":   robot.Id,
+		"user_id":    robot.UserId,
+		"exchange":   robot.Exchange,
+		"symbol":     robot.Symbol,
+		"start_time": now,
+		// end_time 为 NULL 表示运行中
+		// runtime_seconds, total_pnl, total_fee 等在停止或同步时更新
+	}).Insert()
+	if err != nil {
+		g.Log().Warningf(ctx, "创建运行区间记录失败: robotId=%d, err=%v", robot.Id, err)
+		// 不影响机器人启动，继续执行
+	} else {
+		g.Log().Infof(ctx, "创建运行区间记录成功: robotId=%d, startTime=%s", robot.Id, now.Format("Y-m-d H:i:s"))
 	}
 
 	// 更新用户活跃机器人数量
@@ -98,6 +144,8 @@ func (s *sToogoRobot) StartRobot(ctx context.Context, in *toogoin.StartRobotInp)
 	}
 
 	g.Log().Infof(ctx, "机器人启动成功: robotId=%d, userId=%d", robot.Id, robot.UserId)
+	// UI 去抖缓存：启动后清理一次，避免页面短暂拿到旧缓存
+	invalidateRobotPositionsCache(in.RobotId)
 	return nil
 }
 
@@ -125,6 +173,37 @@ func (s *sToogoRobot) StopRobot(ctx context.Context, in *toogoin.StopRobotInp) e
 		return gerror.Wrap(err, "更新机器人状态失败")
 	}
 
+	// 【核心修复】更新运行区间的结束时间和运行时长
+	// 查询当前运行中的区间（end_time 为 NULL）
+	var session *entity.TradingRobotRunSession
+	err = dao.TradingRobotRunSession.Ctx(ctx).
+		Where(dao.TradingRobotRunSession.Columns().RobotId, in.RobotId).
+		Where(dao.TradingRobotRunSession.Columns().UserId, robot.UserId).
+		WhereNull(dao.TradingRobotRunSession.Columns().EndTime).
+		OrderDesc(dao.TradingRobotRunSession.Columns().Id).
+		Scan(&session)
+
+	if err == nil && session != nil && session.StartTime != nil {
+		// 计算运行时长（秒）
+		now := gtime.Now()
+		runtimeSeconds := int(now.Sub(session.StartTime).Seconds())
+
+		// 更新运行区间
+		_, updateErr := dao.TradingRobotRunSession.Ctx(ctx).
+			Where(dao.TradingRobotRunSession.Columns().Id, session.Id).
+			Data(g.Map{
+				"end_time":        now,
+				"end_reason":      "stop", // 手动停止
+				"runtime_seconds": runtimeSeconds,
+			}).Update()
+
+		if updateErr != nil {
+			g.Log().Warningf(ctx, "更新运行区间失败: robotId=%d, sessionId=%d, err=%v", robot.Id, session.Id, updateErr)
+		} else {
+			g.Log().Infof(ctx, "运行区间已结束: robotId=%d, sessionId=%d, runtime=%ds", robot.Id, session.Id, runtimeSeconds)
+		}
+	}
+
 	// 更新用户活跃机器人数量
 	_, err = dao.ToogoUser.Ctx(ctx).
 		Where("member_id", robot.UserId).
@@ -134,6 +213,8 @@ func (s *sToogoRobot) StopRobot(ctx context.Context, in *toogoin.StopRobotInp) e
 	}
 
 	g.Log().Infof(ctx, "机器人停止成功: robotId=%d, userId=%d", robot.Id, robot.UserId)
+	// UI 去抖缓存：停止后清理一次，避免页面短暂拿到旧缓存
+	invalidateRobotPositionsCache(in.RobotId)
 	return nil
 }
 
@@ -259,7 +340,14 @@ func (s *sToogoRobot) GetRobotPositions(ctx context.Context, robotId int64) ([]*
 		engine.mu.RUnlock()
 
 		// 如果有缓存持仓且不太陈旧，直接用缓存（并做行情估值覆盖），避免API
-		if cachedPositions != nil && time.Since(lastUpdate) < 60*time.Second {
+		// 关键优化：空持仓缓存不能缓存太久，否则用户在交易所手动开仓会“长时间不同步”。
+		// - 非空：60s 认为可信（减少API调用）
+		// - 空：仅 3s 认为可信（快速发现“手动开仓/私有WS漏事件”的变化）
+		cacheTTL := 60 * time.Second
+		if cachedPositions != nil && len(cachedPositions) == 0 {
+			cacheTTL = 3 * time.Second
+		}
+		if cachedPositions != nil && time.Since(lastUpdate) < cacheTTL {
 			positions = cachedPositions
 			// 行情估值：有ticker就覆盖 markPrice/unrealizedPnl（不修改引擎内存，避免竞态）
 			if engine.Platform != "" && robot.Symbol != "" {
@@ -285,7 +373,7 @@ func (s *sToogoRobot) GetRobotPositions(ctx context.Context, robotId int64) ([]*
 					positions = valued
 				}
 			}
-			g.Log().Debugf(ctx, "[GetRobotPositions] 使用引擎缓存(<=60s) + 行情估值: robotId=%d, cacheAge=%v", robotId, time.Since(lastUpdate))
+			g.Log().Debugf(ctx, "[GetRobotPositions] 使用引擎缓存(<=%v) + 行情估值: robotId=%d, cacheAge=%v, cachedCount=%d", cacheTTL, robotId, time.Since(lastUpdate), len(cachedPositions))
 		}
 	}
 
@@ -311,11 +399,48 @@ func (s *sToogoRobot) GetRobotPositions(ctx context.Context, robotId int64) ([]*
 		}
 	}
 
+	// 如果拿到的是“空持仓”，但用户可能在交易所手动开仓（尤其 Bitget/Gate 私有WS 丢事件/订阅异常时），
+	// 则做一次低频强制直连交易所获取，避免长时间看不到。
+	if positions != nil && len(positions) == 0 {
+		// 10 秒最多强制一次，避免刷接口
+		if shouldForceFetchEmptyPositions(robotId, 10*time.Second) {
+			plat := strings.ToLower(strings.TrimSpace(robot.Exchange))
+			if engine != nil && strings.TrimSpace(engine.Platform) != "" {
+				plat = strings.ToLower(strings.TrimSpace(engine.Platform))
+			}
+			g.Log().Warningf(ctx, "[GetRobotPositions] empty positions -> force fetch exchange: robotId=%d platform=%s symbol=%s", robotId, plat, robot.Symbol)
+			pos2, err2 := ex.GetPositions(ctx, robot.Symbol)
+			if err2 != nil {
+				g.Log().Warningf(ctx, "[GetRobotPositions] force fetch exchange failed: robotId=%d err=%v", robotId, err2)
+			} else {
+				positions = pos2
+				if engine != nil {
+					engine.mu.Lock()
+					engine.CurrentPositions = positions
+					engine.LastPositionUpdate = time.Now()
+					engine.mu.Unlock()
+				}
+			}
+		}
+	}
+
 	// 【重要】记录交易所返回的所有持仓，用于调试
-	g.Log().Debugf(ctx, "[GetRobotPositions] 交易所返回的持仓列表（共%d个）:", len(positions))
-	for i, pos := range positions {
-		g.Log().Debugf(ctx, "[GetRobotPositions] 持仓[%d]: symbol=%s, PositionSide=%s, PositionAmt=%.6f, UnrealizedPnl=%.4f",
-			i, pos.Symbol, pos.PositionSide, pos.PositionAmt, pos.UnrealizedPnl)
+	// 【静默优化】避免在 Debug 模式下每次请求刷屏，保留一条汇总即可
+	if len(positions) > 0 {
+		first := positions[0]
+		g.Log().Debugf(ctx, "[GetRobotPositions] 持仓汇总: robotId=%d count=%d first={symbol=%s side=%s amt=%.6f upl=%.4f}",
+			robotId, len(positions), first.Symbol, first.PositionSide, first.PositionAmt, first.UnrealizedPnl)
+	} else {
+		g.Log().Debugf(ctx, "[GetRobotPositions] 持仓汇总: robotId=%d count=0", robotId)
+	}
+
+	// ===== 关键规范化：统一 PositionSide 大小写，避免 OKX/Gate 返回 long/short 导致内存 tracker 查不到 =====
+	for _, p := range positions {
+		if p == nil {
+			continue
+		}
+		p.PositionSide = strings.ToUpper(strings.TrimSpace(p.PositionSide))
+		p.Symbol = strings.ToUpper(strings.TrimSpace(p.Symbol))
 	}
 
 	// 【优化】使用引擎缓存的订单历史，避免重复调用API
@@ -345,7 +470,9 @@ func (s *sToogoRobot) GetRobotPositions(ctx context.Context, robotId int64) ([]*
 		if order.PositionSide == "" {
 			continue
 		}
-		key := fmt.Sprintf("%s_%s", order.Symbol, order.PositionSide)
+		ps := strings.ToUpper(strings.TrimSpace(order.PositionSide))
+		sym := strings.ToUpper(strings.TrimSpace(order.Symbol))
+		key := fmt.Sprintf("%s_%s", sym, ps)
 		// 如果已存在订单，保留创建时间最新的
 		if existing, exists := orderMap[key]; !exists || order.CreateTime > existing.CreateTime {
 			orderMap[key] = order
@@ -359,7 +486,11 @@ func (s *sToogoRobot) GetRobotPositions(ctx context.Context, robotId int64) ([]*
 		StopLossPercent         float64
 		AutoStartRetreatPercent float64
 		ProfitRetreatPercent    float64
+		ProfitRetreatStarted    int
+		HighestProfit           float64
 		MarginPercent           float64
+		Margin                  float64
+		Leverage                int
 		MarketState             string
 		RiskPreference          string
 	}
@@ -385,7 +516,11 @@ func (s *sToogoRobot) GetRobotPositions(ctx context.Context, robotId int64) ([]*
 			StopLossPercent         float64 `json:"stopLossPercent"`
 			AutoStartRetreatPercent float64 `json:"autoStartRetreatPercent"`
 			ProfitRetreatPercent    float64 `json:"profitRetreatPercent"`
+			ProfitRetreatStarted    int     `json:"profitRetreatStarted"`
+			HighestProfit           float64 `json:"highestProfit"`
 			MarginPercent           float64 `json:"marginPercent"`
+			Margin                  float64 `json:"margin"`
+			Leverage                int     `json:"leverage"`
 			MarketState             string  `json:"marketState"`
 			RiskPreference          string  `json:"riskPreference"`
 		}
@@ -394,9 +529,13 @@ func (s *sToogoRobot) GetRobotPositions(ctx context.Context, robotId int64) ([]*
 			Where("status", OrderStatusOpen).
 			Fields(
 				"direction",
+				"margin",
+				"leverage",
 				"stop_loss_percent",
 				"auto_start_retreat_percent",
 				"profit_retreat_percent",
+				"profit_retreat_started",
+				"highest_profit",
 				"margin_percent",
 				"market_state",
 				"risk_preference",
@@ -411,7 +550,11 @@ func (s *sToogoRobot) GetRobotPositions(ctx context.Context, robotId int64) ([]*
 				StopLossPercent:         r.StopLossPercent,
 				AutoStartRetreatPercent: r.AutoStartRetreatPercent,
 				ProfitRetreatPercent:    r.ProfitRetreatPercent,
+				ProfitRetreatStarted:    r.ProfitRetreatStarted,
+				HighestProfit:           r.HighestProfit,
 				MarginPercent:           r.MarginPercent,
+				Margin:                  r.Margin,
+				Leverage:                r.Leverage,
 				MarketState:             r.MarketState,
 				RiskPreference:          r.RiskPreference,
 			}
@@ -421,10 +564,44 @@ func (s *sToogoRobot) GetRobotPositions(ctx context.Context, robotId int64) ([]*
 	// 转换结果 (exchange.Position 字段映射到 PositionModel)
 	// 注意：必须返回空切片而不是 nil，避免 WS/HTTP 序列化为 null 导致前端误判
 	result := make([]*toogoin.PositionModel, 0)
+	filteredByZero := 0
 	for _, pos := range positions {
+		if pos == nil {
+			continue
+		}
 		// 过滤已平仓/无效持仓（避免平仓后短暂返回 PositionAmt≈0 的残留对象导致前端仍显示）
 		// 注意：这里不能用 0.0001 这种较大阈值，否则小仓位（例如 0.0001 BTC）会被误过滤，导致“交易所有两条仓位但页面只显示一条”。
-		if pos == nil || math.Abs(pos.PositionAmt) <= positionAmtEpsilon {
+		//
+		// 【Bitget/Gate 兼容兜底】少数情况下交易所返回 qty=0 但 margin/leverage/entryPrice 已就绪，
+		// 这会导致前端“有仓位但不显示”。这里按保证金口径反推一个近似数量用于展示/风控：
+		// qty ≈ margin * leverage / entryPrice
+		if math.Abs(pos.PositionAmt) <= positionAmtEpsilon {
+			entry := pos.EntryPrice
+			lev := pos.Leverage
+			if lev <= 0 && robot != nil && robot.Leverage > 0 {
+				lev = robot.Leverage
+			}
+			m := pos.Margin
+			if m <= 0 && pos.IsolatedMargin > 0 {
+				m = pos.IsolatedMargin
+			}
+			if entry > 0 && lev > 0 && m > 0 {
+				derived := (m * float64(lev)) / entry
+				if strings.EqualFold(strings.TrimSpace(pos.PositionSide), "SHORT") {
+					derived = -derived
+				}
+				// 只在推导结果足够可信时覆盖（避免把真实空仓误判为有仓）
+				if math.Abs(derived) > positionAmtEpsilon {
+					pos.PositionAmt = derived
+					if isOrderPositionSyncDebugEnabled(ctx) && shouldLogOrderPositionSync("pos_qty_derived:"+g.NewVar(robotId).String(), 3*time.Second) {
+						g.Log().Warningf(ctx, "[SyncDiag] derived PositionAmt for display: robotId=%d symbol=%s posSide=%s entry=%.6f leverage=%d margin=%.6f qty=%.8f",
+							robotId, pos.Symbol, pos.PositionSide, entry, lev, m, derived)
+					}
+				}
+			}
+		}
+		if math.Abs(pos.PositionAmt) <= positionAmtEpsilon {
+			filteredByZero++
 			continue
 		}
 
@@ -435,6 +612,8 @@ func (s *sToogoRobot) GetRobotPositions(ctx context.Context, robotId int64) ([]*
 		var maxProfitReached float64
 		var takeProfitEnabled bool
 		var stopLossPercent, autoStartRetreatPercent, profitRetreatPercent, marginPercent *float64
+		entryMargin := 0.0
+		entryLeverage := 0
 		var marketState, riskPreference string
 
 		if engine != nil {
@@ -442,6 +621,9 @@ func (s *sToogoRobot) GetRobotPositions(ctx context.Context, robotId int64) ([]*
 			if tracker != nil {
 				maxProfitReached = tracker.HighestProfit
 				takeProfitEnabled = tracker.TakeProfitEnabled
+				if tracker.EntryMargin > 0 {
+					entryMargin = tracker.EntryMargin
+				}
 				// 冻结参数（开仓时确定）
 				if tracker.ParamsLoaded {
 					if tracker.StopLossPercent > 0 {
@@ -484,12 +666,22 @@ func (s *sToogoRobot) GetRobotPositions(ctx context.Context, robotId int64) ([]*
 					v := fp.MarginPercent
 					marginPercent = &v
 				}
+				if entryMargin <= 0 && fp.Margin > 0 {
+					entryMargin = fp.Margin
+				}
+				if entryLeverage <= 0 && fp.Leverage > 0 {
+					entryLeverage = fp.Leverage
+				}
 				if marketState == "" {
 					marketState = fp.MarketState
 				}
 				if riskPreference == "" {
 					riskPreference = fp.RiskPreference
 				}
+
+				// 【按需求调整】HighestProfit / TakeProfitEnabled 的读取保持“原来口径”（仅从内存 tracker 读取）。
+				// DB 仍会持久化 highest_profit / profit_retreat_started 用于审计与兜底恢复，
+				// 但接口返回不再用 DB 覆盖/回灌这两个状态，避免改变前端读取口径。
 			}
 		}
 
@@ -528,41 +720,130 @@ func (s *sToogoRobot) GetRobotPositions(ctx context.Context, robotId int64) ([]*
 			g.Log().Debugf(ctx, "[GetRobotPositions] 匹配到订单: symbol=%s, positionSide=%s, orderId=%s, clientOrderId=%s, createTime=%d",
 				pos.Symbol, pos.PositionSide, orderId, clientOrderId, orderCreateTime)
 		}
-
-		// ===== 保证金修复：交易所API在“刚开仓”的几秒内可能返回 margin=0，导致前端短暂显示 0.00 =====
-		// 优先级：
-		// 1) pos.Margin（交易所）
-		// 2) pos.IsolatedMargin（某些交易所仅返回逐仓保证金）
-		// 3) 用持仓数量/开仓价/杠杆估算：|amt|*entry/leverage（立刻可用，避免闪烁）
-		displayMargin := pos.Margin
-		if displayMargin <= 0 && pos.IsolatedMargin > 0 {
-			displayMargin = pos.IsolatedMargin
-		}
-		if displayMargin <= 0 && pos.EntryPrice > 0 && math.Abs(pos.PositionAmt) > 0 {
-			lev := pos.Leverage
-			if lev <= 0 && robot != nil && robot.Leverage > 0 {
-				lev = robot.Leverage
+		// 前端通常会用 orderId 作为 rowKey/渲染关键字段。
+		// 对于“交易所有持仓但本地/历史订单无法匹配”的场景（手动开仓/WS丢事件/缓存未就绪），
+		// 如果 orderId 为空，前端可能直接不展示该行。
+		// 这里生成一个稳定的虚拟ID，保证 UI 可渲染且不随刷新抖动。
+		if strings.TrimSpace(orderId) == "" {
+			symKey := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(pos.Symbol), "/", ""))
+			ps := strings.ToUpper(strings.TrimSpace(pos.PositionSide))
+			if ps == "" {
+				ps = "UNKNOWN"
 			}
-			if lev > 0 {
-				displayMargin = math.Abs(pos.PositionAmt) * pos.EntryPrice / float64(lev)
+			orderId = fmt.Sprintf("POS-%d-%s-%s", robotId, symKey, ps)
+			// best-effort：补齐订单侧字段（用于前端展示，不参与对账）
+			orderType = "POSITION"
+			if ps == "LONG" {
+				orderSide = "BUY"
+			} else if ps == "SHORT" {
+				orderSide = "SELL"
+			}
+			orderQuantity = math.Abs(pos.PositionAmt)
+			orderAvgPrice = pos.EntryPrice
+			if orderCreateTime == 0 {
+				orderCreateTime = time.Now().UnixMilli()
+			}
+		}
+
+		// ===== 保证金口径（规则6）：优先使用“订单表冻结的保证金”，缺失时才用交易所/估算兜底 =====
+		displayMargin := entryMargin
+		if displayMargin <= 0 {
+			// fallback: exchange snapshot
+			displayMargin = pos.Margin
+			if displayMargin <= 0 && pos.IsolatedMargin > 0 {
+				displayMargin = pos.IsolatedMargin
+			}
+			if displayMargin <= 0 && pos.EntryPrice > 0 && math.Abs(pos.PositionAmt) > 0 {
+				lev := pos.Leverage
+				if lev <= 0 {
+					lev = entryLeverage
+				}
+				if lev <= 0 && robot != nil && robot.Leverage > 0 {
+					lev = robot.Leverage
+				}
+				if lev > 0 {
+					displayMargin = math.Abs(pos.PositionAmt) * pos.EntryPrice / float64(lev)
+				}
 			}
 		}
 
 		// 直接使用交易所API返回的数据（部分字段做了上面的显示兜底）
+		// ===== 后端统一血条/进度口径（前端只展示）=====
+		// 1) 实时盈利百分比 = 未实现盈亏 / 保证金 × 100%
+		realTimeProfitPercent := 0.0
+		if displayMargin > 0 {
+			realTimeProfitPercent = (pos.UnrealizedPnl / displayMargin) * 100.0
+		}
+		// 2) 启动止盈血条：达到阈值后锁定为100%（不可关闭原则）
+		takeProfitStartProgress := 0.0
+		if autoStartRetreatPercent != nil && *autoStartRetreatPercent > 0 {
+			if takeProfitEnabled {
+				takeProfitStartProgress = 100.0
+			} else if realTimeProfitPercent > 0 {
+				takeProfitStartProgress = (realTimeProfitPercent / *autoStartRetreatPercent) * 100.0
+				if takeProfitStartProgress < 0 {
+					takeProfitStartProgress = 0
+				}
+				if takeProfitStartProgress > 100 {
+					takeProfitStartProgress = 100
+				}
+			}
+		}
+		// 3) 止盈回撤：回撤百分比=(最高盈利-未实现盈亏)/最高盈利×100%；血条默认100回撤到0触发止盈
+		takeProfitRetreatPercentNow := 0.0
+		takeProfitRetreatBar := 0.0
+		if takeProfitEnabled {
+			// 默认展示 100%（刚启动但参数/最高盈利未就绪时不抖动）
+			takeProfitRetreatBar = 100.0
+			if profitRetreatPercent != nil && *profitRetreatPercent > 0 && maxProfitReached > 0 {
+				takeProfitRetreatPercentNow = ((maxProfitReached - pos.UnrealizedPnl) / maxProfitReached) * 100.0
+				if takeProfitRetreatPercentNow < 0 {
+					takeProfitRetreatPercentNow = 0
+				}
+				takeProfitRetreatBar = 100.0 - (takeProfitRetreatPercentNow/(*profitRetreatPercent))*100.0
+				if takeProfitRetreatBar < 0 {
+					takeProfitRetreatBar = 0
+				}
+				if takeProfitRetreatBar > 100 {
+					takeProfitRetreatBar = 100
+				}
+			}
+		}
+		// 4) 止损血条：|未实现盈亏| / (保证金×止损%) × 100%
+		stopLossProgress := 0.0
+		if stopLossPercent != nil && *stopLossPercent > 0 && displayMargin > 0 && pos.UnrealizedPnl < 0 {
+			stopLossAmount := displayMargin * (*stopLossPercent / 100.0)
+			if stopLossAmount > 0 {
+				stopLossProgress = (math.Abs(pos.UnrealizedPnl) / stopLossAmount) * 100.0
+				if stopLossProgress < 0 {
+					stopLossProgress = 0
+				}
+				// 展示层限制为100%，触发阈值由后端风控执行
+				if stopLossProgress > 100 {
+					stopLossProgress = 100
+				}
+			}
+		}
+
 		positionModel := &toogoin.PositionModel{
-			Symbol:            pos.Symbol,
-			PositionSide:      pos.PositionSide,
-			PositionAmt:       pos.PositionAmt,
-			EntryPrice:        pos.EntryPrice, // 使用交易所返回的开仓价格
-			MarkPrice:         pos.MarkPrice,
-			UnrealizedPnl:     pos.UnrealizedPnl,
-			Leverage:          pos.Leverage, // 使用交易所返回的杠杆
-			Margin:            displayMargin,
-			MarginType:        pos.MarginType,
-			IsolatedMargin:    pos.IsolatedMargin,
-			LiquidationPrice:  pos.LiquidationPrice,
-			MaxProfitReached:  maxProfitReached,  // 运行时状态
-			TakeProfitEnabled: takeProfitEnabled, // 运行时状态
+			Symbol:                   pos.Symbol,
+			PositionSide:             pos.PositionSide,
+			PositionAmt:              pos.PositionAmt,
+			EntryPrice:               pos.EntryPrice, // 使用交易所返回的开仓价格
+			MarkPrice:                pos.MarkPrice,
+			UnrealizedPnl:            pos.UnrealizedPnl,
+			Leverage:                 pos.Leverage, // 使用交易所返回的杠杆
+			Margin:                   displayMargin,
+			MarginType:               pos.MarginType,
+			IsolatedMargin:           pos.IsolatedMargin,
+			LiquidationPrice:         pos.LiquidationPrice,
+			MaxProfitReached:         maxProfitReached,  // 运行时状态
+			TakeProfitEnabled:        takeProfitEnabled, // 运行时状态
+			RealTimeProfitPercent:    realTimeProfitPercent,
+			TakeProfitStartProgress:  takeProfitStartProgress,
+			TakeProfitRetreatPercent: takeProfitRetreatPercentNow,
+			TakeProfitRetreatBar:     takeProfitRetreatBar,
+			StopLossProgress:         stopLossProgress,
 			// 冻结策略参数（开仓时确定，持仓期间不随市场状态变化）
 			StopLossPercent:         stopLossPercent,
 			AutoStartRetreatPercent: autoStartRetreatPercent,
@@ -588,7 +869,14 @@ func (s *sToogoRobot) GetRobotPositions(ctx context.Context, robotId int64) ([]*
 
 		result = append(result, positionModel)
 	}
-
+	// 关键排障：交易所返回持仓对象非空，但全部被过滤为 0 → 前端会“完全不显示持仓”
+	if len(positions) > 0 && len(result) == 0 && filteredByZero > 0 {
+		first := positions[0]
+		if first != nil && isOrderPositionSyncDebugEnabled(ctx) && shouldLogOrderPositionSync("pos_all_filtered:"+g.NewVar(robotId).String(), 5*time.Second) {
+			g.Log().Warningf(ctx, "[SyncDiag] positions all filtered (qty~0): robotId=%d symbol=%s first={symbol=%s side=%s amt=%.10f entry=%.6f mark=%.6f lev=%d margin=%.6f iso=%.6f} filteredByZero=%d",
+				robotId, robot.Symbol, first.Symbol, first.PositionSide, first.PositionAmt, first.EntryPrice, first.MarkPrice, first.Leverage, first.Margin, first.IsolatedMargin, filteredByZero)
+		}
+	}
 	return result, nil
 }
 
@@ -949,19 +1237,19 @@ func (s *sToogoRobot) SyncOrderHistoryToDB(ctx context.Context, robotId int64, r
 				}
 			}
 
-		// 只更新有变化的字段
-		_, err := dao.TradingOrder.Ctx(ctx).
-			Where(dao.TradingOrder.Columns().Id, existingOrder.Id).
-			Update(updateData)
-		// 兼容：部分环境可能尚未执行迁移脚本，缺少 client_order_id 字段；此时回退重试
-		if err != nil && clientOrderId != "" &&
-			strings.Contains(err.Error(), "client_order_id") &&
-			strings.Contains(strings.ToLower(err.Error()), "unknown column") {
-			delete(updateData, "client_order_id")
-			_, err = dao.TradingOrder.Ctx(ctx).
+			// 只更新有变化的字段
+			_, err := dao.TradingOrder.Ctx(ctx).
 				Where(dao.TradingOrder.Columns().Id, existingOrder.Id).
 				Update(updateData)
-		}
+			// 兼容：部分环境可能尚未执行迁移脚本，缺少 client_order_id 字段；此时回退重试
+			if err != nil && clientOrderId != "" &&
+				strings.Contains(strings.ToLower(err.Error()), "client_order_id") &&
+				(strings.Contains(strings.ToLower(err.Error()), "unknown column") || strings.Contains(strings.ToLower(err.Error()), "does not exist")) {
+				delete(updateData, "client_order_id")
+				_, err = dao.TradingOrder.Ctx(ctx).
+					Where(dao.TradingOrder.Columns().Id, existingOrder.Id).
+					Update(updateData)
+			}
 			if err != nil {
 				g.Log().Warningf(ctx, "[syncOrderHistoryToDB] 更新订单失败: orderId=%d, exchangeOrderId=%s, err=%v",
 					existingOrder.Id, exchangeOrderId, err)
@@ -998,8 +1286,8 @@ func (s *sToogoRobot) SyncOrderHistoryToDB(ctx context.Context, robotId int64, r
 			_, err := dao.TradingOrder.Ctx(ctx).Insert(orderData)
 			// 兼容：部分环境可能尚未执行迁移脚本，缺少 client_order_id 字段；此时回退重试
 			if err != nil && clientOrderId != "" &&
-				strings.Contains(err.Error(), "client_order_id") &&
-				strings.Contains(strings.ToLower(err.Error()), "unknown column") {
+				strings.Contains(strings.ToLower(err.Error()), "client_order_id") &&
+				(strings.Contains(strings.ToLower(err.Error()), "unknown column") || strings.Contains(strings.ToLower(err.Error()), "does not exist")) {
 				delete(orderData, "client_order_id")
 				_, err = dao.TradingOrder.Ctx(ctx).Insert(orderData)
 			}
@@ -1081,7 +1369,7 @@ func (s *sToogoRobot) CloseRobotPosition(ctx context.Context, in *toogoin.CloseP
 		cachedPositions, _ := robotEngine.GetCachedPositions()
 		var availableSides []string
 		for _, pos := range cachedPositions {
-			if math.Abs(pos.PositionAmt) > 0.0001 {
+			if math.Abs(pos.PositionAmt) > positionAmtEpsilon {
 				sideCN := "多单"
 				if pos.PositionSide == "SHORT" {
 					sideCN = "空单"
@@ -1163,7 +1451,10 @@ func (s *sToogoRobot) CloseRobotPosition(ctx context.Context, in *toogoin.CloseP
 	// 执行平仓
 	g.Log().Infof(ctx, "[ClosePosition] 调用交易所 ClosePosition API: symbol=%s, positionSide=%s, quantity=%.6f",
 		symbol, positionSide, actualQuantity)
-	order, err := ex.ClosePosition(ctx, symbol, positionSide, actualQuantity)
+	// 【优化】为平仓增加硬超时，避免代理/网络/交易所偶发卡顿导致“平仓很久没响应”
+	closeCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	order, err := ex.ClosePosition(closeCtx, symbol, positionSide, actualQuantity)
 	if err != nil {
 		g.Log().Errorf(ctx, "[ClosePosition] 平仓失败: robotId=%d, symbol=%s, side=%s, qty=%.6f, err=%v",
 			in.RobotId, symbol, positionSide, actualQuantity, err)
@@ -1174,15 +1465,27 @@ func (s *sToogoRobot) CloseRobotPosition(ctx context.Context, in *toogoin.CloseP
 	g.Log().Infof(ctx, "手动平仓成功: robotId=%d, symbol=%s, side=%s, orderId=%s, qty=%.6f, pnl=%.4f",
 		in.RobotId, symbol, positionSide, order.OrderId, actualQuantity, currentPnl)
 
+	// UI 去抖缓存：手动平仓是强一致操作，成功后立即清掉缓存，避免页面短暂显示旧持仓
+	invalidateRobotPositionsCache(in.RobotId)
+
 	// 【新增】保存手动平仓日志
 	s.saveManualCloseLog(ctx, in.RobotId, foundPosition, order, "")
 
-	// 【新增】落库成交流水（幂等去重）
-	// 说明：无论本地是否能立即找到 OPEN 订单，都先尽量把成交落库，避免“手动平仓后成交流水没更新”。
-	if saved, matched, ferr := fetchAndStoreTradeHistory(ctx, ex, robot.ApiConfigId, robot.Exchange, symbol, 800); ferr != nil {
-		g.Log().Warningf(ctx, "[ClosePosition] 落库成交流水失败(不影响平仓): robotId=%d, symbol=%s, err=%v", in.RobotId, symbol, ferr)
-	} else {
-		g.Log().Debugf(ctx, "[ClosePosition] 已落库成交流水: robotId=%d, symbol=%s, saved=%d, matched=%d", in.RobotId, symbol, saved, matched)
+	// 【优化】落库成交流水改为异步（不阻塞手动平仓接口响应）
+	// 说明：trade fills 落库可能触发多次API请求（尤其 OKX 分页），同步执行会显著拖慢“手动平仓耗时”。
+	{
+		apiConfigId := robot.ApiConfigId
+		robotId := in.RobotId
+		exName := ex.GetName()
+		go func(sym string) {
+			tctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+			defer cancel()
+			if saved, matched, ferr := fetchAndStoreTradeHistory(tctx, ex, apiConfigId, exName, sym, 200); ferr != nil {
+				g.Log().Debugf(tctx, "[ClosePosition] 异步落库成交流水失败(忽略): robotId=%d, symbol=%s, err=%v", robotId, sym, ferr)
+			} else {
+				g.Log().Debugf(tctx, "[ClosePosition] 异步已落库成交流水: robotId=%d, symbol=%s, saved=%d, matched=%d", robotId, sym, saved, matched)
+			}
+		}(symbol)
 	}
 
 	// 【重要】计算已实现盈亏和平仓价格（使用内存中的持仓数据和API返回的数据）
@@ -1222,8 +1525,10 @@ func (s *sToogoRobot) CloseRobotPosition(ctx context.Context, in *toogoin.CloseP
 	var localOrder *entity.TradingOrder
 	_ = dao.TradingOrder.Ctx(ctx).
 		Where("robot_id", in.RobotId).
-		Where("direction", direction).
-		Where("status", OrderStatusOpen).
+		// 兼容历史数据：direction 可能为 LONG/SHORT/Long 等，统一按 lower(direction) 匹配
+		Where("LOWER(direction) = ?", direction).
+		// 兼容：平仓发生在本地订单仍为 pending/open 的窗口内
+		Where("status IN (?)", []int{OrderStatusPending, OrderStatusOpen}).
 		OrderDesc("id").
 		Limit(1).
 		Scan(&localOrder)
@@ -1276,8 +1581,9 @@ func (s *sToogoRobot) saveManualCloseLog(ctx context.Context, robotId int64, pos
 	}
 	err := dao.TradingOrder.Ctx(ctx).
 		Where("robot_id", robotId).
-		Where("direction", direction).
-		Where("status", OrderStatusOpen).
+		// 兼容历史数据：direction 可能为 LONG/SHORT/Long 等，统一按 lower(direction) 匹配
+		Where("LOWER(direction) = ?", direction).
+		Where("status IN (?)", []int{OrderStatusPending, OrderStatusOpen}).
 		Fields("id").
 		Scan(&localOrder)
 	if err == nil && localOrder.Id > 0 {
@@ -1346,46 +1652,14 @@ func (s *sToogoRobot) SetTakeProfitRetreatSwitch(ctx context.Context, robotId in
 		return gerror.New("用户未登录")
 	}
 
-	// 规范化 positionSide
-	positionSide = strings.ToUpper(strings.TrimSpace(positionSide))
-	if positionSide != "LONG" && positionSide != "SHORT" {
-		return gerror.Newf("持仓方向无效: %s", positionSide)
-	}
-
-	// 【内存优化】从引擎管理器获取机器人引擎
-	engine := GetRobotTaskManager().GetEngine(robotId)
-	if engine == nil {
-		return gerror.Newf("机器人引擎未运行: robotId=%d", robotId)
-	}
-
-	// 【内存优化】直接操作内存中的 PositionTracker
-	success := engine.SetTakeProfitEnabled(positionSide, enabled)
-	if !success {
-		// 如果失败，可能是跟踪器不存在或已开启不能关闭
-		tracker := engine.GetPositionTracker(positionSide)
-		if tracker == nil {
-			return gerror.Newf("该方向无持仓跟踪器: positionSide=%s", positionSide)
-		}
-		if tracker.TakeProfitEnabled && !enabled {
-			return gerror.New("止盈回撤已启动，不可关闭")
-		}
-		return gerror.New("设置止盈回撤状态失败")
-	}
-
-	// 【持久化】写入数据库，支持服务重启后继续止盈回撤（不可关闭原则）
-	// 注意：后端逻辑执行止盈回撤时主要依赖内存，但重启后需要从 DB 恢复
-	if enabled {
-		engine.MarkProfitRetreatStarted(ctx, positionSide)
-	}
-
-	statusText := "关闭"
-	if enabled {
-		statusText = "开启"
-	}
-	g.Log().Infof(ctx, "[SetTakeProfitRetreatSwitch] 止盈回撤已%s（内存）: robotId=%d, positionSide=%s",
-		statusText, robotId, positionSide)
-
-	return nil
+	// 2026-01 规范：止盈由后端自动控制，前端只负责展示。
+	// - 启动止盈：实时盈利百分比>=启动止盈阈值时由后端自动打开
+	// - 不可关闭原则：一旦开启直到平仓不可关闭
+	// 因此不再允许任何手动开关操作（兼容老前端调用，统一返回明确错误）。
+	_ = robotId
+	_ = positionSide
+	_ = enabled
+	return gerror.New("止盈回撤由系统自动控制，前端仅展示，不支持手动设置")
 }
 
 // CancelRobotOrder 撤销挂单
@@ -1419,6 +1693,28 @@ func (s *sToogoRobot) CancelRobotOrder(ctx context.Context, robotId int64, order
 	}
 
 	g.Log().Infof(ctx, "撤单成功: robotId=%d, symbol=%s, orderId=%s", robotId, robot.Symbol, orderId)
+	// UI 去抖缓存：撤单后可能影响“持仓/挂单展示”，清理缓存让页面尽快刷新
+	invalidateRobotPositionsCache(robotId)
+
+	// OKX/Gate：撤单后 openOrders 在 DB 的兜底对账默认有 10s 节流，页面会出现“撤单成功但挂单列表还在”的体验问题。
+	// 这里做一次轻量的“撤单后立即对账 openOrders”（带超时、异步，不阻塞接口响应）。
+	// 仅用于改善用户体验（C），不影响交易所真实状态。
+	plat := strings.ToLower(strings.TrimSpace(ex.GetName()))
+	if plat == "okx" || plat == "gate" {
+		go func() {
+			defer func() { recover() }()
+			callCtx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+			defer cancel()
+			orders, oerr := ex.GetOpenOrders(callCtx, robot.Symbol)
+			if oerr != nil {
+				g.Log().Debugf(callCtx, "[CancelRobotOrder] 撤单后立即对账 openOrders 失败(忽略): robotId=%d platform=%s symbol=%s err=%v", robotId, plat, robot.Symbol, oerr)
+				return
+			}
+			_ = SyncExchangeOpenOrdersToDB(callCtx, robotId, ex.GetName(), robot.ApiConfigId, robot.Symbol, orders)
+		}()
+		// 同时触发一次订单/持仓事件驱动对账（不阻塞）
+		GetOrderStatusSyncService().TriggerRobotSync(robotId)
+	}
 
 	// 推送“订单变更”事件给前端：用于详情弹窗挂单列表秒级刷新（不依赖10s轮询）
 	if robot.UserId > 0 {

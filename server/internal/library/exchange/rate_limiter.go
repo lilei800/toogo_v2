@@ -146,7 +146,6 @@ var exchangeLimiterConfigs = map[string]struct {
 	Burst int
 }{
 	"binance": {RPS: 10, Burst: 50},
-	"bitget":  {RPS: 10, Burst: 30},
 	"okx":     {RPS: 10, Burst: 30},
 	"gate":    {RPS: 10, Burst: 30},
 }

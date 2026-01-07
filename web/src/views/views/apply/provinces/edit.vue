@@ -179,7 +179,7 @@
           params.value.sort = res.sort;
         });
       }
-    }
+    },
   );
 
   async function isUniqueId(newId: any) {

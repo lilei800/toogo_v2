@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"hotgo/internal/consts"
 	"hotgo/internal/library/contexts"
@@ -16,8 +17,31 @@ import (
 	"github.com/gogf/gf/v2/os/gtime"
 )
 
-// StrategyGroupService 策略模板服务
+	// StrategyGroupService 策略模板服务
 type StrategyGroupService struct{}
+
+const (
+	// StrategyGroupOrderTypeMarket: direct market order (legacy/default in older versions)
+	StrategyGroupOrderTypeMarket = "market"
+	// StrategyGroupOrderTypeLimitThenMarket: place a loose limit order first; if not filled quickly, cancel and fallback to market order.
+	StrategyGroupOrderTypeLimitThenMarket = "limit_then_market"
+)
+
+func normalizeStrategyGroupOrderType(v string) string {
+	s := strings.ToLower(strings.TrimSpace(v))
+	switch s {
+	case "":
+		// new default
+		return StrategyGroupOrderTypeLimitThenMarket
+	case "market", "市价", "市價":
+		return StrategyGroupOrderTypeMarket
+	case "limit_then_market", "先限价再市价", "先限價再市價", "限价再市价", "限價再市價":
+		return StrategyGroupOrderTypeLimitThenMarket
+	default:
+		// keep safe legacy behavior for unknown values
+		return StrategyGroupOrderTypeMarket
+	}
+}
 
 // NewStrategyGroupService 创建策略模板服务实例
 func NewStrategyGroupService() *StrategyGroupService {
@@ -34,6 +58,14 @@ func (s *StrategyGroupService) List(ctx context.Context, in *toogoin.StrategyGro
 	if in.Symbol != "" {
 		m = m.WhereLike("symbol", "%"+in.Symbol+"%")
 	}
+	if in.IsActive != nil {
+		m = m.Where("is_active", *in.IsActive)
+	}
+	
+	// NonPersonal=1: only system/public groups (user_id=0 or NULL)
+	if in.NonPersonal != nil && *in.NonPersonal == 1 {
+		m = m.Where("(user_id = 0 OR user_id IS NULL)")
+	}
 	// 支持筛选官方/非官方策略：
 	// - 官方策略（is_official=1）为公用资源，不限制 user_id
 	// - 我的策略（is_official=0）为用户私有资源，必须限制 user_id=当前登录用户（超级管理员不限制）
@@ -42,12 +74,14 @@ func (s *StrategyGroupService) List(ctx context.Context, in *toogoin.StrategyGro
 	isSuper := roleKey == consts.SuperRoleKey
 	if in.IsOfficial != nil {
 		m = m.Where("is_official", *in.IsOfficial)
-		if !isSuper && *in.IsOfficial == 0 {
+		if (in.NonPersonal == nil || *in.NonPersonal != 1) && !isSuper && *in.IsOfficial == 0 {
 			m = m.Where("user_id", userId)
 		}
 	} else if !isSuper {
-		// 未指定时，默认仅返回：官方 + 当前用户的“我的策略”
-		m = m.Where("(is_official = 1 OR (is_official = 0 AND user_id = ?))", userId)
+		// Default for non-super: official + my groups (skip when NonPersonal=1)
+		if in.NonPersonal == nil || *in.NonPersonal != 1 {
+			m = m.Where("(is_official = 1 OR (is_official = 0 AND user_id = ?))", userId)
+		}
 	}
 
 	total, err := m.Count()
@@ -95,7 +129,7 @@ func (s *StrategyGroupService) Create(ctx context.Context, in *toogoin.StrategyG
 		"group_key":   in.GroupKey,
 		"exchange":    in.Exchange,
 		"symbol":      in.Symbol,
-		"order_type":  in.OrderType,
+		"order_type":  normalizeStrategyGroupOrderType(in.OrderType),
 		"margin_mode": in.MarginMode,
 		"description": in.Description,
 		"is_official": 0,
@@ -106,9 +140,27 @@ func (s *StrategyGroupService) Create(ctx context.Context, in *toogoin.StrategyG
 		"updated_at":  gtime.Now(),
 	}
 
-	if data["order_type"] == "" {
-		data["order_type"] = "market"
+	// admin overrides (super only)
+	if contexts.GetRoleKey(ctx) == consts.SuperRoleKey {
+		if in.IsOfficial != nil {
+			data["is_official"] = *in.IsOfficial
+			if *in.IsOfficial == 1 {
+				data["user_id"] = int64(0)
+			}
+		}
+		if in.UserId != nil {
+			data["user_id"] = *in.UserId
+		}
+		if in.IsActive != nil {
+			data["is_active"] = *in.IsActive
+		}
+		if in.IsVisible != nil {
+			data["is_visible"] = *in.IsVisible
+		}
+
 	}
+
+	// default is handled by normalizeStrategyGroupOrderType
 	if data["margin_mode"] == "" {
 		data["margin_mode"] = "isolated"
 	}
@@ -180,7 +232,7 @@ func (s *StrategyGroupService) Update(ctx context.Context, in *toogoin.StrategyG
 		"group_name":  in.GroupName,
 		"exchange":    in.Exchange,
 		"symbol":      in.Symbol,
-		"order_type":  in.OrderType,
+		"order_type":  normalizeStrategyGroupOrderType(in.OrderType),
 		"margin_mode": in.MarginMode,
 		"description": in.Description,
 		"sort":        in.Sort,
@@ -189,6 +241,22 @@ func (s *StrategyGroupService) Update(ctx context.Context, in *toogoin.StrategyG
 	// 如果提供了 is_visible，则更新
 	if in.IsVisible != nil {
 		data["is_visible"] = *in.IsVisible
+	}
+
+	// admin-only: allow toggling is_official / is_active
+	if in.IsOfficial != nil || in.IsActive != nil {
+		if contexts.GetRoleKey(ctx) != consts.SuperRoleKey {
+			return gerror.New("permission denied")
+		}
+		if in.IsOfficial != nil {
+			data["is_official"] = *in.IsOfficial
+			if *in.IsOfficial == 1 {
+				data["user_id"] = int64(0)
+			}
+		}
+		if in.IsActive != nil {
+			data["is_active"] = *in.IsActive
+		}
 	}
 
 	_, err = g.DB().Model("hg_trading_strategy_group").Where("id", in.Id).Update(data)
@@ -389,7 +457,7 @@ func (s *StrategyGroupService) CopyFromOfficial(ctx context.Context, officialGro
 	userId := contexts.GetUserId(ctx)
 	// 获取官方模板
 	var officialGroup entity.TradingStrategyGroup
-	err := g.DB().Model("hg_trading_strategy_group").Where("id", officialGroupId).Scan(&officialGroup)
+	err := g.DB().Model("hg_trading_strategy_group").Ctx(ctx).Where("id", officialGroupId).Scan(&officialGroup)
 	if err != nil {
 		return 0, gerror.Wrap(err, "查询官方模板失败")
 	}
@@ -401,7 +469,7 @@ func (s *StrategyGroupService) CopyFromOfficial(ctx context.Context, officialGro
 	}
 
 	// 检查是否已经存在从该官方模板复制的版本
-	count, err := g.DB().Model("hg_trading_strategy_group").
+	count, err := g.DB().Model("hg_trading_strategy_group").Ctx(ctx).
 		Where("from_official_id", officialGroupId).
 		Where("is_official", 0).
 		Where("user_id", userId).
@@ -413,7 +481,7 @@ func (s *StrategyGroupService) CopyFromOfficial(ctx context.Context, officialGro
 	if count > 0 {
 		// 已存在，查询并返回已存在的策略组ID
 		var existingGroup entity.TradingStrategyGroup
-		err = g.DB().Model("hg_trading_strategy_group").
+		err = g.DB().Model("hg_trading_strategy_group").Ctx(ctx).
 			Where("from_official_id", officialGroupId).
 			Where("is_official", 0).
 			Where("user_id", userId).
@@ -424,12 +492,34 @@ func (s *StrategyGroupService) CopyFromOfficial(ctx context.Context, officialGro
 		}
 		if existingGroup.Id > 0 {
 			g.Log().Infof(ctx, "官方策略模板 %d 已添加到我的策略（ID: %d），跳过重复添加", officialGroupId, existingGroup.Id)
+			// ✅ 自动初始化：补齐缺失的 12 种策略模板（只补缺，不覆盖已有）
+			if err := s.Init(ctx, &toogoin.StrategyGroupInitInp{
+				GroupId:    existingGroup.Id,
+				UseDefault: true,
+			}); err != nil {
+				return 0, gerror.Wrap(err, "自动初始化策略失败")
+			}
 			return existingGroup.Id, nil
 		}
 	}
 
 	// 创建新的策略组
-	newGroupKey := fmt.Sprintf("copy_%d_%d", officialGroupId, gtime.Now().Unix())
+	// 使用 UnixNano 并做一次唯一性检查，避免并发点击/同秒冲突
+	newGroupKey := ""
+	for i := 0; i < 5; i++ {
+		candidate := fmt.Sprintf("copy_%d_%d", officialGroupId, gtime.Now().UnixNano())
+		c, e := g.DB().Model("hg_trading_strategy_group").Ctx(ctx).Where("group_key", candidate).Count()
+		if e != nil {
+			return 0, gerror.Wrap(e, "生成策略组标识失败")
+		}
+		if c == 0 {
+			newGroupKey = candidate
+			break
+		}
+	}
+	if newGroupKey == "" {
+		return 0, gerror.New("生成策略组标识失败")
+	}
 	newGroupData := g.Map{
 		"group_name":       officialGroup.GroupName + " (我的副本)",
 		"group_key":        newGroupKey,
@@ -447,50 +537,223 @@ func (s *StrategyGroupService) CopyFromOfficial(ctx context.Context, officialGro
 		"updated_at":       gtime.Now(),
 	}
 
-	// 【PostgreSQL 兼容】使用 InsertAndGetId() 而不是 Insert() + LastInsertId()
-	newGroupId, err := g.DB().Model("hg_trading_strategy_group").Data(newGroupData).InsertAndGetId()
+	var newGroupId int64
+	err = g.DB().Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
+		// 【关键修复】不使用 InsertAndGetId/LastInsertId，避免 PostgreSQL 驱动不支持导致“第一次点击报错”
+		if _, e := tx.Model("hg_trading_strategy_group").Data(newGroupData).Insert(); e != nil {
+			return e
+		}
+		v, e := tx.Model("hg_trading_strategy_group").Where("group_key", newGroupKey).Value("id")
+		if e != nil {
+			return e
+		}
+		newGroupId = v.Int64()
+		if newGroupId == 0 {
+			return gerror.New("创建策略组失败")
+		}
+
+		// 复制策略（同事务，避免只插入组但没插入模板）
+		var strategies []*entity.TradingStrategyTemplate
+		if e := tx.Model("hg_trading_strategy_template").Where("group_id", officialGroupId).Scan(&strategies); e != nil {
+			return gerror.Wrap(e, "查询官方策略列表失败")
+		}
+		if len(strategies) == 0 {
+			return gerror.Newf("官方模板 %d 下没有策略", officialGroupId)
+		}
+
+		now := gtime.Now()
+		for _, strategy := range strategies {
+			if strategy == nil {
+				continue
+			}
+			newStrategyKey := fmt.Sprintf("%d_%s_%s", newGroupId, strategy.MarketState, strategy.RiskPreference)
+			newStrategyData := g.Map{
+				"group_id":                   newGroupId,
+				"strategy_key":               newStrategyKey,
+				"strategy_name":              strategy.StrategyName,
+				"risk_preference":            strategy.RiskPreference,
+				"market_state":               strategy.MarketState,
+				"monitor_window":             strategy.MonitorWindow,
+				"volatility_threshold":       strategy.VolatilityThreshold,
+				"leverage":                   strategy.Leverage,
+				"margin_percent":             strategy.MarginPercent,
+				"stop_loss_percent":          strategy.StopLossPercent,
+				"auto_start_retreat_percent": strategy.AutoStartRetreatPercent,
+				"profit_retreat_percent":     strategy.ProfitRetreatPercent,
+				"config_json":                strategy.ConfigJson,
+				"description":                strategy.Description,
+				"is_active":                  1,
+				"sort":                       strategy.Sort,
+				"created_at":                 now,
+				"updated_at":                 now,
+			}
+			if _, e := tx.Model("hg_trading_strategy_template").Data(newStrategyData).Insert(); e != nil {
+				return e
+			}
+		}
+		return nil
+	})
 	if err != nil {
 		return 0, err
 	}
-	if newGroupId == 0 {
-		return 0, gerror.New("创建策略组失败")
+
+	// ✅ 自动初始化：补齐缺失的 12 种策略模板（只补缺，不覆盖已有）
+	if err := s.Init(ctx, &toogoin.StrategyGroupInitInp{
+		GroupId:    newGroupId,
+		UseDefault: true,
+	}); err != nil {
+		return 0, gerror.Wrap(err, "自动初始化策略失败")
 	}
 
-	// 复制策略
-	var strategies []*entity.TradingStrategyTemplate
-	err = g.DB().Model("hg_trading_strategy_template").Where("group_id", officialGroupId).Scan(&strategies)
-	if err != nil {
-		return 0, gerror.Wrap(err, "查询官方策略列表失败")
+	return newGroupId, nil
+}
+
+// Clone 复制策略组（含策略模板）
+// - 仅超级管理员可用
+// - 会复制策略组记录，并复制其下所有策略模板
+// - 自动生成新的 group_key，避免唯一键冲突
+func (s *StrategyGroupService) Clone(ctx context.Context, groupId int64) (int64, error) {
+	if contexts.GetRoleKey(ctx) != consts.SuperRoleKey {
+		return 0, gerror.New("permission denied")
 	}
-	if len(strategies) == 0 {
-		return 0, gerror.Newf("官方模板 %d 下没有策略", officialGroupId)
+	if groupId <= 0 {
+		return 0, gerror.New("groupId invalid")
 	}
 
-	for _, strategy := range strategies {
-		newStrategyKey := fmt.Sprintf("%d_%s_%s", newGroupId, strategy.MarketState, strategy.RiskPreference)
-		newStrategyData := g.Map{
-			"group_id":                   newGroupId,
-			"strategy_key":               newStrategyKey,
-			"strategy_name":              strategy.StrategyName,
-			"risk_preference":            strategy.RiskPreference,
-			"market_state":               strategy.MarketState,
-			"monitor_window":             strategy.MonitorWindow,
-			"volatility_threshold":       strategy.VolatilityThreshold,
-			"leverage":                   strategy.Leverage,
-			"margin_percent":             strategy.MarginPercent,
-			"stop_loss_percent":          strategy.StopLossPercent,
-			"auto_start_retreat_percent": strategy.AutoStartRetreatPercent,
-			"profit_retreat_percent":     strategy.ProfitRetreatPercent,
-			"config_json":                strategy.ConfigJson,
-			"description":                strategy.Description,
-			"is_active":                  1,
-			"sort":                       strategy.Sort,
-			"created_at":                 gtime.Now(),
-			"updated_at":                 gtime.Now(),
+	// 读取源策略组
+	var src entity.TradingStrategyGroup
+	if err := g.DB().Model("hg_trading_strategy_group").Ctx(ctx).
+		Where("id", groupId).
+		Scan(&src); err != nil {
+		return 0, err
+	}
+	if src.Id == 0 {
+		return 0, gerror.New("模板不存在")
+	}
+
+	// 生成新的 group_key（确保唯一）
+	newKey := ""
+	for i := 0; i < 5; i++ {
+		newKey = fmt.Sprintf("%s_copy_%d", src.GroupKey, gtime.Now().UnixNano())
+		cnt, err := g.DB().Model("hg_trading_strategy_group").Ctx(ctx).Where("group_key", newKey).Count()
+		if err != nil {
+			return 0, err
 		}
-		_, _ = g.DB().Model("hg_trading_strategy_template").Insert(newStrategyData)
+		if cnt == 0 {
+			break
+		}
+	}
+	if newKey == "" {
+		return 0, gerror.New("生成模板标识失败")
 	}
 
+	var newGroupId int64
+	err := g.DB().Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
+		// 复制策略组
+		data := g.Map{
+			"group_name":  fmt.Sprintf("%s (复制)", src.GroupName),
+			"group_key":   newKey,
+			"exchange":    src.Exchange,
+			"symbol":      src.Symbol,
+			"order_type":  src.OrderType,
+			"margin_mode": src.MarginMode,
+			"description": src.Description,
+			"is_official": src.IsOfficial,
+			"user_id":     src.UserId,
+			"is_active":   src.IsActive,
+			"sort":        src.Sort,
+			"created_at":  gtime.Now(),
+			"updated_at":  gtime.Now(),
+		}
+
+		// PostgreSQL 兼容：InsertAndGetId 在某些驱动实现下仍可能触发 LastInsertId 错误
+		// 兜底策略：InsertAndGetId 失败且包含 LastInsertId → 普通 Insert + 通过唯一 group_key 反查 id
+		id, err := tx.Model("hg_trading_strategy_group").Data(data).InsertAndGetId()
+		if err != nil && strings.Contains(err.Error(), "LastInsertId is not supported") {
+			if _, e := tx.Model("hg_trading_strategy_group").Data(data).Insert(); e != nil {
+				return e
+			}
+			v, e := tx.Model("hg_trading_strategy_group").Where("group_key", newKey).Value("id")
+			if e != nil {
+				return e
+			}
+			id = v.Int64()
+			err = nil
+		}
+		if err != nil {
+			return err
+		}
+		newGroupId = id
+		if newGroupId == 0 {
+			return gerror.New("创建策略组失败")
+		}
+
+		// 复制策略模板
+		var templates []*entity.TradingStrategyTemplate
+		if err := tx.Model("hg_trading_strategy_template").Where("group_id", src.Id).Scan(&templates); err != nil {
+			return err
+		}
+		// 仅复制“标准12套”（4种市场状态×3种风险偏好），避免源数据存在非标准组合导致复制后模板数量异常。
+		allowedMarket := map[string]bool{"trend": true, "volatile": true, "high_vol": true, "low_vol": true}
+		allowedRisk := map[string]bool{"conservative": true, "balanced": true, "aggressive": true}
+		seen := map[string]bool{}
+		for _, t := range templates {
+			if t == nil {
+				continue
+			}
+			ms := strings.TrimSpace(t.MarketState)
+			rp := strings.TrimSpace(t.RiskPreference)
+			if !allowedMarket[ms] || !allowedRisk[rp] {
+				continue
+			}
+			k := ms + "|" + rp
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+
+			newStrategyKey := fmt.Sprintf("%d_%s_%s", newGroupId, t.MarketState, t.RiskPreference)
+			row := g.Map{
+				"group_id":                   newGroupId,
+				"strategy_key":               newStrategyKey,
+				"strategy_name":              t.StrategyName,
+				"risk_preference":            t.RiskPreference,
+				"market_state":               t.MarketState,
+				"monitor_window":             t.MonitorWindow,
+				"volatility_threshold":       t.VolatilityThreshold,
+				"leverage":                   t.Leverage,
+				"margin_percent":             t.MarginPercent,
+				"stop_loss_percent":          t.StopLossPercent,
+				"auto_start_retreat_percent": t.AutoStartRetreatPercent,
+				"profit_retreat_percent":     t.ProfitRetreatPercent,
+				"config_json":                t.ConfigJson,
+				"description":                t.Description,
+				"is_active":                  t.IsActive,
+				"sort":                       t.Sort,
+				"created_at":                 gtime.Now(),
+				"updated_at":                 gtime.Now(),
+			}
+			if _, err := tx.Model("hg_trading_strategy_template").Insert(row); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+
+	// ✅ 保证 12 套模板：若复制后不足 12，则仅补齐缺失组合（不覆盖已复制的模板）
+	// 注意：这里补齐的是“标准12套”，若源数据只有非标准组合，我们会复制不到任何模板，此时用默认值补齐。
+	cnt, _ := g.DB().Model("hg_trading_strategy_template").Ctx(ctx).Where("group_id", newGroupId).Count()
+	if cnt < 12 {
+		if err := s.Init(ctx, &toogoin.StrategyGroupInitInp{
+			GroupId:    newGroupId,
+			UseDefault: true,
+		}); err != nil {
+			return 0, gerror.Wrap(err, "自动补齐12套策略模板失败")
+		}
+	}
 	return newGroupId, nil
 }
 

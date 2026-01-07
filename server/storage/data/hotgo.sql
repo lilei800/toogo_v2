@@ -6205,3 +6205,59 @@ ALTER TABLE `hg_test_category`
 /*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
 /*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
+
+-- =============================================================================
+-- Support Chat (客服聊天体系)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS `hg_support_session` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '会话ID',
+  `user_id` BIGINT NOT NULL COMMENT '用户ID',
+  `agent_id` BIGINT NOT NULL DEFAULT 0 COMMENT '客服ID',
+  `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态：1排队 2进行中 3已关闭',
+  `subject` VARCHAR(255) NOT NULL DEFAULT '' COMMENT '主题/摘要',
+  `last_msg` TEXT COMMENT '最后一条消息预览',
+  `last_msg_at` DATETIME DEFAULT NULL COMMENT '最后消息时间',
+  `unread_user` INT NOT NULL DEFAULT 0 COMMENT '用户未读数',
+  `unread_agent` INT NOT NULL DEFAULT 0 COMMENT '客服未读数',
+  `created_at` DATETIME DEFAULT NULL,
+  `updated_at` DATETIME DEFAULT NULL,
+  `closed_at` DATETIME DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_support_session_user` (`user_id`),
+  KEY `idx_support_session_agent` (`agent_id`),
+  KEY `idx_support_session_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='客服_会话';
+
+CREATE TABLE IF NOT EXISTS `hg_support_message` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '消息ID',
+  `session_id` BIGINT NOT NULL COMMENT '会话ID',
+  `sender_role` TINYINT NOT NULL COMMENT '发送方角色：1用户 2客服 3系统',
+  `sender_id` BIGINT NOT NULL COMMENT '发送方ID',
+  `msg_type` TINYINT NOT NULL DEFAULT 1 COMMENT '消息类型：1文本',
+  `content` TEXT NOT NULL COMMENT '内容',
+  `created_at` DATETIME DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_support_message_session` (`session_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='客服_消息';
+
+CREATE TABLE IF NOT EXISTS `hg_support_agent_presence` (
+  `agent_id` BIGINT NOT NULL COMMENT '客服ID',
+  `online` TINYINT NOT NULL DEFAULT 0 COMMENT '是否在线：1在线 0离线',
+  `last_seen_at` DATETIME DEFAULT NULL COMMENT '最后心跳时间',
+  `updated_at` DATETIME DEFAULT NULL COMMENT '更新时间',
+  PRIMARY KEY (`agent_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='客服_在线状态';
+
+CREATE TABLE IF NOT EXISTS `hg_support_canned_reply` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '记录ID',
+  `agent_id` BIGINT NOT NULL DEFAULT 0 COMMENT '所属客服ID(0表示全局)',
+  `title` VARCHAR(128) NOT NULL DEFAULT '' COMMENT '标题',
+  `content` TEXT NOT NULL COMMENT '内容',
+  `sort` INT NOT NULL DEFAULT 0 COMMENT '排序',
+  `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态',
+  `created_at` DATETIME DEFAULT NULL,
+  `updated_at` DATETIME DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_support_canned_reply_agent` (`agent_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='客服_常用语';

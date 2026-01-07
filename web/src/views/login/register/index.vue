@@ -46,7 +46,11 @@
     </n-form-item>
 
     <n-form-item path="email">
-      <n-input @keyup.enter="handleSubmit" v-model:value="formInline.email" placeholder="请输入邮箱">
+      <n-input
+        @keyup.enter="handleSubmit"
+        v-model:value="formInline.email"
+        placeholder="请输入邮箱"
+      >
         <template #prefix>
           <n-icon size="18" color="#808695">
             <MailOutlined />
@@ -56,7 +60,11 @@
     </n-form-item>
 
     <n-form-item path="mobile">
-      <n-input @keyup.enter="handleSubmit" v-model:value="formInline.mobile" placeholder="请输入手机号">
+      <n-input
+        @keyup.enter="handleSubmit"
+        v-model:value="formInline.mobile"
+        placeholder="请输入手机号"
+      >
         <template #prefix>
           <n-icon size="18" color="#808695">
             <MobileOutlined />
@@ -144,7 +152,12 @@
   import { useMessage } from 'naive-ui';
   import { ResultEnum } from '@/enums/httpEnum';
   import { PersonOutline, LockClosedOutline } from '@vicons/ionicons5';
-  import { SafetyCertificateOutlined, TagOutlined, MailOutlined, MobileOutlined } from '@vicons/antd';
+  import {
+    SafetyCertificateOutlined,
+    TagOutlined,
+    MailOutlined,
+    MobileOutlined,
+  } from '@vicons/antd';
   import { aesEcb } from '@/utils/encrypt';
   import Agreement from './agreement.vue';
   import { useSendCode } from '@/hooks/common';

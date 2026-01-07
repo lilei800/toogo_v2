@@ -26,8 +26,8 @@ export interface Robot {
   autoTradeEnabled: number;
   autoCloseEnabled: number;
   apiConfigId: number;
-  scheduleStart?: string;  // 定时启动时间
-  scheduleStop?: string;   // 定时停止时间
+  scheduleStart?: string; // 定时启动时间
+  scheduleStop?: string; // 定时停止时间
 }
 
 export interface SearchParams {
@@ -37,7 +37,7 @@ export interface SearchParams {
 
 export function useRobotList() {
   const message = useMessage();
-  
+
   // 状态
   const loading = ref(false);
   const robotList = ref<Robot[]>([]);
@@ -48,10 +48,14 @@ export function useRobotList() {
   });
 
   // 计算属性
-  const runningCount = computed(() => robotList.value.filter(r => r.status === 2).length);
+  const runningCount = computed(() => robotList.value.filter((r) => r.status === 2).length);
   const todayPnl = computed(() => robotList.value.reduce((sum, r) => sum + (r.totalPnl || 0), 0));
-  const totalPnl = computed(() => robotList.value.reduce((sum, r) => sum + (r.totalProfit || 0), 0));
-  const totalPower = computed(() => robotList.value.reduce((sum, r) => sum + (r.consumedPower || 0), 0));
+  const totalPnl = computed(() =>
+    robotList.value.reduce((sum, r) => sum + (r.totalProfit || 0), 0),
+  );
+  const totalPower = computed(() =>
+    robotList.value.reduce((sum, r) => sum + (r.consumedPower || 0), 0),
+  );
 
   // 加载数据
   const loadData = async () => {
@@ -67,7 +71,7 @@ export function useRobotList() {
       if (searchParams.value.platform) {
         params.platform = searchParams.value.platform;
       }
-      
+
       const res = await getRobotList(params);
       if (res.code === 0) {
         robotList.value = res.data?.list || [];
@@ -140,13 +144,13 @@ export function useRobotList() {
     robotList,
     total,
     searchParams,
-    
+
     // 计算属性
     runningCount,
     todayPnl,
     totalPnl,
     totalPower,
-    
+
     // 方法
     loadData,
     handleStartRobot,
@@ -167,27 +171,33 @@ export const statusOptions = [
 export const platformOptions = [
   { label: '全部', value: null },
   { label: 'Binance', value: 'binance' },
-  { label: 'Bitget', value: 'bitget' },
   { label: 'OKX', value: 'okx' },
 ];
 
 // 获取状态类型
 export function getStatusType(status: number): 'success' | 'warning' | 'error' | 'default' {
   switch (status) {
-    case 2: return 'success';
-    case 1: return 'warning';
-    case 3: return 'error';
-    default: return 'default';
+    case 2:
+      return 'success';
+    case 1:
+      return 'warning';
+    case 3:
+      return 'error';
+    default:
+      return 'default';
   }
 }
 
 // 获取状态文本
 export function getStatusText(status: number): string {
   switch (status) {
-    case 1: return '待启动';
-    case 2: return '运行中';
-    case 3: return '已停止';
-    default: return '未知';
+    case 1:
+      return '待启动';
+    case 2:
+      return '运行中';
+    case 3:
+      return '已停止';
+    default:
+      return '未知';
   }
 }
-

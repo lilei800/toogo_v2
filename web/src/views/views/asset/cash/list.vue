@@ -182,7 +182,7 @@
   const estimated = ref(
     '本次提现预计将在 ' +
       timestampToTime(new Date().setTime(new Date().getTime() + 86400 * 4 * 1000) / 1000) +
-      ' 前到账 (1-3个工作日，双休日和法定节假日顺延)'
+      ' 前到账 (1-3个工作日，双休日和法定节假日顺延)',
   );
 
   const schemas: FormSchema[] = [

@@ -1,0 +1,108 @@
+name: hotgo
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    # Tuned for 2c4g single-node
+    command:
+      - "postgres"
+      - "-c"
+      - "max_connections=50"
+      - "-c"
+      - "shared_buffers=512MB"
+      - "-c"
+      - "effective_cache_size=1536MB"
+      - "-c"
+      - "work_mem=16MB"
+      - "-c"
+      - "maintenance_work_mem=128MB"
+      - "-c"
+      - "wal_compression=on"
+    environment:
+      POSTGRES_DB: ${PG_DB:-hotgo}
+      POSTGRES_USER: ${PG_USER:-hotgo_user}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?set PG_PASSWORD}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - ./deploy_data/pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Tuned for 2c4g single-node
+    command:
+      - "sh"
+      - "-lc"
+      - "exec redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru --requirepass \"$${REDIS_PASSWORD}\""
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - ./deploy_data/redisdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  hotgo:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    environment:
+      # gf paths
+      GF_GCFG_PATH: /app/manifest/config
+      GF_GLOG_PATH: /app/logs
+      TZ: ${TZ:-Asia/Shanghai}
+
+      # IMPORTANT: override secrets in production
+      TOKEN_SECRET_KEY: ${TOKEN_SECRET_KEY:?set TOKEN_SECRET_KEY}
+      TCP_CRON_SECRET_KEY: ${TCP_CRON_SECRET_KEY:-hotgo_cron_secret}
+      TCP_AUTH_SECRET_KEY: ${TCP_AUTH_SECRET_KEY:-hotgo_auth_secret}
+
+      # Optional proxy to exchanges
+      PROXY_ENABLED: ${PROXY_ENABLED:-false}
+      PROXY_TYPE: ${PROXY_TYPE:-socks5}
+      PROXY_HOST: ${PROXY_HOST:-127.0.0.1}
+      PROXY_PORT: ${PROXY_PORT:-10808}
+
+      # Make Go runtime friendlier on 2 vCPU
+      GOMAXPROCS: ${GOMAXPROCS:-2}
+    volumes:
+      # You will edit config on the host; container reads it
+      - ./manifest/config:/app/manifest/config:ro
+      - ./logs:/app/logs
+      - ./storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # public ping endpoint (no auth); only checks app process is up
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8000/admin/site/ping >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  nginx:
+    image: nginx:1.25-alpine
+    restart: unless-stopped
+    depends_on:
+      hotgo:
+        condition: service_healthy
+    ports:
+      - "80:80"
+    volumes:
+      - ./deploy/nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./deploy_data/nginx_logs:/var/log/nginx
+      # For Let's Encrypt HTTP-01 challenge (required for certbot)
+      - ./deploy_data/certbot/www:/var/www/certbot
+

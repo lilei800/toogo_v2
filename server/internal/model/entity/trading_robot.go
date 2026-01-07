@@ -44,6 +44,7 @@ type TradingRobot struct {
 	RuntimeSeconds          int         `json:"runtimeSeconds"           orm:"runtime_seconds"             description:"已运行时长(秒)"`
 	AutoTradeEnabled        int         `json:"autoTradeEnabled"         orm:"auto_trade_enabled"          description:"全自动下单：0=否,1=是"`
 	AutoCloseEnabled        int         `json:"autoCloseEnabled"         orm:"auto_close_enabled"          description:"全自动平仓：0=否,1=是"`
+	ProfitLockEnabled       int         `json:"profitLockEnabled"        orm:"profit_lock_enabled"         description:"锁定盈利开关：0=关闭,1=开启（止盈启动后禁止自动开新仓）"`
 	DualSidePosition        int         `json:"dualSidePosition"         orm:"dual_side_position"          description:"双向开单：0=单向,1=双向"`
 	ScheduleStart           *gtime.Time `json:"scheduleStart"            orm:"schedule_start"              description:"定时启动时间"`
 	ScheduleStop            *gtime.Time `json:"scheduleStop"             orm:"schedule_stop"               description:"定时停止时间"`

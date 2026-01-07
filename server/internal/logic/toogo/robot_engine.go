@@ -5,6 +5,7 @@ package toogo
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -19,11 +20,31 @@ import (
 	"hotgo/internal/service"
 	"hotgo/internal/websocket"
 
+	"github.com/gogf/gf/v2/encoding/gjson"
 	"github.com/gogf/gf/v2/errors/gerror"
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/os/gtime"
 	"github.com/gogf/gf/v2/util/grand"
 )
+
+// balanceFetchErrLogAt throttles "no balance cache" warnings to avoid log spam.
+// key: robotId(string) -> time.Time
+var balanceFetchErrLogAt sync.Map
+
+func shouldLogBalanceFetchErr(robotId int64, every time.Duration) bool {
+	if robotId <= 0 || every <= 0 {
+		return false
+	}
+	key := g.NewVar(robotId).String()
+	now := time.Now()
+	if v, ok := balanceFetchErrLogAt.Load(key); ok {
+		if t0, ok2 := v.(time.Time); ok2 && now.Sub(t0) < every {
+			return false
+		}
+	}
+	balanceFetchErrLogAt.Store(key, now)
+	return true
+}
 
 // RobotEngine 机器人核心引擎
 // 每个机器人一个独立的引擎实例
@@ -46,9 +67,14 @@ type RobotEngine struct {
 	LastKlines       *market.KlineCache   // 最新K线
 	LastAnalysis     *RobotMarketAnalysis // 最新分析结果
 	LastSignal       *RobotSignal         // 最新方向信号
-	CurrentPositions []*exchange.Position // 当前持仓
+	CurrentPositions []*exchange.Position // 当前持仓（交易逻辑/对账使用的“真实快照”）
 	AccountBalance   *exchange.Balance    // 账户余额
 	OrderHistory     []*exchange.Order    // 订单历史缓存
+
+	// PositionsSnapshot: “交易所真实快照”(用于对账/同步逻辑)，不做 anti-flicker（允许为空）。
+	PositionsSnapshot   []*exchange.Position
+	LastSnapshotAt      time.Time // PositionsSnapshot 更新时间
+	privatePollInterval time.Duration
 
 	// ============ 时间记录 ============
 	LastTickerUpdate           time.Time
@@ -59,9 +85,11 @@ type RobotEngine struct {
 	LastBalanceUpdate          time.Time
 	LastOrderHistoryUpdate     time.Time // 订单历史更新时间
 	LastOrderSync              time.Time // 上次订单状态同步时间（用于控制同步频率）
+	LastTradeFillSync          time.Time // 上次成交流水落库时间（低频，避免刷API）
 	LastSyncError              error     // 上次同步错误
 	LastVolatilityConfigUpdate time.Time // 波动率配置更新时间（减少数据库查询）
 	LastStrategyParamsUpdate   time.Time // 策略参数更新时间（减少数据库查询）
+	LastProgressPushTime       time.Time // 上次推送血条更新时间（用于智能节流）
 
 	SyncErrorCount int // 连续同步错误次数
 
@@ -77,6 +105,8 @@ type RobotEngine struct {
 	LastWindowMin    *float64            // 上次窗口最低价
 	LastWindowMax    *float64            // 上次窗口最高价
 	LastWindowSignal string              // 上次窗口信号方向
+	// 预警写库去重：若“上一条已写入的预警”与本次同方向，则不再写入（避免同向刷屏）
+	lastSignalAlertDir string
 
 	// ============ 市场状态与策略配置 ============
 	LastMarketState       string            // 上次市场状态（用于检测市场状态变化，避免重复加载策略）
@@ -94,11 +124,255 @@ type RobotEngine struct {
 	priceLock sync.RWMutex // 价格窗口数据锁
 
 	// ============ 并发控制 ============
-	processingPriceUpdate int32 // 是否正在处理价格更新（原子操作，防止goroutine堆积）
+	processingPriceUpdate int32 // 是否正在处理“数据库订单更新”任务（原子操作，防止goroutine堆积）
+	processingWSUpdate    int32 // 是否正在处理“WS价格回调的平仓检查”任务（原子操作，避免风暴但不阻断报价）
+
+	// ============ 行情/交易解耦（保证报价不被订单/DB阻塞） ============
+	// signalEvalPending: 在 WS 报价回调中触发信号评估时，确保同一时刻只跑一个评估任务（丢弃多余触发）。
+	signalEvalPending int32
+	// lastDispatchedWindowSignal: 上一次已投递到“交易链路”的窗口信号（-1=short,0=neutral,1=long）
+	lastDispatchedWindowSignal int32
+	// windowSignalCh: 非阻塞队列，承载“需要写库/下单”的信号事件（与行情回调隔离）
+	windowSignalCh chan *windowSignalEvent
 
 	// ============ API 请求去重（singleflight模式） ============
 	positionFetching int32 // 是否正在获取持仓（原子操作，防止重复请求）
 	balanceFetching  int32 // 是否正在获取余额（原子操作，防止重复请求）
+}
+
+// notifyPositionsDeltaAsync pushes a "positions/delta" event to frontend to refresh UI state
+// when internal tracker state changes (e.g. take-profit switch auto-enabled) without any exchange position event.
+// This does NOT change any trading logic; it's purely UI notification.
+func (e *RobotEngine) notifyPositionsDeltaAsync(reason string) {
+	if e == nil || e.Robot == nil || e.Robot.UserId <= 0 || e.Robot.Id <= 0 {
+		return
+	}
+	robotId := e.Robot.Id
+	userId := e.Robot.UserId
+	ts := gtime.Now().TimestampMilli()
+	go func() {
+		ctx := context.Background()
+		list, err := service.ToogoRobot().GetRobotPositions(ctx, robotId)
+		data := g.Map{
+			"robotId": robotId,
+			"list":    list,
+			"error":   "",
+			"stale":   false,
+			"ts":      ts,
+			"reason":  reason,
+		}
+		if err != nil {
+			// 失败则只推“错误通知”，避免推空覆盖前端
+			data["error"] = err.Error()
+			data["stale"] = true
+		}
+		websocket.SendToUser(userId, &websocket.WResponse{
+			Event: "toogo/robot/positions/delta",
+			Data:  data,
+		})
+	}()
+}
+
+// checkAndPushProgressUpdate 检查并推送血条更新（智能节流）
+// 【优化】价格更新时实时推送血条，确保前端显示与后端计算一致
+func (e *RobotEngine) checkAndPushProgressUpdate(ctx context.Context, riskPrice float64) {
+	if e == nil || e.Robot == nil || e.Robot.UserId <= 0 || e.Robot.Id <= 0 {
+		return
+	}
+
+	// 1. 检查是否有持仓
+	e.mu.RLock()
+	hasPosition := len(e.CurrentPositions) > 0
+	lastPush := e.LastProgressPushTime
+	lastTicker := e.LastTicker
+	e.mu.RUnlock()
+
+	if !hasPosition {
+		return
+	}
+
+	// 2. 智能节流：根据价格变化幅度决定推送频率
+	now := time.Now()
+	pushInterval := 1 * time.Second // 默认1秒
+
+	// 如果价格变化大（>0.1%），缩短推送间隔到500ms
+	if lastTicker != nil {
+		oldPrice := lastTicker.EffectiveMarkPrice()
+		if oldPrice > 0 {
+			priceChangePercent := math.Abs(riskPrice-oldPrice) / oldPrice * 100
+			if priceChangePercent > 0.1 {
+				pushInterval = 500 * time.Millisecond
+			}
+		}
+	}
+
+	// 3. 检查是否需要立即推送（关键节点）
+	needImmediatePush := e.shouldPushProgressImmediately(ctx, riskPrice)
+
+	// 4. 节流检查：关键节点立即推送（不受节流限制），否则按间隔推送
+	if needImmediatePush {
+		// 【优化】关键节点（血条接近100%）立即推送，不受节流限制
+		// 这样可以确保前端能及时看到血条从90%增长到100%的完整过程
+		// 【修复】关键节点推送时，不检查 lastPush，确保每次都能立即推送
+		e.notifyPositionsDeltaAsync("progress_critical_update")
+		g.Log().Debugf(ctx, "[RobotEngine] robotId=%d 【关键节点】立即推送血条更新（不受节流限制）", e.Robot.Id)
+		// 关键节点推送后，更新 LastProgressPushTime（用于非关键节点的节流判断）
+		e.mu.Lock()
+		e.LastProgressPushTime = now
+		e.mu.Unlock()
+	} else if lastPush.IsZero() || now.Sub(lastPush) >= pushInterval {
+		e.mu.Lock()
+		e.LastProgressPushTime = now
+		e.mu.Unlock()
+		e.notifyPositionsDeltaAsync("price_update_progress")
+		g.Log().Debugf(ctx, "[RobotEngine] robotId=%d 【定时推送】血条更新推送: interval=%v", e.Robot.Id, pushInterval)
+	}
+}
+
+// shouldPushProgressImmediately 检查是否需要立即推送（关键节点）
+// 当血条接近100%时立即推送，确保前端及时显示
+func (e *RobotEngine) shouldPushProgressImmediately(ctx context.Context, riskPrice float64) bool {
+	// 获取当前持仓
+	positions, err := e.GetPositionsSmart(ctx, 0)
+	if err != nil || len(positions) == 0 {
+		return false
+	}
+
+	// 检查是否有持仓接近关键阈值
+	for _, pos := range positions {
+		if pos == nil || math.Abs(pos.PositionAmt) <= positionAmtEpsilon {
+			continue
+		}
+
+		// 从 PositionTracker 获取策略参数（与 GetRobotPositions 逻辑一致）
+		tracker := e.GetPositionTracker(pos.PositionSide)
+		if tracker == nil {
+			continue
+		}
+
+		// 计算保证金（优先使用 tracker 的 EntryMargin）
+		margin := tracker.EntryMargin
+		if margin <= 0 {
+			margin = math.Abs(pos.PositionAmt) * pos.EntryPrice / float64(pos.Leverage)
+		}
+		if margin <= 0 {
+			continue
+		}
+
+		// 计算启动止盈血条
+		if tracker.ParamsLoaded && tracker.AutoStartRetreatPercent > 0 {
+			profitPercent := (pos.UnrealizedPnl / margin) * 100
+			progress := (profitPercent / tracker.AutoStartRetreatPercent) * 100
+			// 【优化】接近100%时立即推送（>=90%），确保前端能及时看到血条增长
+			// 注意：95%以上会频繁推送，但这是必要的，因为血条接近100%是关键节点
+			if progress >= 90 {
+				return true
+			}
+		}
+
+		// 计算止损血条
+		if tracker.ParamsLoaded && tracker.StopLossPercent > 0 && pos.UnrealizedPnl < 0 {
+			stopLossAmount := margin * (tracker.StopLossPercent / 100)
+			if stopLossAmount > 0 {
+				progress := (math.Abs(pos.UnrealizedPnl) / stopLossAmount) * 100
+				// 接近100%时立即推送（>=95%）
+				if progress >= 95 {
+					return true
+				}
+			}
+		}
+
+		// 检查止盈回撤血条（如果已启动）
+		if tracker.TakeProfitEnabled && tracker.ParamsLoaded && tracker.ProfitRetreatPercent > 0 && tracker.HighestProfit > 0 {
+			currentRetreatPercent := ((tracker.HighestProfit - pos.UnrealizedPnl) / tracker.HighestProfit) * 100
+			if currentRetreatPercent < 0 {
+				currentRetreatPercent = 0
+			}
+			retreatBar := 100.0 - (currentRetreatPercent/tracker.ProfitRetreatPercent)*100.0
+			// 接近0%时立即推送（<=5%）
+			if retreatBar <= 5 {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// updateBalanceCacheFromPrivateWS updates AccountBalance from a private WS "account" event.
+// This is best-effort and should not override a newer REST snapshot.
+func (e *RobotEngine) updateBalanceCacheFromPrivateWS(bal *exchange.Balance, receivedAt int64) {
+	if bal == nil {
+		return
+	}
+	// refuse obviously invalid "all zero" updates (would cause UI to stick at 0.00)
+	if bal.TotalBalance == 0 && bal.AvailableBalance == 0 && bal.UnrealizedPnl == 0 {
+		return
+	}
+	e.mu.Lock()
+	// If we already have a very fresh snapshot (<1s), prefer keeping it to avoid flapping.
+	if !e.LastBalanceUpdate.IsZero() && time.Since(e.LastBalanceUpdate) < 1*time.Second {
+		e.mu.Unlock()
+		return
+	}
+	e.AccountBalance = bal
+	e.LastBalanceUpdate = time.Now()
+	e.mu.Unlock()
+}
+
+// updatePositionsCacheFromPrivateWS updates CurrentPositions from a private WS "position/account" event.
+// It is intended for exchanges like Binance where account update messages contain positions.
+//
+// Notes:
+// - positions may be empty slice to represent "no positions" (close detected).
+// - best-effort: we accept WS as near-real-time source but still guard against obvious stale updates.
+func (e *RobotEngine) updatePositionsCacheFromPrivateWS(positions []*exchange.Position, receivedAt int64) {
+	if e == nil {
+		return
+	}
+	// allow clearing positions: positions can be empty slice, but should not be nil
+	if positions == nil {
+		return
+	}
+
+	// translate receivedAt(ms) to time for ordering; fallback to now
+	snapshotAt := time.Now()
+	if receivedAt > 0 {
+		// receivedAt is ms epoch
+		snapshotAt = time.Unix(0, receivedAt*int64(time.Millisecond))
+		// if clock is weird, fallback to now
+		if snapshotAt.Year() < 2000 || snapshotAt.After(time.Now().Add(2*time.Minute)) {
+			snapshotAt = time.Now()
+		}
+	}
+
+	e.mu.Lock()
+	// refuse obviously stale updates (older than our last raw snapshot by >500ms)
+	if !e.LastSnapshotAt.IsZero() && snapshotAt.Before(e.LastSnapshotAt.Add(-500*time.Millisecond)) {
+		e.mu.Unlock()
+		return
+	}
+	e.CurrentPositions = positions
+	e.LastPositionUpdate = snapshotAt
+	e.PositionsSnapshot = positions
+	e.LastSnapshotAt = snapshotAt
+	e.mu.Unlock()
+}
+
+// analysisPlatform returns the platform used for Klines/MarketAnalyzer.
+// Execution (orders/positions/balance/risk price) still uses e.Platform/e.Exchange.
+func (e *RobotEngine) analysisPlatform(ctx context.Context) string {
+	ap := market.ResolveAnalysisPlatform(ctx, e.Platform)
+	if ap == "" {
+		return e.Platform
+	}
+	return ap
+}
+
+// windowSignalEvent 用于把“需要写库/下单”的信号事件从行情回调链路解耦出来
+// 任何交易/DB 问题都只影响 worker，不会反向阻塞行情推送。
+type windowSignalEvent struct {
+	Signal *RobotSignal
 }
 
 // GetAccountSnapshot 获取账户缓存快照（线程安全）
@@ -171,13 +445,28 @@ type TechnicalIndicators struct {
 
 // PositionTracker 持仓跟踪器（纯内存，每个新订单自动重置）
 type PositionTracker struct {
-	PositionSide      string    // 持仓方向 LONG/SHORT
-	EntryMargin       float64   // 开仓保证金
-	EntryTime         time.Time // 开仓时间
-	HighestProfit     float64   // 最高盈利金额（只增不减）
-	LowestProfit      float64   // 最低盈利金额（负数表示亏损）
-	TakeProfitEnabled bool      // 止盈回撤是否已启用（由用户手动开启或自动触发）
-	OrderId           int64     // 关联的订单ID（用于检测订单变化）
+	PositionSide        string    // 持仓方向 LONG/SHORT
+	EntryMargin         float64   // 开仓保证金
+	EntryTime           time.Time // 开仓时间
+	HighestProfit       float64   // 最高盈利金额（只增不减）
+	LowestProfit        float64   // 最低盈利金额（负数表示亏损）
+	TakeProfitEnabled   bool      // 止盈回撤是否已启用（由用户手动开启或自动触发）
+	TakeProfitEnabledAt time.Time // 止盈回撤启动时间（用于短暂保护，避免刚启动即触发）
+	OrderId             int64     // 关联的订单ID（用于检测订单变化）
+	// 最高盈利持久化节流：确保“脱离客户端/服务重启”仍能恢复最高盈利（只增不减）
+	LastHighestProfitPersistAt    time.Time
+	LastHighestProfitPersistValue float64
+
+	// ===== 平仓防风暴（避免同一秒重复调用交易所 close-position）=====
+	// 说明：行情 tick 很密 + close-position/成交存在延迟时，容易被重复触发并发平仓，导致 OKX 返回
+	// “code=1 msg=All operations failed”等泛化错误，同时刷屏日志。
+	CloseInFlightUntil time.Time // 在该时间之前不允许再次触发同方向平仓
+	CloseInFlightType  string    // stop_loss/take_profit/manual
+
+	// ===== 诊断告警节流（避免终端洪流）=====
+	// 说明：当交易所持仓返回的 UnrealizedPnl 缺失/异常（例如价格明显变动但PnL仍为0）时，
+	// 我们只告警、不做“价格差×数量”的简算兜底，避免 Gate 合约面值/乘数导致口径错误。
+	LastUnrealizedPnlWarnAt time.Time
 
 	// ===== 冻结参数（开仓时确定，用于前端血条/展示；优先内存，无则DB兜底） =====
 	ParamsLoaded            bool    // 是否已加载冻结参数
@@ -187,6 +476,55 @@ type PositionTracker struct {
 	MarginPercent           float64 // 保证金比例(%)
 	MarketState             string  // 开仓时市场状态
 	RiskPreference          string  // 开仓时风险偏好
+}
+
+// calcRiskQtyAndMargin 计算用于风控(止损/止盈)的有效持仓数量与保证金
+// Gate/Bitget 偶发返回 PositionAmt=0 或 Margin=0，但 IsolatedMargin/EntryPrice/Leverage 已就绪；
+// UI 为展示会反推 qty，这里在风控侧也做同样兜底，避免“血条100%但不触发平仓”。
+func calcRiskQtyAndMargin(pos *exchange.Position, robot *entity.TradingRobot) (qtyAbs float64, margin float64, derivedQty bool) {
+	if pos == nil {
+		return 0, 0, false
+	}
+	qtyAbs = math.Abs(pos.PositionAmt)
+
+	// margin 优先级：Margin > IsolatedMargin > qty*entry/leverage
+	margin = pos.Margin
+	if margin <= 0 && pos.IsolatedMargin > 0 {
+		margin = pos.IsolatedMargin
+	}
+	lev := pos.Leverage
+	if lev <= 0 && robot != nil && robot.Leverage > 0 {
+		lev = robot.Leverage
+	}
+	if margin <= 0 && qtyAbs > positionAmtEpsilon && pos.EntryPrice > 0 && lev > 0 {
+		margin = qtyAbs * pos.EntryPrice / float64(lev)
+	}
+
+	// qty 兜底：margin*leverage/entry
+	if qtyAbs <= positionAmtEpsilon && margin > 0 && pos.EntryPrice > 0 && lev > 0 {
+		qtyAbs = (margin * float64(lev)) / pos.EntryPrice
+		if qtyAbs > positionAmtEpsilon {
+			derivedQty = true
+		}
+	}
+	return qtyAbs, margin, derivedQty
+}
+
+func clonePositionWithQty(pos *exchange.Position, qtyAbs float64) *exchange.Position {
+	if pos == nil {
+		return nil
+	}
+	cp := *pos
+	if qtyAbs < 0 {
+		qtyAbs = -qtyAbs
+	}
+	// 只需要 ClosePosition 用到数量（Abs），符号不影响；这里按方向补齐更直观
+	if strings.ToUpper(strings.TrimSpace(cp.PositionSide)) == "SHORT" {
+		cp.PositionAmt = -qtyAbs
+	} else {
+		cp.PositionAmt = qtyAbs
+	}
+	return &cp
 }
 
 // RobotSignal 机器人方向信号
@@ -258,6 +596,7 @@ func NewRobotEngine(ctx context.Context, robot *entity.TradingRobot, apiConfig *
 		Exchange:         ex,
 		PositionTrackers: make(map[string]*PositionTracker),
 		stopCh:           make(chan struct{}),
+		windowSignalCh:   make(chan *windowSignalEvent, 16),
 		// 初始化窗口监控相关
 		PriceWindow:      make([]PricePoint, 0, 1000),
 		SignalHistory:    make([]SignalHistoryItem, 0, 100),
@@ -368,47 +707,215 @@ func (e *RobotEngine) Start(ctx context.Context) error {
 	g.Log().Infof(ctx, "[RobotEngine] 机器人引擎启动: robotId=%d, symbol=%s", e.Robot.Id, e.Robot.Symbol)
 
 	// 【优化】订阅行情并注册价格更新回调（用于实时平仓检查）
+	// 执行平台需要 ticker（报价/风控口径）+ K线（MarketAnalyzer 市场状态分析）
 	market.GetMarketServiceManager().SubscribeWithCallback(ctx, e.Platform, e.Robot.Symbol, e.Exchange, func(ticker *exchange.Ticker) {
 		// WebSocket价格推送回调 - 实时触发平仓检查
 		e.OnPriceUpdate(ctx, ticker)
 	})
 
+	// 行情/交易解耦：如果配置要求"执行=Gate，分析=OKX"，则额外订阅分析平台的同一交易对，
+	// 让 MarketAnalyzer 能稳定产出 marketState/K线（不影响 Gate 的下单/持仓/余额/风控口径）。
+	analysisPlatform := e.analysisPlatform(ctx)
+	if analysisPlatform != "" && analysisPlatform != e.Platform {
+		// 这里不强依赖 exchange 实例：WS 模式下由 WS 回调写缓存即可；
+		// 若 WS 关闭/不可用，才需要 Exchange 去做 REST 兜底（可按需扩展）。
+		market.GetMarketServiceManager().Subscribe(ctx, analysisPlatform, e.Robot.Symbol, nil)
+	}
+
+	// 启动“信号写库/下单”worker：与行情推送链路彻底隔离
+	go e.runWindowSignalWorker()
+
 	// 私有WS（订单/持仓/账户变更）按 apiConfigId 复用：事件驱动触发同步，减少轮询
 	// 失败不阻断引擎启动（仍有定期兜底对账）
 	if e.APIConfig != nil {
-		if err := GetPrivateStreamManager().Acquire(ctx, e.APIConfig, e.Robot.Symbol, e.Robot.Id); err != nil {
-			g.Log().Warningf(ctx, "[RobotEngine] robotId=%d 私有WS启动失败(忽略): %v", e.Robot.Id, err)
+		if isPrivateWSEnabled(ctx, e.Platform) {
+			g.Log().Infof(ctx, "[RobotEngine] robotId=%d 准备启动私有WS: platform=%s, apiConfigId=%d, symbol=%s",
+				e.Robot.Id, e.Platform, e.APIConfig.Id, e.Robot.Symbol)
+			if err := GetPrivateStreamManager().Acquire(ctx, e.APIConfig, e.Robot.Symbol, e.Robot.Id); err != nil {
+				g.Log().Warningf(ctx, "[RobotEngine] robotId=%d 私有WS启动失败(忽略): %v", e.Robot.Id, err)
+			} else {
+				g.Log().Infof(ctx, "[RobotEngine] robotId=%d 私有WS启动成功", e.Robot.Id)
+			}
+		} else {
+			// 私有WS禁用：启用轮询对账，保证“平台手动下单/撤单/开平仓”可见
+			intervalSec := getPrivateWSPollIntervalSeconds(ctx, e.Platform, 10)
+			g.Log().Warningf(ctx, "[RobotEngine] robotId=%d 私有WS已禁用(platform=%s)，启用轮询对账: interval=%ds", e.Robot.Id, e.Platform, intervalSec)
+			go e.runPrivateWSPollingLoop(intervalSec)
 		}
+	} else {
+		g.Log().Warningf(ctx, "[RobotEngine] robotId=%d APIConfig为nil，跳过私有WS", e.Robot.Id)
 	}
 
 	// 【优化】等待行情服务获取初始数据（首次订阅会自动获取）
 	// MarketServiceManager.Subscribe 内部会调用 fetchInitialData 获取历史K线
-	// 这里等待一段时间让初始数据加载完成（最多等待3秒，每500ms检查一次）
-	maxWait := 3 * time.Second
-	checkInterval := 500 * time.Millisecond
-	startTime := time.Now()
-
-	for time.Since(startTime) < maxWait {
-		klineCache := market.GetMarketServiceManager().GetMultiTimeframeKlines(e.Platform, e.Robot.Symbol)
-		if klineCache != nil && len(klineCache.Klines1m) > 0 {
-			g.Log().Infof(ctx, "[RobotEngine] 已获取历史K线数据: robotId=%d, platform=%s, symbol=%s, 1m=%d条, 耗时=%v",
-				e.Robot.Id, e.Platform, e.Robot.Symbol, len(klineCache.Klines1m), time.Since(startTime))
-			break
+	// 【重要】这里不再阻塞引擎启动去“等K线齐全”：
+	// - 报价是 WS 推送，必须优先保证；K线/分析器是“增强能力”，后台补齐即可
+	// - Gate 在全局限流 + 多周期拉取时很容易 >8s，阻塞会放大“启动卡住/没报价”的体感
+	// 策略：
+	// - 尽快用 ticker 填充 LastTicker
+	// - K线就绪后再由 MarketAnalyzer/主循环自然产出 marketState
+	go func() {
+		defer func() { recover() }()
+		bgCtx := context.Background()
+		ap := e.analysisPlatform(bgCtx)
+		deadline := time.Now().Add(8 * time.Second)
+		for time.Now().Before(deadline) {
+			tk := market.GetMarketServiceManager().GetTicker(e.Platform, e.Robot.Symbol)
+			if tk != nil && tk.LastPrice > 0 {
+				e.mu.Lock()
+				e.LastTicker = tk
+				e.mu.Unlock()
+				break
+			}
+			time.Sleep(200 * time.Millisecond)
 		}
-		time.Sleep(checkInterval)
-	}
 
-	// 最终检查
-	klineCache := market.GetMarketServiceManager().GetMultiTimeframeKlines(e.Platform, e.Robot.Symbol)
-	if klineCache == nil || len(klineCache.Klines1m) == 0 {
-		g.Log().Warningf(ctx, "[RobotEngine] 历史K线数据获取超时: robotId=%d, platform=%s, symbol=%s, 等待时间=%v",
-			e.Robot.Id, e.Platform, e.Robot.Symbol, time.Since(startTime))
-	}
+		// K线补齐等待（仅用于日志提示，不影响启动）
+		for time.Now().Before(deadline) {
+			klineCache := market.GetMarketServiceManager().GetMultiTimeframeKlines(ap, e.Robot.Symbol)
+			if klineCache != nil && len(klineCache.Klines1m) > 0 {
+				g.Log().Debugf(bgCtx, "[RobotEngine] 已获取历史K线数据(后台): robotId=%d, platform=%s, symbol=%s, 1m=%d条",
+					e.Robot.Id, ap, e.Robot.Symbol, len(klineCache.Klines1m))
+				return
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
+		g.Log().Debugf(bgCtx, "[RobotEngine] 启动期K线仍未就绪(后台继续由 MarketService/定时任务补齐): robotId=%d, analysisPlatform=%s, execPlatform=%s, symbol=%s",
+			e.Robot.Id, ap, e.Platform, e.Robot.Symbol)
+	}()
+
+	// 【启动期修复】等待全局市场分析器产出 marketState（避免启动阶段 CurrentStrategyParams 为空，导致无法获取窗口/阈值）
+	// - MarketAnalyzer 1s 一轮，启动期最多等待 5s
+	// - 不阻塞主流程太久：放到 goroutine 内执行
+	go func() {
+		waitCtx := context.Background()
+		ap := e.analysisPlatform(waitCtx)
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			ga := market.GetMarketAnalyzer().GetAnalysis(ap, e.Robot.Symbol)
+			if ga != nil && time.Since(ga.UpdatedAt) <= 5*time.Second {
+				ms := normalizeMarketState(string(ga.MarketState))
+				if ms != "" {
+					e.checkAndUpdateStrategyConfig(waitCtx, ms)
+					return
+				}
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		g.Log().Warningf(waitCtx, "[RobotEngine] robotId=%d 启动期未获得全局市场状态(5s)，策略参数可能未就绪；analysisPlatform=%s, execPlatform=%s, symbol=%s",
+			e.Robot.Id, ap, e.Platform, e.Robot.Symbol)
+	}()
 
 	// 启动统一主循环（优化：4个循环合并为1个，减少goroutine开销）
 	go e.runMainLoop(ctx)
 
 	return nil
+}
+
+// runPrivateWSPollingLoop is used when private WS is disabled for a platform.
+// It periodically refreshes account/positions and triggers lightweight reconciliation (positions + openOrders).
+func (e *RobotEngine) runPrivateWSPollingLoop(intervalSec int) {
+	if intervalSec <= 0 {
+		intervalSec = 10
+	}
+	e.mu.Lock()
+	e.privatePollInterval = time.Duration(intervalSec) * time.Second
+	e.mu.Unlock()
+	ticker := time.NewTicker(time.Duration(intervalSec) * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-e.stopCh:
+			return
+		case <-ticker.C:
+			// First refresh account snapshot (positions/balance)
+			updated := e.syncAccountDataIfNeeded(context.Background(), "polling")
+			if strings.EqualFold(strings.TrimSpace(e.Platform), "bitget") && isOrderPositionSyncDebugEnabled(context.Background()) &&
+				shouldLogOrderPositionSync("bitget_poll_tick:"+g.NewVar(e.Robot.Id).String(), 10*time.Second) {
+				pos, at := e.GetCachedPositions()
+				lastErr := ""
+				e.mu.RLock()
+				if e.LastSyncError != nil {
+					lastErr = e.LastSyncError.Error()
+				}
+				e.mu.RUnlock()
+				g.Log().Warningf(context.Background(),
+					"[SyncDiag] bitget polling tick: robotId=%d robotName=%s symbol=%s interval=%ds updated=%v cachedPositions=%d posAt=%v lastErr=%s",
+					e.Robot.Id, strings.TrimSpace(e.Robot.RobotName), e.Robot.Symbol, intervalSec, updated, len(pos), at, lastErr)
+			}
+			// Event-driven trade fills persistence (low frequency): keep wallet "成交流水" timely even without private WS.
+			// Only applies to polling mode (private WS disabled) and is rate-limited.
+			e.trySyncTradeFillsLowPriority(context.Background(), "polling_tick", 200, 60*time.Second)
+			// Then trigger reconciliation (positions/openOrders) for UI/db consistency
+			if updated {
+				GetOrderStatusSyncService().TriggerRobotSync(e.Robot.Id)
+			}
+		}
+	}
+}
+
+// trySyncTradeFillsLowPriority pulls recent trades and upserts them into hg_trading_trade_fill.
+// It is safe (idempotent) but must be throttled to avoid API rate limits.
+func (e *RobotEngine) trySyncTradeFillsLowPriority(ctx context.Context, reason string, limit int, minInterval time.Duration) {
+	if e == nil || e.Robot == nil || e.Exchange == nil {
+		return
+	}
+	// only needed when user wants timely wallet fills; keep it conservative by default
+	if limit <= 0 {
+		limit = 200
+	}
+	if minInterval <= 0 {
+		minInterval = 60 * time.Second
+	}
+	apiId := e.Robot.ApiConfigId
+	symbol := strings.TrimSpace(e.Robot.Symbol)
+	if apiId <= 0 || symbol == "" {
+		return
+	}
+
+	e.mu.RLock()
+	last := e.LastTradeFillSync
+	e.mu.RUnlock()
+	if !last.IsZero() && time.Since(last) < minInterval {
+		return
+	}
+
+	// low priority limiter (shared with wallet补齐逻辑)
+	if !getTradeHistoryLimiter(apiId).Allow() {
+		return
+	}
+
+	callCtx := ctx
+	cancel := func() {}
+	if callCtx == nil {
+		callCtx = context.Background()
+	}
+	if dl, ok := callCtx.Deadline(); ok {
+		if time.Until(dl) > 6*time.Second {
+			callCtx, cancel = context.WithTimeout(callCtx, 6*time.Second)
+		}
+	} else {
+		callCtx, cancel = context.WithTimeout(callCtx, 6*time.Second)
+	}
+	defer cancel()
+
+	saved, matched, err := fetchAndStoreTradeHistory(callCtx, e.Exchange, apiId, e.Exchange.GetName(), symbol, limit)
+	if err == nil {
+		e.mu.Lock()
+		e.LastTradeFillSync = time.Now()
+		e.mu.Unlock()
+	}
+	if strings.EqualFold(strings.TrimSpace(e.Platform), "bitget") && isOrderPositionSyncDebugEnabled(callCtx) &&
+		shouldLogOrderPositionSync("fillsync:"+g.NewVar(e.Robot.Id).String(), 30*time.Second) {
+		if err != nil {
+			g.Log().Warningf(callCtx, "[SyncDiag] trade fills sync failed: robotId=%d robotName=%s platform=%s symbol=%s reason=%s err=%v",
+				e.Robot.Id, strings.TrimSpace(e.Robot.RobotName), e.Platform, symbol, reason, err)
+		} else {
+			g.Log().Warningf(callCtx, "[SyncDiag] trade fills synced: robotId=%d robotName=%s platform=%s symbol=%s reason=%s saved=%d matched=%d",
+				e.Robot.Id, strings.TrimSpace(e.Robot.RobotName), e.Platform, symbol, reason, saved, matched)
+		}
+	}
 }
 
 // Stop 停止引擎
@@ -425,6 +932,11 @@ func (e *RobotEngine) Stop() {
 
 	// 取消订阅行情
 	market.GetMarketServiceManager().Unsubscribe(e.Platform, e.Robot.Symbol)
+	// 若分析源与执行所不同，额外取消分析源订阅，避免泄漏引用计数
+	ap := e.analysisPlatform(context.Background())
+	if ap != "" && ap != e.Platform {
+		market.GetMarketServiceManager().Unsubscribe(ap, e.Robot.Symbol)
+	}
 
 	// 释放私有WS引用
 	if e.APIConfig != nil {
@@ -446,20 +958,37 @@ func (e *RobotEngine) UpdateRobot(robot *entity.TradingRobot) {
 	e.mu.Lock()
 	// 检查CurrentStrategy是否发生变化（用于判断是否需要重新加载策略参数）
 	oldCurrentStrategy := e.Robot.CurrentStrategy
+	oldRemark := e.Robot.Remark
 	e.Robot = robot
 	newCurrentStrategy := robot.CurrentStrategy
+	newRemark := robot.Remark
 	e.mu.Unlock()
 
 	// 重新加载风险配置映射（如果CurrentStrategy发生变化）
 	ctx := context.Background()
 	e.loadRiskConfigFromRobot(ctx)
 
-	// 如果CurrentStrategy发生变化，触发策略参数重新加载（实时生效）
+	// 如果映射关系(remark)发生变化：立即清空策略参数缓存，并触发一次重新加载（实时生效）
+	if strings.TrimSpace(oldRemark) != strings.TrimSpace(newRemark) {
+		e.mu.Lock()
+		e.CurrentStrategyParams = nil
+		e.LastMarketState = ""
+		e.mu.Unlock()
+		g.Log().Infof(ctx, "[RobotEngine] robotId=%d remark(市场状态→风险偏好映射)已更新，已清空策略缓存并触发重新加载", robot.Id)
+	}
+
+	// 如果 CurrentStrategy 发生变化，触发策略参数重新加载（实时生效）
 	if oldCurrentStrategy != newCurrentStrategy {
-		g.Log().Infof(ctx, "[RobotEngine] robotId=%d CurrentStrategy已更新，触发策略参数重新加载", robot.Id)
+		// CurrentStrategy 变化也会影响策略组ID等信息，所以同样清空缓存
+		e.mu.Lock()
+		e.CurrentStrategyParams = nil
+		e.LastMarketState = ""
+		e.mu.Unlock()
+		g.Log().Infof(ctx, "[RobotEngine] robotId=%d CurrentStrategy已更新，已清空策略缓存并触发重新加载", robot.Id)
 
 		// 【优化】从全局市场分析器获取市场状态，触发策略参数重新加载
-		globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(e.Platform, e.Robot.Symbol)
+		ap := e.analysisPlatform(ctx)
+		globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(ap, e.Robot.Symbol)
 		if globalAnalysis != nil {
 			marketState := normalizeMarketState(string(globalAnalysis.MarketState))
 			if marketState != "" {
@@ -469,19 +998,88 @@ func (e *RobotEngine) UpdateRobot(robot *entity.TradingRobot) {
 		}
 	}
 
+	// remark 变化但 CurrentStrategy 未变化时：同样尝试触发一次策略参数重新加载（避免需要等市场状态变化）
+	if strings.TrimSpace(oldRemark) != strings.TrimSpace(newRemark) && oldCurrentStrategy == newCurrentStrategy {
+		ap := e.analysisPlatform(ctx)
+		globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(ap, e.Robot.Symbol)
+		if globalAnalysis != nil {
+			marketState := normalizeMarketState(string(globalAnalysis.MarketState))
+			if marketState != "" {
+				e.checkAndUpdateStrategyConfig(ctx, marketState)
+			}
+		}
+	}
+
 	g.Log().Infof(context.Background(), "[RobotEngine] 机器人配置已更新: robotId=%d, autoTradeEnabled=%d, autoCloseEnabled=%d",
 		robot.Id, robot.AutoTradeEnabled, robot.AutoCloseEnabled)
 }
 
+// normalizePositionSideKey 将 positionSide 规范化为内存 tracker 的统一 key（LONG/SHORT）。
+// 背景：OKX/Gate 可能返回 long/short/Long 等不一致值，导致 tracker 查不到，引发“血条100%但止盈开关不启动”。
+func normalizePositionSideKey(positionSide string) string {
+	return strings.ToUpper(strings.TrimSpace(positionSide))
+}
+
 // GetPositionTracker 获取持仓跟踪器（供外部查询使用）
 func (e *RobotEngine) GetPositionTracker(positionSide string) *PositionTracker {
+	raw := strings.TrimSpace(positionSide)
+	key := normalizePositionSideKey(raw)
+	lower := strings.ToLower(raw)
+
+	// 先读锁查找（兼容历史 key：raw / upper / lower）
 	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.PositionTrackers[positionSide]
+	tracker := e.PositionTrackers[raw]
+	foundKey := raw
+	if tracker == nil && key != "" {
+		tracker = e.PositionTrackers[key]
+		foundKey = key
+	}
+	if tracker == nil && lower != "" {
+		tracker = e.PositionTrackers[lower]
+		foundKey = lower
+	}
+	e.mu.RUnlock()
+
+	// 若命中的是非规范 key，尝试迁移到规范 key（避免后续再次 miss）
+	if tracker != nil && key != "" && foundKey != key {
+		e.mu.Lock()
+		// 二次确认：避免并发情况下覆盖已有规范 key
+		if e.PositionTrackers[key] == nil {
+			e.PositionTrackers[key] = tracker
+		}
+		delete(e.PositionTrackers, foundKey)
+		tracker.PositionSide = key
+		e.mu.Unlock()
+	}
+	return tracker
+}
+
+// tryAcquireCloseInFlight 为同一方向的平仓增加短暂冷却，避免并发/重复触发造成交易所风暴与日志刷屏
+// closeType: stop_loss / take_profit / manual
+func (e *RobotEngine) tryAcquireCloseInFlight(positionSide, closeType string, cooldown time.Duration) bool {
+	positionSide = normalizePositionSideKey(positionSide)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	now := time.Now()
+	tracker := e.PositionTrackers[positionSide]
+	if tracker == nil {
+		tracker = &PositionTracker{
+			PositionSide: positionSide,
+			EntryTime:    now,
+		}
+		e.PositionTrackers[positionSide] = tracker
+	}
+	if tracker.CloseInFlightUntil.After(now) {
+		return false
+	}
+	tracker.CloseInFlightUntil = now.Add(cooldown)
+	tracker.CloseInFlightType = closeType
+	return true
 }
 
 // ClearPositionTracker 清除持仓跟踪器（手动平仓后调用）
 func (e *RobotEngine) ClearPositionTracker(positionSide string) {
+	positionSide = normalizePositionSideKey(positionSide)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	delete(e.PositionTrackers, positionSide)
@@ -491,33 +1089,36 @@ func (e *RobotEngine) ClearPositionTracker(positionSide string) {
 // 【内存操作】不再依赖数据库
 // 【重要修复】手动启动时需要正确初始化 HighestProfit，否则止盈检查条件永远不满足
 func (e *RobotEngine) SetTakeProfitEnabled(positionSide string, enabled bool) bool {
+	positionSide = normalizePositionSideKey(positionSide)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	// 兼容历史 key（lower）：即使 key 不规范，也要能命中并迁移
 	tracker := e.PositionTrackers[positionSide]
+	foundKey := positionSide
+	if tracker == nil {
+		lower := strings.ToLower(positionSide)
+		if lower != "" && lower != positionSide {
+			tracker = e.PositionTrackers[lower]
+			foundKey = lower
+		}
+	}
 	if tracker == nil {
 		return false
 	}
-
-	wasEnabled := tracker.TakeProfitEnabled
-
-	// 不允许关闭已开启的止盈回撤（只能开启，不能关闭）
-	if tracker.TakeProfitEnabled && !enabled {
-		return false
+	if foundKey != positionSide {
+		// 迁移到规范 key
+		if e.PositionTrackers[positionSide] == nil {
+			e.PositionTrackers[positionSide] = tracker
+		}
+		delete(e.PositionTrackers, foundKey)
+		tracker.PositionSide = positionSide
 	}
 
-	tracker.TakeProfitEnabled = enabled
-	if enabled {
-		// 【关键修复】从“未启用 -> 启用”时，必须把最高盈利基准重置为当前时刻的起点，
-		// 否则如果历史 HighestProfit 很大、当前盈利已经回撤，会导致“刚启用就立刻触发止盈”。
-		if !wasEnabled {
-			tracker.HighestProfit = 0 // 让 checkTakeProfitAndClose 在下一次tick用当前盈利初始化为100%血条
-		} else if tracker.HighestProfit <= 0 {
-			// 兜底：极小正值，避免分母为0
-			tracker.HighestProfit = 0.0001
-		}
-		g.Log().Infof(context.Background(), "[RobotEngine] robotId=%d 手动启动止盈回撤: positionSide=%s, highestProfit=%.4f",
-			e.Robot.Id, positionSide, tracker.HighestProfit)
+	// 2026-01 规范：止盈开关由后端自动控制（达到启动阈值自动开启），前端只展示。
+	// 因此这里不再支持任何手动开关行为（兼容老前端：返回 false 表示设置失败）。
+	if enabled != tracker.TakeProfitEnabled {
+		return false
 	}
 	return true
 }
@@ -526,6 +1127,7 @@ func (e *RobotEngine) SetTakeProfitEnabled(positionSide string, enabled bool) bo
 // - 只允许从 0 -> 1（符合“不可关闭原则”）
 // - highestProfit 若可获得则一并写入，避免回撤计算分母为 0
 func (e *RobotEngine) MarkProfitRetreatStarted(ctx context.Context, positionSide string) {
+	positionSide = normalizePositionSideKey(positionSide)
 	// 尽量使用内存里的最高盈利同步写入
 	highestProfit := 0.0
 	if tracker := e.GetPositionTracker(positionSide); tracker != nil {
@@ -560,13 +1162,84 @@ func (e *RobotEngine) persistProfitRetreatStarted(ctx context.Context, positionS
 
 	_, err := dao.TradingOrder.Ctx(ctx).
 		Where("robot_id", robot.Id).
-		Where("direction", direction).
-		Where("status", OrderStatusOpen).
+		// 兼容历史数据：direction 可能为 LONG/SHORT/Long 等，统一按 lower(direction) 匹配
+		Where("LOWER(direction) = ?", direction).
+		// 兼容：极端情况下止盈启动可能发生在本地订单仍为 pending 的窗口内
+		Where("status IN (?)", []int{OrderStatusPending, OrderStatusOpen}).
 		Update(update)
 	if err != nil {
 		g.Log().Warningf(ctx, "[RobotEngine] robotId=%d 持久化止盈回撤启动状态失败: positionSide=%s, err=%v",
 			robot.Id, positionSide, err)
 	}
+}
+
+// persistHighestProfit 将最高盈利写入数据库（只增不减）
+// 说明：用于服务重启后恢复止盈回撤分母/血条；写入频率由 maybePersistHighestProfit 节流。
+func (e *RobotEngine) persistHighestProfit(ctx context.Context, positionSide string, highestProfit float64) {
+	if highestProfit <= 0 {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	e.mu.RLock()
+	robot := e.Robot
+	e.mu.RUnlock()
+	if robot == nil {
+		return
+	}
+	positionSide = normalizePositionSideKey(positionSide)
+	direction := "long"
+	if strings.ToUpper(strings.TrimSpace(positionSide)) == "SHORT" {
+		direction = "short"
+	}
+	update := g.Map{
+		"highest_profit": highestProfit,
+		"updated_at":     gtime.Now(),
+	}
+	// 只允许“更大值覆盖”，避免回撤时把最高盈利写小
+	_, err := dao.TradingOrder.Ctx(ctx).
+		Where("robot_id", robot.Id).
+		// 兼容历史数据：direction 可能为 LONG/SHORT/Long 等，统一按 lower(direction) 匹配
+		Where("LOWER(direction) = ?", direction).
+		// 兼容：极端情况下最高盈利更新可能发生在本地订单仍为 pending 的窗口内
+		Where("status IN (?)", []int{OrderStatusPending, OrderStatusOpen}).
+		Where("highest_profit < ?", highestProfit).
+		Update(update)
+	if err != nil {
+		g.Log().Warningf(ctx, "[RobotEngine] robotId=%d 持久化最高盈利失败: positionSide=%s, highestProfit=%.6f, err=%v",
+			robot.Id, positionSide, highestProfit, err)
+	}
+}
+
+// maybePersistHighestProfit 节流持久化最高盈利（只增不减）
+func (e *RobotEngine) maybePersistHighestProfit(positionSide string, tracker *PositionTracker) {
+	if tracker == nil || tracker.HighestProfit <= 0 {
+		return
+	}
+	// 关键：只在“止盈已启动”后保证强一致恢复（否则写入频率过高且价值不大）
+	if !tracker.TakeProfitEnabled {
+		return
+	}
+	now := time.Now()
+	// 至少 3 秒一次；或最高盈利增长 >= 1 USDT 也允许更快写入
+	if !tracker.LastHighestProfitPersistAt.IsZero() && now.Sub(tracker.LastHighestProfitPersistAt) < 3*time.Second {
+		if tracker.HighestProfit-tracker.LastHighestProfitPersistValue < 1.0 {
+			return
+		}
+	}
+	if tracker.HighestProfit <= tracker.LastHighestProfitPersistValue {
+		return
+	}
+	tracker.LastHighestProfitPersistAt = now
+	tracker.LastHighestProfitPersistValue = tracker.HighestProfit
+	hp := tracker.HighestProfit
+	ps := positionSide
+	go func() {
+		bctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		e.persistHighestProfit(bctx, ps, hp)
+	}()
 }
 
 // initTrackerFromDB 在首次创建 PositionTracker 时，从数据库恢复“止盈回撤启动/最高盈利”等关键状态
@@ -590,36 +1263,191 @@ func (e *RobotEngine) initTrackerFromDB(ctx context.Context, positionSide string
 		direction = "short"
 	}
 
-	var order *entity.TradingOrder
+	// 只取“持仓中”的最新一条，用于恢复：止盈回撤状态/最高盈利/保证金/冻结参数（止损、止盈、风控）
+	var row struct {
+		Id                   int64   `json:"id"`
+		ProfitRetreatStarted int     `json:"profit_retreat_started"`
+		HighestProfit        float64 `json:"highest_profit"`
+		Margin               float64 `json:"margin"`
+
+		StopLossPercent         float64 `json:"stop_loss_percent"`
+		AutoStartRetreatPercent float64 `json:"auto_start_retreat_percent"`
+		ProfitRetreatPercent    float64 `json:"profit_retreat_percent"`
+		MarginPercent           float64 `json:"margin_percent"`
+		MarketState             string  `json:"market_state"`
+		RiskPreference          string  `json:"risk_preference"`
+		RiskLevel               string  `json:"risk_level"` // 兼容旧字段
+		StrategyGroupId         int64   `json:"strategy_group_id"`
+	}
 	err := dao.TradingOrder.Ctx(ctx).
 		Where("robot_id", robot.Id).
-		Where("direction", direction).
+		// 兼容历史数据：direction 可能为 LONG/SHORT/Long 等，统一按 lower(direction) 匹配
+		Where("LOWER(direction) = ?", direction).
 		Where("status", OrderStatusOpen).
-		Fields("id", "profit_retreat_started", "highest_profit", "margin").
+		Fields(
+			"id",
+			"profit_retreat_started",
+			"highest_profit",
+			"margin",
+			"stop_loss_percent",
+			"auto_start_retreat_percent",
+			"profit_retreat_percent",
+			"margin_percent",
+			"market_state",
+			"risk_preference",
+			"risk_level",
+			"strategy_group_id",
+		).
 		OrderDesc("id").
-		Scan(&order)
-	if err != nil || order == nil {
+		Scan(&row)
+	if err != nil || row.Id <= 0 {
 		return
 	}
 
-	if order.ProfitRetreatStarted == 1 {
+	// 恢复止盈回撤状态/最高盈利
+	if row.ProfitRetreatStarted == 1 {
 		tracker.TakeProfitEnabled = true
 	}
-	if order.HighestProfit > tracker.HighestProfit {
-		tracker.HighestProfit = order.HighestProfit
+	if row.HighestProfit > tracker.HighestProfit {
+		tracker.HighestProfit = row.HighestProfit
 	}
-	if tracker.EntryMargin <= 0 && order.Margin > 0 {
-		tracker.EntryMargin = order.Margin
+	if tracker.EntryMargin <= 0 && row.Margin > 0 {
+		tracker.EntryMargin = row.Margin
 	}
+
+	// 恢复冻结参数（开仓时确定：止损/止盈/保证金比例/市场状态/风险偏好）
+	// 这些参数必须“只随订单走”，不能随市场状态切换重算，否则会出现“开仓策略A，平仓策略B”。
+	tracker.StopLossPercent = row.StopLossPercent
+	tracker.AutoStartRetreatPercent = row.AutoStartRetreatPercent
+	tracker.ProfitRetreatPercent = row.ProfitRetreatPercent
+	tracker.MarginPercent = row.MarginPercent
+	tracker.MarketState = strings.TrimSpace(row.MarketState)
+	// risk_preference 优先，其次兼容 risk_level
+	rp := strings.TrimSpace(row.RiskPreference)
+	if rp == "" {
+		rp = strings.TrimSpace(row.RiskLevel)
+	}
+	tracker.RiskPreference = rp
+	tracker.ParamsLoaded = true
+	tracker.OrderId = row.Id
+
+	// ===== 兼容：历史订单未落“冻结参数”时，允许回退到当前策略参数 =====
+	// 场景：
+	// - 旧订单表里 stop_loss_percent/auto_start_retreat_percent/profit_retreat_percent 为空（默认0）
+	// - 新版止损/止盈检查“只读冻结参数”，会导致永远 continue，表现为“无法自动止损/止盈”
+	// 策略：
+	// - 仅当冻结参数缺失(<=0)时才回退，避免影响“新订单：开仓策略与平仓策略一致”的约束
+	if tracker.StopLossPercent <= 0 && tracker.AutoStartRetreatPercent <= 0 && tracker.ProfitRetreatPercent <= 0 {
+		if sp, _, _ := e.getFallbackStrategyParams(ctx); sp != nil {
+			if tracker.StopLossPercent <= 0 {
+				tracker.StopLossPercent = sp.StopLossPercent
+			}
+			if tracker.AutoStartRetreatPercent <= 0 {
+				tracker.AutoStartRetreatPercent = sp.AutoStartRetreatPercent
+			}
+			if tracker.ProfitRetreatPercent <= 0 {
+				tracker.ProfitRetreatPercent = sp.ProfitRetreatPercent
+			}
+		}
+	}
+}
+
+// getFallbackStrategyParams returns a best-effort "current" strategy params for back-compat purposes.
+// It is ONLY used when frozen params are missing on legacy orders.
+// Returns: params, marketState, riskPreference.
+func (e *RobotEngine) getFallbackStrategyParams(ctx context.Context) (*StrategyParams, string, string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	e.mu.RLock()
+	sp := e.CurrentStrategyParams
+	platform := e.Platform
+	symbol := ""
+	if e.Robot != nil {
+		symbol = e.Robot.Symbol
+	}
+	mapping := e.MarketRiskMapping
+	e.mu.RUnlock()
+
+	if sp != nil {
+		return sp, "", ""
+	}
+
+	platform = strings.ToLower(strings.TrimSpace(platform))
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+	if platform == "" || symbol == "" {
+		return nil, "", ""
+	}
+
+	// 1) market analyzer
+	marketState := ""
+	ap := market.ResolveAnalysisPlatform(ctx, platform)
+	if ap == "" {
+		ap = platform
+	}
+	if ga := market.GetMarketAnalyzer().GetAnalysis(ap, symbol); ga != nil {
+		marketState = normalizeMarketState(string(ga.MarketState))
+	}
+	// 2) ticker fallback
+	if marketState == "" {
+		if tk := market.GetMarketServiceManager().GetTicker(platform, symbol); tk != nil && tk.LastPrice > 0 && tk.High24h > 0 && tk.Low24h > 0 {
+			priceRange := tk.High24h - tk.Low24h
+			volatilityPercent := (priceRange / tk.LastPrice) * 100
+			switch {
+			case volatilityPercent >= 5:
+				marketState = "high_vol"
+			case volatilityPercent <= 1:
+				marketState = "low_vol"
+			case math.Abs(tk.Change24h) >= 3:
+				marketState = "trend"
+			default:
+				marketState = "volatile"
+			}
+			marketState = normalizeMarketState(marketState)
+		}
+	}
+	if marketState == "" {
+		return nil, "", ""
+	}
+
+	riskPreference := ""
+	if mapping != nil {
+		riskPreference = mapping[marketState]
+	}
+
+	// Try to refresh CurrentStrategyParams via existing path (loads template and caches into e.CurrentStrategyParams)
+	e.checkAndUpdateStrategyConfig(ctx, marketState)
+
+	e.mu.RLock()
+	sp = e.CurrentStrategyParams
+	e.mu.RUnlock()
+	if sp == nil {
+		return nil, marketState, riskPreference
+	}
+	return sp, marketState, riskPreference
 }
 
 // GetOrCreatePositionTracker 获取或创建持仓跟踪器
 // 【内存操作】确保跟踪器存在
 func (e *RobotEngine) GetOrCreatePositionTracker(positionSide string, margin float64) *PositionTracker {
+	positionSide = normalizePositionSideKey(positionSide)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	tracker := e.PositionTrackers[positionSide]
+	if tracker == nil {
+		// 兼容历史 key（lower）：先尝试迁移
+		if lower := strings.ToLower(positionSide); lower != "" && lower != positionSide {
+			if old := e.PositionTrackers[lower]; old != nil {
+				tracker = old
+				if e.PositionTrackers[positionSide] == nil {
+					e.PositionTrackers[positionSide] = tracker
+				}
+				delete(e.PositionTrackers, lower)
+				tracker.PositionSide = positionSide
+			}
+		}
+	}
 	if tracker == nil {
 		tracker = &PositionTracker{
 			PositionSide:      positionSide,
@@ -637,20 +1465,23 @@ func (e *RobotEngine) GetOrCreatePositionTracker(positionSide string, margin flo
 // 【注意】此方法会清除内存中的持仓数据，但不会影响交易所实际持仓
 // 如果交易所仍有持仓，系统会在下次同步时重新加载
 func (e *RobotEngine) ClearPosition(ctx context.Context, positionSide string) {
+	positionSide = normalizePositionSideKey(positionSide)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	// 清除持仓跟踪器
 	delete(e.PositionTrackers, positionSide)
+	// 兼容：历史 lower key
+	delete(e.PositionTrackers, strings.ToLower(positionSide))
 
 	// 直接从 CurrentPositions 移除该方向持仓，避免后续接口仍返回“0数量残留对象”
-	if e.CurrentPositions != nil && len(e.CurrentPositions) > 0 {
+	if len(e.CurrentPositions) > 0 {
 		newList := make([]*exchange.Position, 0, len(e.CurrentPositions))
 		for _, p := range e.CurrentPositions {
 			if p == nil {
 				continue
 			}
-			if strings.ToUpper(strings.TrimSpace(p.PositionSide)) == strings.ToUpper(strings.TrimSpace(positionSide)) {
+			if strings.EqualFold(strings.TrimSpace(p.PositionSide), strings.TrimSpace(positionSide)) {
 				continue
 			}
 			newList = append(newList, p)
@@ -674,6 +1505,7 @@ func (e *RobotEngine) ClearAllPositions(ctx context.Context) {
 
 	// 清空 CurrentPositions
 	e.CurrentPositions = make([]*exchange.Position, 0)
+	e.LastPositionUpdate = time.Now()
 
 	g.Log().Infof(ctx, "[RobotEngine] robotId=%d 已清除所有内存中的持仓数据", e.Robot.Id)
 }
@@ -755,11 +1587,10 @@ func (e *RobotEngine) OnPriceUpdate(ctx context.Context, ticker *exchange.Ticker
 		return
 	}
 
-	// pricePoint：用于价格窗口/信号（优先成交价 LastPrice；缺失则用 MarkPrice 兜底）
-	pricePoint := ticker.LastPrice
-	if pricePoint <= 0 {
-		pricePoint = ticker.EffectiveMarkPrice()
-	}
+	// pricePoint：用于价格窗口/信号（不同交易所 WS 字段完备度不同）
+	// - Gate：经常只更新 MarkPrice（last 缺失/滞后），若仍“LastPrice优先”会导致窗口价格点卡住，从而只出单边信号。
+	// - OKX/Binance：last 通常持续更新，沿用 LastPrice 优先即可。
+	pricePoint := e.selectWindowPricePoint(ticker)
 	if pricePoint <= 0 {
 		return
 	}
@@ -769,12 +1600,6 @@ func (e *RobotEngine) OnPriceUpdate(ctx context.Context, ticker *exchange.Ticker
 	if riskPrice <= 0 {
 		riskPrice = pricePoint
 	}
-
-	// 【优化1】防止goroutine堆积（原子操作）
-	if !atomic.CompareAndSwapInt32(&e.processingPriceUpdate, 0, 1) {
-		return // 已有价格更新在处理中，跳过本次
-	}
-	defer atomic.StoreInt32(&e.processingPriceUpdate, 0)
 
 	// 更新价格窗口（用于信号生成）
 	e.priceLock.Lock()
@@ -801,25 +1626,172 @@ func (e *RobotEngine) OnPriceUpdate(ctx context.Context, ticker *exchange.Ticker
 	// 只有在持仓存在时才检查（避免无意义的检查）
 	e.mu.RLock()
 	hasPosition := len(e.CurrentPositions) > 0
-	autoCloseEnabled := e.Robot != nil && e.Robot.AutoCloseEnabled == 1
 	e.mu.RUnlock()
 
-	if hasPosition && autoCloseEnabled {
+	// 注意：
+	// - 止损平仓受 AutoCloseEnabled 控制（开关关闭则不执行止损动作）
+	// - 启动止盈/最高盈利追踪/血条状态不应被 AutoCloseEnabled 阻断（否则“锁定盈利/启动止盈血条”会失效）
+	// 因此：只要有持仓，就触发检查；内部会自行判断是否执行平仓动作。
+	if hasPosition {
 		// 异步执行平仓检查（避免阻塞价格更新）
-		go func() {
-			checkCtx := context.Background()
-			e.checkStopLossAndClose(checkCtx, riskPrice)
-			e.checkTakeProfitAndClose(checkCtx, riskPrice)
-		}()
+		// 【关键修复】只做“平仓检查”限流，不阻断价格窗口更新/信号更新，否则会导致前端“卡死不报价”
+		if atomic.CompareAndSwapInt32(&e.processingWSUpdate, 0, 1) {
+			go func() {
+				defer atomic.StoreInt32(&e.processingWSUpdate, 0)
+				checkCtx := context.Background()
+				e.checkStopLossAndClose(checkCtx, riskPrice)
+				e.checkTakeProfitAndClose(checkCtx, riskPrice)
+				// 【优化】平仓检查后推送血条更新（确保关键节点立即推送）
+				e.checkAndPushProgressUpdate(checkCtx, riskPrice)
+			}()
+		}
 	}
 
-	// 评估窗口信号（可能触发开仓）
-	signal := e.EvaluateWindowSignal()
-	if signal != nil {
+	// 信号评估/写库/下单属于“交易链路”，必须与“行情链路”解耦，避免任何异常影响报价。
+	// 这里仅做非阻塞触发：后台评估信号并投递到 worker。
+	e.scheduleWindowSignalEval()
+}
+
+// selectWindowPricePoint selects the price used for window-based signal generation.
+// Why: Gate WS often updates MarkPrice without a fresh LastPrice; using stale LastPrice biases signals (only one side).
+func (e *RobotEngine) selectWindowPricePoint(ticker *exchange.Ticker) float64 {
+	if ticker == nil {
+		return 0
+	}
+	// Gate: prefer mark price as it is the most consistently updated stream.
+	if strings.EqualFold(strings.TrimSpace(e.Platform), "gate") {
+		if mp := ticker.EffectiveMarkPrice(); mp > 0 {
+			return mp
+		}
+		return ticker.LastPrice
+	}
+	// Default: keep legacy behavior (LastPrice first), fallback to MarkPrice when LastPrice missing.
+	if ticker.LastPrice > 0 {
+		return ticker.LastPrice
+	}
+	return ticker.EffectiveMarkPrice()
+}
+
+const (
+	windowSignalNeutral int32 = 0
+	windowSignalLong    int32 = 1
+	windowSignalShort   int32 = -1
+)
+
+func windowSignalToInt(direction string) int32 {
+	switch strings.ToUpper(strings.TrimSpace(direction)) {
+	case "LONG":
+		return windowSignalLong
+	case "SHORT":
+		return windowSignalShort
+	default:
+		return windowSignalNeutral
+	}
+}
+
+// scheduleWindowSignalEval 以非阻塞方式触发窗口信号评估：
+// - 在行情回调里只做 CAS + spawn，确保不被 DB/下单/异常阻塞
+// - 评估结果更新 LastSignal（供前端展示）
+// - 需要下单的信号事件投递到 windowSignalCh（失败则丢弃，不影响报价）
+func (e *RobotEngine) scheduleWindowSignalEval() {
+	if !atomic.CompareAndSwapInt32(&e.signalEvalPending, 0, 1) {
+		return
+	}
+	go func() {
+		defer atomic.StoreInt32(&e.signalEvalPending, 0)
+		defer func() {
+			if r := recover(); r != nil {
+				g.Log().Errorf(context.Background(), "[RobotEngine] scheduleWindowSignalEval panic recovered: robotId=%d, err=%v",
+					func() int64 {
+						e.mu.RLock()
+						defer e.mu.RUnlock()
+						if e.Robot == nil {
+							return 0
+						}
+						return e.Robot.Id
+					}(), r)
+			}
+		}()
+
+		select {
+		case <-e.stopCh:
+			return
+		default:
+		}
+
+		signal := e.EvaluateWindowSignal()
+		if signal == nil {
+			return
+		}
+
+		// 更新“最新信号”（仅内存，用于页面展示）
 		e.mu.Lock()
 		e.LastSignal = signal
 		e.LastSignalUpdate = time.Now()
 		e.mu.Unlock()
+
+		d := windowSignalToInt(signal.Direction)
+		if d == windowSignalNeutral {
+			// neutral 视为“重新武装”，允许下一次方向信号再次投递
+			atomic.StoreInt32(&e.lastDispatchedWindowSignal, windowSignalNeutral)
+			return
+		}
+		// 只处理开仓信号（其他类型不投递交易链路）
+		if signal.Action != "OPEN_LONG" && signal.Action != "OPEN_SHORT" {
+			return
+		}
+		if atomic.LoadInt32(&e.lastDispatchedWindowSignal) == d {
+			return
+		}
+
+		// 投递给交易链路（非阻塞；满了就丢，不能影响行情）
+		signalCopy := *signal
+		ev := &windowSignalEvent{Signal: &signalCopy}
+		select {
+		case <-e.stopCh:
+			return
+		case e.windowSignalCh <- ev:
+			atomic.StoreInt32(&e.lastDispatchedWindowSignal, d)
+		default:
+			// drop
+		}
+	}()
+}
+
+// runWindowSignalWorker 串行处理“窗口信号 → 写预警”的记录链路。
+//
+// 设计约束（职责分离）：
+// - 预警记录（hg_trading_signal_log）只负责记录信号；
+// - 交易/下单由“订单链路”统一负责（例如 RobotTaskManager.processPendingAutoTradeSignals 扫描未处理预警并触发下单）。
+//
+// 这样可以避免：信号在阈值附近抖动时，重复触发下单尝试（进而刷屏“同方向只能一单”的拒绝日志）。
+// 任何失败都仅影响该 worker，不会影响行情推送回调。
+func (e *RobotEngine) runWindowSignalWorker() {
+	defer func() {
+		if r := recover(); r != nil {
+			g.Log().Errorf(context.Background(), "[RobotEngine] runWindowSignalWorker panic recovered: err=%v", r)
+		}
+	}()
+
+	for {
+		select {
+		case <-e.stopCh:
+			return
+		case ev := <-e.windowSignalCh:
+			if ev == nil || ev.Signal == nil {
+				continue
+			}
+			sig := ev.Signal
+			direction := strings.ToUpper(strings.TrimSpace(sig.Direction))
+			if direction != "LONG" && direction != "SHORT" {
+				continue
+			}
+			sigCopy := *sig
+			logId := e.saveSignalAlertSimple(&sigCopy)
+			if logId <= 0 {
+				continue
+			}
+		}
 	}
 }
 
@@ -839,11 +1811,8 @@ func (e *RobotEngine) doAnalysis(ctx context.Context) {
 	if ticker == nil || ticker.EffectiveMarkPrice() <= 0 {
 		return
 	}
-	// pricePoint 用于信号窗口（优先成交价LastPrice；缺失则用MarkPrice兜底）
-	pricePoint := ticker.LastPrice
-	if pricePoint <= 0 {
-		pricePoint = ticker.EffectiveMarkPrice()
-	}
+	// pricePoint 用于信号窗口（与 OnPriceUpdate 同口径，避免 Gate 单边预警问题）
+	pricePoint := e.selectWindowPricePoint(ticker)
 	// riskPrice 用于盈亏/止盈止损/风控（MarkPrice优先，LastPrice兜底）
 	riskPrice := ticker.EffectiveMarkPrice()
 
@@ -878,8 +1847,7 @@ func (e *RobotEngine) doAnalysis(ctx context.Context) {
 
 	// 【事件驱动】当价格更新时，立即触发以下操作：
 	// 1. 更新订单未实现盈亏（基于实时价格计算，轻量级）
-	// 2. 检查止损进度，达到100%时立即执行平仓
-	// 3. 检查启动止盈和止盈回撤，达到条件时立即执行平仓
+	// 2. 平仓检查已迁移到 OnPriceUpdate（WS 推送）中，避免 doAnalysis 与 WS 回调双通道重复触发
 	if priceChanged {
 		// 【并发控制】防止goroutine堆积：如果上一次价格处理还未完成，跳过本次
 		// 使用原子操作 CAS 确保同一时刻只有一个goroutine在执行
@@ -893,12 +1861,10 @@ func (e *RobotEngine) doAnalysis(ctx context.Context) {
 			// 使用串行执行避免竞态条件
 			go func() {
 				defer atomic.StoreInt32(&e.processingPriceUpdate, 0) // 处理完成后释放标志
-				// 1. 先更新未实现盈亏到数据库
+				// 仅更新未实现盈亏到数据库；止损/止盈由 OnPriceUpdate 统一处理
 				e.updateOrdersUnrealizedPnl(ctx, riskPrice)
-				// 2. 再检查止损（使用刚更新的数据）
-				e.checkStopLossAndClose(ctx, riskPrice)
-				// 3. 再检查止盈（使用刚更新的数据）
-				e.checkTakeProfitAndClose(ctx, riskPrice)
+				// 【优化】价格更新后实时推送血条更新（智能节流）
+				e.checkAndPushProgressUpdate(ctx, riskPrice)
 			}()
 		}
 	}
@@ -907,7 +1873,8 @@ func (e *RobotEngine) doAnalysis(ctx context.Context) {
 	e.AddPricePoint(pricePoint)
 
 	// 获取K线数据
-	klines := market.GetMarketServiceManager().GetMultiTimeframeKlines(e.Platform, e.Robot.Symbol)
+	ap := e.analysisPlatform(ctx)
+	klines := market.GetMarketServiceManager().GetMultiTimeframeKlines(ap, e.Robot.Symbol)
 	if klines != nil {
 		// 【效率优化】快速更新K线数据
 		e.mu.Lock()
@@ -922,7 +1889,7 @@ func (e *RobotEngine) doAnalysis(ctx context.Context) {
 	// 每个币种（platform+symbol）有独立的市场状态信号，所有交易该币种的机器人共享同一套信号
 	// 例如：bitget:BTCUSDT 的所有机器人共享同一套市场状态，binance:BTCUSDT 的机器人共享另一套
 	// 统一使用全局服务，不降级到本地计算，确保所有机器人使用一致的市场状态
-	globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(e.Platform, e.Robot.Symbol)
+	globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(ap, e.Robot.Symbol)
 	if globalAnalysis != nil {
 		marketState := normalizeMarketState(string(globalAnalysis.MarketState))
 		if marketState != "" {
@@ -1103,7 +2070,8 @@ func (e *RobotEngine) RefreshStrategyParams(ctx context.Context) error {
 
 	// 【优化】从全局市场分析器获取当前市场状态
 	marketState := ""
-	globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(e.Platform, e.Robot.Symbol)
+	ap := e.analysisPlatform(ctx)
+	globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(ap, e.Robot.Symbol)
 	if globalAnalysis != nil {
 		marketState = normalizeMarketState(string(globalAnalysis.MarketState))
 	}
@@ -1363,17 +2331,46 @@ func (e *RobotEngine) GetPositionsSmart(ctx context.Context, maxCacheAge time.Du
 		return cachedPositions, gerror.New("交易所实例不存在")
 	}
 
-	positions, err := e.Exchange.GetPositions(ctx, e.Robot.Symbol)
+	// 【关键】为 GetPositions 增加超时，避免交易所接口卡住导致 positionFetching 长时间不释放，
+	// 进而出现“持仓消失很久才出现”（尤其 Bitget 偶发 60s+ 的请求卡顿）。
+	callCtx := ctx
+	cancel := func() {}
+	if callCtx == nil {
+		callCtx = context.Background()
+	}
+	if dl, ok := callCtx.Deadline(); ok {
+		// 若已有更短的 deadline，则尊重它
+		if time.Until(dl) > 6*time.Second {
+			callCtx, cancel = context.WithTimeout(callCtx, 6*time.Second)
+		}
+	} else {
+		callCtx, cancel = context.WithTimeout(callCtx, 6*time.Second)
+	}
+	defer cancel()
+
+	positions, err := e.Exchange.GetPositions(callCtx, e.Robot.Symbol)
 	if err != nil {
-		// API 失败，返回旧缓存
-		g.Log().Debugf(ctx, "[RobotEngine] robotId=%d GetPositions失败，使用旧缓存: %v", e.Robot.Id, err)
-		return cachedPositions, nil
+		// API 失败：返回旧缓存，但必须把 err 透传给调用方。
+		// 否则上层可能误以为“同步成功”，把空/旧缓存写入并刷新 LastPositionUpdate，导致页面长期看不到持仓。
+		// Bitget 排障：终端通常只看 WARN，这里在打开 SyncDiag 时输出低频告警，便于按 robotName 定位。
+		if strings.EqualFold(strings.TrimSpace(e.Platform), "bitget") && isOrderPositionSyncDebugEnabled(ctx) &&
+			shouldLogOrderPositionSync("bitget_getpos_err:"+g.NewVar(e.Robot.Id).String(), 5*time.Second) {
+			g.Log().Warningf(ctx, "[SyncDiag] bitget GetPositions failed (keep old cache): robotId=%d robotName=%s symbol=%s err=%v",
+				e.Robot.Id, strings.TrimSpace(e.Robot.RobotName), e.Robot.Symbol, err)
+		} else {
+			g.Log().Debugf(ctx, "[RobotEngine] robotId=%d GetPositions失败，使用旧缓存: %v", e.Robot.Id, err)
+		}
+		return cachedPositions, err
 	}
 
 	// 4. 更新缓存
 	e.mu.Lock()
 	e.CurrentPositions = positions
-	e.LastPositionUpdate = time.Now()
+	now := time.Now()
+	e.LastPositionUpdate = now
+	// keep a copy as "raw snapshot" for reconciliation consumers
+	e.PositionsSnapshot = positions
+	e.LastSnapshotAt = now
 	e.mu.Unlock()
 
 	return positions, nil
@@ -1395,6 +2392,19 @@ func (e *RobotEngine) GetBalanceSmart(ctx context.Context, maxCacheAge time.Dura
 	if !atomic.CompareAndSwapInt32(&e.balanceFetching, 0, 1) {
 		// 已有其他 goroutine 在获取，返回缓存
 		g.Log().Debugf(ctx, "[RobotEngine] robotId=%d GetBalance请求合并，使用缓存", e.Robot.Id)
+		// 如果缓存为空，稍等片刻让“首个请求”有机会把缓存填起来，避免列表页长期显示 "--"
+		if cachedBalance == nil {
+			deadline := time.Now().Add(800 * time.Millisecond)
+			for time.Now().Before(deadline) {
+				time.Sleep(80 * time.Millisecond)
+				e.mu.RLock()
+				b := e.AccountBalance
+				e.mu.RUnlock()
+				if b != nil {
+					return b, nil
+				}
+			}
+		}
 		return cachedBalance, nil
 	}
 
@@ -1405,9 +2415,41 @@ func (e *RobotEngine) GetBalanceSmart(ctx context.Context, maxCacheAge time.Dura
 		return cachedBalance, gerror.New("交易所实例不存在")
 	}
 
-	balance, err := e.Exchange.GetBalance(ctx)
+	// 【关键】为 GetBalance 增加超时，避免交易所接口卡住导致 balanceFetching 长时间不释放，
+	// 进而列表页长期显示账户余额为空（尤其 Gate/OKX 在网络受限时可能卡住）。
+	callCtx := ctx
+	cancel := func() {}
+	if callCtx == nil {
+		callCtx = context.Background()
+	}
+	if dl, ok := callCtx.Deadline(); ok {
+		if time.Until(dl) > 6*time.Second {
+			callCtx, cancel = context.WithTimeout(callCtx, 6*time.Second)
+		}
+	} else {
+		callCtx, cancel = context.WithTimeout(callCtx, 6*time.Second)
+	}
+	defer cancel()
+
+	balance, err := e.Exchange.GetBalance(callCtx)
 	if err != nil {
 		g.Log().Debugf(ctx, "[RobotEngine] robotId=%d GetBalance失败，使用旧缓存: %v", e.Robot.Id, err)
+		// 如果缓存为空，则前端 batchRobotAnalysis 会返回 account=null（显示为 "--"）。
+		// 这里做低频告警，方便现场定位：是交易所余额接口不通/超时/限流，还是权限/解析问题。
+		if cachedBalance == nil && shouldLogBalanceFetchErr(e.Robot.Id, 10*time.Second) {
+			sym := ""
+			plat := strings.TrimSpace(e.Platform)
+			if e.Robot != nil {
+				sym = strings.TrimSpace(e.Robot.Symbol)
+			}
+			g.Log().Warningf(ctx, "[RobotEngine] robotId=%d GetBalance失败且余额缓存为空（页面可用余额将显示'--'）: platform=%s symbol=%s err=%v",
+				e.Robot.Id, plat, sym, err)
+		}
+		return cachedBalance, nil
+	}
+	// 防止“解析异常但无 error”的全 0 余额污染缓存，导致页面长期显示 0.00 且不再重试。
+	if balance != nil && balance.TotalBalance == 0 && balance.AvailableBalance == 0 && balance.UnrealizedPnl == 0 {
+		g.Log().Warningf(ctx, "[RobotEngine] robotId=%d GetBalance返回全0，忽略并保留旧缓存（platform=%s）", e.Robot.Id, e.Platform)
 		return cachedBalance, nil
 	}
 
@@ -1438,17 +2480,40 @@ func (e *RobotEngine) ForceRefreshPositions(ctx context.Context) ([]*exchange.Po
 	}
 	defer atomic.StoreInt32(&e.positionFetching, 0)
 
-	positions, err := e.Exchange.GetPositions(ctx, e.Robot.Symbol)
+	callCtx := ctx
+	cancel := func() {}
+	if callCtx == nil {
+		callCtx = context.Background()
+	}
+	if dl, ok := callCtx.Deadline(); ok {
+		if time.Until(dl) > 6*time.Second {
+			callCtx, cancel = context.WithTimeout(callCtx, 6*time.Second)
+		}
+	} else {
+		callCtx, cancel = context.WithTimeout(callCtx, 6*time.Second)
+	}
+	defer cancel()
+	positions, err := e.Exchange.GetPositions(callCtx, e.Robot.Symbol)
 	if err != nil {
 		return nil, err
 	}
 
 	e.mu.Lock()
 	e.CurrentPositions = positions
-	e.LastPositionUpdate = time.Now()
+	now := time.Now()
+	e.LastPositionUpdate = now
+	e.PositionsSnapshot = positions
+	e.LastSnapshotAt = now
 	e.mu.Unlock()
 
 	return positions, nil
+}
+
+// GetPositionsSnapshot returns the last raw exchange snapshot for positions.
+func (e *RobotEngine) GetPositionsSnapshot() ([]*exchange.Position, time.Time) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.PositionsSnapshot, e.LastSnapshotAt
 }
 
 // syncAccountData 同步账户数据（持仓、订单历史）
@@ -1465,8 +2530,12 @@ func (e *RobotEngine) syncAccountData(ctx context.Context) {
 		e.detectManualClose(ctx, positions)
 
 		e.mu.Lock()
+		now := time.Now()
+		// always record raw snapshot (truth) for reconciliation/trading logic, even if empty
 		e.CurrentPositions = positions
-		e.LastPositionUpdate = time.Now()
+		e.LastPositionUpdate = now
+		e.PositionsSnapshot = positions
+		e.LastSnapshotAt = now
 		e.LastSyncError = nil
 		e.SyncErrorCount = 0
 		e.mu.Unlock()
@@ -1541,21 +2610,28 @@ func (e *RobotEngine) updateOrderStatusAfterClose(ctx context.Context, pos *exch
 		return
 	}
 
-	// 【新增】落库成交流水（幂等去重），用于“成交流水”页面展示手续费/已实现盈亏
-	// 说明：自动平仓/止损止盈/引擎内平仓都走这里；如果不落库，会导致页面看起来“没有自动更新”。
+	// 【优化】落库成交流水改为异步（不阻塞平仓链路/接口响应）
+	// 说明：trade fills 落库可能触发多次API请求（尤其 OKX 分页），同步执行会显著拖慢“自动/手动平仓耗时”。
 	{
 		sym := strings.TrimSpace(robot.Symbol)
 		if pos != nil && strings.TrimSpace(pos.Symbol) != "" {
 			sym = strings.TrimSpace(pos.Symbol)
 		}
 		if sym != "" {
-			if saved, matched, err := fetchAndStoreTradeHistory(ctx, e.Exchange, robot.ApiConfigId, robot.Exchange, sym, 800); err != nil {
-				g.Log().Warningf(ctx, "[RobotEngine] 平仓后落库成交流水失败(不影响平仓): robotId=%d, closeType=%s, symbol=%s, err=%v",
-					robot.Id, closeType, sym, err)
-			} else {
-				g.Log().Debugf(ctx, "[RobotEngine] 平仓后已落库成交流水: robotId=%d, closeType=%s, symbol=%s, saved=%d, matched=%d",
-					robot.Id, closeType, sym, saved, matched)
-			}
+			apiConfigId := robot.ApiConfigId
+			robotId := robot.Id
+			exName := e.Exchange.GetName()
+			go func(symbol string) {
+				tctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+				defer cancel()
+				if saved, matched, err := fetchAndStoreTradeHistory(tctx, e.Exchange, apiConfigId, exName, symbol, 200); err != nil {
+					g.Log().Debugf(tctx, "[RobotEngine] 平仓后异步落库成交流水失败(忽略): robotId=%d, closeType=%s, symbol=%s, err=%v",
+						robotId, closeType, symbol, err)
+				} else {
+					g.Log().Debugf(tctx, "[RobotEngine] 平仓后异步已落库成交流水: robotId=%d, closeType=%s, symbol=%s, saved=%d, matched=%d",
+						robotId, closeType, symbol, saved, matched)
+				}
+			}(sym)
 		}
 	}
 
@@ -1569,8 +2645,10 @@ func (e *RobotEngine) updateOrderStatusAfterClose(ctx context.Context, pos *exch
 	var localOrder *entity.TradingOrder
 	err := dao.TradingOrder.Ctx(ctx).
 		Where("robot_id", robot.Id).
-		Where("direction", direction).
-		Where("status", OrderStatusOpen).
+		// 兼容历史数据：direction 可能为 LONG/SHORT/Long 等，统一按 lower(direction) 匹配
+		Where("LOWER(direction) = ?", direction).
+		// 兼容：部分场景本地订单可能仍为 pending（但交易所已平仓），这里一并结算
+		Where("status IN (?)", []int{OrderStatusOpen, OrderStatusPending}).
 		OrderDesc("id").
 		Limit(1).
 		Scan(&localOrder)
@@ -1633,7 +2711,8 @@ func (e *RobotEngine) updateOrderStatusAfterClose(ctx context.Context, pos *exch
 			openPrice = pos.EntryPrice
 		}
 		qty := localOrder.Quantity
-		if qty <= 0 && pos != nil && math.Abs(pos.PositionAmt) > 0.0001 {
+		// 使用统一 epsilon，避免小仓位 qty 兜底失效（影响结算/扣算力/日志）
+		if qty <= 0 && pos != nil && math.Abs(pos.PositionAmt) > positionAmtEpsilon {
 			qty = math.Abs(pos.PositionAmt)
 		}
 		if closePrice <= 0 && pos != nil && pos.MarkPrice > 0 {
@@ -1684,7 +2763,7 @@ func (e *RobotEngine) removePositionFromCache(positionSide string) {
 		if pos == nil {
 			continue
 		}
-		if strings.ToUpper(strings.TrimSpace(pos.PositionSide)) == strings.ToUpper(strings.TrimSpace(positionSide)) {
+		if strings.EqualFold(strings.TrimSpace(pos.PositionSide), strings.TrimSpace(positionSide)) {
 			continue
 		}
 		newPositions = append(newPositions, pos)
@@ -1699,7 +2778,8 @@ func (e *RobotEngine) detectManualClose(ctx context.Context, exchangePositions [
 	// 构建交易所持仓映射（只统计有持仓的方向）
 	exchangePosMap := make(map[string]bool)
 	for _, pos := range exchangePositions {
-		if math.Abs(pos.PositionAmt) > 0.0001 {
+		// 使用统一的 epsilon，避免小仓位被误判为“无持仓”导致无法检测手动平仓
+		if math.Abs(pos.PositionAmt) > positionAmtEpsilon {
 			exchangePosMap[pos.PositionSide] = true
 		}
 	}
@@ -1715,7 +2795,8 @@ func (e *RobotEngine) detectManualClose(ctx context.Context, exchangePositions [
 
 	// 检查是否有手动平仓
 	for _, localPos := range localPositions {
-		if math.Abs(localPos.PositionAmt) > 0.0001 {
+		// 使用统一的 epsilon，避免小仓位被误判为“无持仓”导致无法检测手动平仓
+		if math.Abs(localPos.PositionAmt) > positionAmtEpsilon {
 			// 本地有持仓
 			if !exchangePosMap[localPos.PositionSide] {
 				// 交易所已无该方向持仓，但本地有持仓 → 检测到手动平仓
@@ -1759,7 +2840,7 @@ func (e *RobotEngine) updateOrderStatusOnManualClose(ctx context.Context, localP
 			sym = strings.TrimSpace(robot.Symbol)
 		}
 		if sym != "" {
-			if saved, matched, err := fetchAndStoreTradeHistory(ctx, e.Exchange, robot.ApiConfigId, robot.Exchange, sym, 800); err != nil {
+			if saved, matched, err := fetchAndStoreTradeHistory(ctx, e.Exchange, robot.ApiConfigId, e.Exchange.GetName(), sym, 800); err != nil {
 				g.Log().Warningf(ctx, "[RobotEngine] 外部手动平仓检测后落库成交流水失败(不影响结算): robotId=%d, symbol=%s, err=%v",
 					robot.Id, sym, err)
 			} else {
@@ -1779,8 +2860,10 @@ func (e *RobotEngine) updateOrderStatusOnManualClose(ctx context.Context, localP
 	var order *entity.TradingOrder
 	err := dao.TradingOrder.Ctx(ctx).
 		Where("robot_id", robot.Id).
-		Where("direction", direction).
-		Where("status", OrderStatusOpen).
+		// 兼容历史数据：direction 可能为 LONG/SHORT/Long 等，统一按 lower(direction) 匹配
+		Where("LOWER(direction) = ?", direction).
+		// 兼容：部分场景本地订单可能仍为 pending（但交易所已平仓），这里一并结算
+		Where("status IN (?)", []int{OrderStatusOpen, OrderStatusPending}).
 		OrderDesc("id").
 		Limit(1).
 		Scan(&order)
@@ -1795,17 +2878,12 @@ func (e *RobotEngine) updateOrderStatusOnManualClose(ctx context.Context, localP
 		return
 	}
 
-	// 获取平仓价格：优先行情缓存，兜底调用交易所
+	// 获取平仓价格：只从“全局行情引擎”获取（WS优先/HTTP缓存降级），避免机器人链路直接打交易所拿报价
 	closePrice := order.OpenPrice
-	ticker := market.GetMarketServiceManager().GetTicker(robot.Exchange, localPos.Symbol)
+	ticker := market.GetMarketServiceManager().GetTicker(e.Platform, localPos.Symbol)
 	if ticker != nil && ticker.EffectiveMarkPrice() > 0 {
 		// 平仓估值：MarkPrice优先，LastPrice兜底（更贴近交易所风险口径）
 		closePrice = ticker.EffectiveMarkPrice()
-	} else {
-		apiTicker, err2 := e.Exchange.GetTicker(ctx, localPos.Symbol)
-		if err2 == nil && apiTicker != nil && apiTicker.EffectiveMarkPrice() > 0 {
-			closePrice = apiTicker.EffectiveMarkPrice()
-		}
 	}
 
 	// 优先从交易所成交记录补齐“平仓价/已实现盈亏/平仓手续费/平仓时间/平仓订单ID”，以交易所为准
@@ -1828,7 +2906,8 @@ func (e *RobotEngine) updateOrderStatusOnManualClose(ctx context.Context, localP
 			openPrice = localPos.EntryPrice
 		}
 		qty := order.Quantity
-		if qty <= 0 && math.Abs(localPos.PositionAmt) > 0.0001 {
+		// 使用统一 epsilon，避免小仓位 qty 兜底失效（影响结算/扣算力/日志）
+		if qty <= 0 && math.Abs(localPos.PositionAmt) > positionAmtEpsilon {
 			qty = math.Abs(localPos.PositionAmt)
 		}
 		if direction == "long" {
@@ -1848,7 +2927,8 @@ func (e *RobotEngine) syncPositionsToDatabase(ctx context.Context, positions []*
 	// 构建持仓映射
 	positionMap := make(map[string]bool)
 	for _, pos := range positions {
-		if math.Abs(pos.PositionAmt) > 0.0001 {
+		// 使用统一 epsilon，避免小仓位被误判为“无持仓”影响对账/残留修复
+		if math.Abs(pos.PositionAmt) > positionAmtEpsilon {
 			positionSide := pos.PositionSide
 			positionMap[positionSide] = true
 		}
@@ -1913,11 +2993,60 @@ func (e *RobotEngine) syncAccountDataIfNeeded(ctx context.Context, syncType stri
 		return true
 	}
 
+	// 【场景1b】开仓/平仓后（OKX/Gate 快速同步）
+	// 目标：改善用户体验（A/C）——开/平仓后尽快刷新 positions/openOrders 快照，减少“PENDING/显示滞后”的窗口期。
+	// 说明：仅对 OKX/Gate 启用更快的同步节奏；其他平台沿用 after_trade 的保守策略，避免刷API。
+	if syncType == "after_open" || syncType == "after_close" {
+		plat := strings.ToLower(strings.TrimSpace(e.Platform))
+		if plat == "okx" || plat == "gate" {
+			// 小节流：同一机器人 800ms 内最多触发一次快照刷新（避免一次交易触发多条路径）
+			minGap := 800 * time.Millisecond
+			if timeSinceLastPositionUpdate < minGap {
+				delay := minGap - timeSinceLastPositionUpdate
+				if delay < 120*time.Millisecond {
+					delay = 120 * time.Millisecond
+				}
+				go func() {
+					defer func() { recover() }()
+					time.Sleep(delay)
+					e.syncAccountData(context.Background())
+				}()
+				return true
+			}
+			// 给交易所极短的落地窗口（OKX/Gate 常见：撤单/平仓后 positions/openOrders 瞬间仍旧返回旧值）
+			time.Sleep(300 * time.Millisecond)
+			e.syncAccountData(ctx)
+			return true
+		}
+		// 非 OKX/Gate：降级走 after_trade 的通用策略
+		syncType = "after_trade"
+	}
+
 	// 【场景2】交易后：延迟同步确保状态更新
 	// 【优化】检查距离上次同步是否超过2秒，避免频繁调用API
 	if syncType == "after_trade" {
+		// 重要：不能因为“刚刷新过空持仓缓存”就跳过 after_trade。
+		// 否则当用户在交易所手动开仓/平仓时：
+		// - 私有WS事件触发 after_trade
+		// - 但若 2s 内刚刷新过（即使持仓为空），会被跳过
+		// - 同时无持仓时 periodic 又默认不同步
+		// => 造成“本地一直不同步”的体感（直到下一次页面触发或重启）
 		if timeSinceLastPositionUpdate < 2*time.Second {
-			// 2秒内已同步过，跳过本次（减少API调用）
+			// 若当前本地无持仓，更应该强制同步一次（很可能是刚产生的新持仓/新平仓）
+			if !hasPosition {
+				// 延迟到 2s 窗口外执行，避免立即重复打 API
+				delay := 2*time.Second - timeSinceLastPositionUpdate
+				if delay < 200*time.Millisecond {
+					delay = 200 * time.Millisecond
+				}
+				go func() {
+					defer func() { recover() }()
+					time.Sleep(delay)
+					e.syncAccountData(context.Background())
+				}()
+				return true
+			}
+			// 有持仓且 2s 内刚同步过：跳过
 			return false
 		}
 		// 延迟1秒后同步，等待交易所处理完成
@@ -1926,19 +3055,42 @@ func (e *RobotEngine) syncAccountDataIfNeeded(ctx context.Context, syncType stri
 		return true
 	}
 
-	// 【场景3】无持仓时：完全不同步，节省API调用
-	if !hasPosition {
-		return false
+	// 【场景2b】WS 沉默兜底：当私有WS长时间不推送（Bitget 常见于网关/线路问题），
+	// 允许触发一次轻量同步，恢复最终一致性（由上层做节流）。
+	if syncType == "ws_silent" {
+		// 额外再做一次小节流：避免同一秒被多个健康检查同时触发
+		if timeSinceLastPositionUpdate < 5*time.Second {
+			return false
+		}
+		e.syncAccountData(ctx)
+		return true
+	}
+
+	// 【场景2c】轮询对账：当某个平台禁用了私有WS（Bitget 常见），周期性刷新一次快照。
+	if syncType == "polling" {
+		intervalSec := getPrivateWSPollIntervalSeconds(ctx, e.Platform, 10)
+		if timeSinceLastPositionUpdate < time.Duration(intervalSec)*time.Second {
+			return false
+		}
+		e.syncAccountData(ctx)
+		return true
 	}
 
 	// 【场景4】有持仓时的定期同步：大幅降低频率（60秒一次）
 	// 止损/止盈检查使用内存缓存的 CurrentPositions，不需要频繁刷新
 	// 只有持仓数据过期超过60秒才同步，用于保持数据最终一致性
 	if syncType == "periodic" {
+		// Bitget/Gate 的私有WS在部分网络/网关环境下可能丢事件；并且用户可能在交易所手动开仓。
+		// 因此允许在“无持仓”场景下也做极低频兜底刷新（60s一次），避免长期不同步。
 		if timeSinceLastPositionUpdate >= 60*time.Second {
 			e.syncAccountData(ctx)
 			return true
 		}
+		return false
+	}
+
+	// 【场景3】无持仓时：默认不同步，节省API调用（periodic 已在上面做了极低频兜底）
+	if !hasPosition {
 		return false
 	}
 
@@ -2026,7 +3178,6 @@ func (e *RobotEngine) checkStopLossAndClose(ctx context.Context, currentPrice fl
 	// 【重要】检查自动平仓开关
 	e.mu.RLock()
 	robot := e.Robot
-	strategyParams := e.CurrentStrategyParams
 	positions := e.CurrentPositions // 使用引擎缓存的持仓（交易所实时数据）
 	e.mu.RUnlock()
 
@@ -2039,53 +3190,64 @@ func (e *RobotEngine) checkStopLossAndClose(ctx context.Context, currentPrice fl
 		return
 	}
 
-	// 【重要】从策略模板读取止损参数
-	var stopLossPercent float64
-	if strategyParams != nil {
-		stopLossPercent = strategyParams.StopLossPercent
-	} else {
-		g.Log().Warningf(ctx, "[RobotEngine] robotId=%d 止损检查跳过: CurrentStrategyParams为nil", robot.Id)
-		return
-	}
-	if stopLossPercent <= 0 {
-		return // 未设置止损百分比
-	}
-
 	// 【优化】直接使用交易所返回的持仓数据，不再查询数据库
 	for _, pos := range positions {
-		// 跳过无效持仓
-		if math.Abs(pos.PositionAmt) < 0.0001 {
+		qtyAbs, margin, derivedQty := calcRiskQtyAndMargin(pos, robot)
+		// 持仓存在性的判断应以 qty 为准；margin 允许为 0（部分交易所/事件窗口期会缺失），
+		// 后续会优先用“订单冻结保证金”(tracker.EntryMargin) 作为止损/止盈分母。
+		if qtyAbs <= positionAmtEpsilon {
 			continue
 		}
 
-		// 【重要修复】基于实时价格计算未实现盈亏，而不是使用 pos.UnrealizedPnl（可能过时2分钟）
-		// 做多：(当前价格 - 开仓价格) * 数量
-		// 做空：(开仓价格 - 当前价格) * 数量
-		var realTimeUnrealizedPnl float64
-		if pos.EntryPrice > 0 && math.Abs(pos.PositionAmt) > 0 {
-			if pos.PositionSide == "LONG" {
-				realTimeUnrealizedPnl = (currentPrice - pos.EntryPrice) * math.Abs(pos.PositionAmt)
-			} else {
-				realTimeUnrealizedPnl = (pos.EntryPrice - currentPrice) * math.Abs(pos.PositionAmt)
-			}
-		} else {
-			// 如果没有开仓价格，降级使用交易所返回的值（可能过时）
-			realTimeUnrealizedPnl = pos.UnrealizedPnl
+		// ===== 关键：止损参数必须来自“开仓时冻结的策略参数”，而不是 CurrentStrategyParams（会随市场状态变化）=====
+		tracker := e.GetPositionTracker(pos.PositionSide)
+		if tracker == nil {
+			// 第一次遇到该持仓：创建 tracker 并从 DB 恢复冻结参数（服务重启/外部持仓/延迟加载场景）
+			tracker = e.GetOrCreatePositionTracker(pos.PositionSide, margin)
+			e.initTrackerFromDB(ctx, pos.PositionSide, tracker)
+		} else if !tracker.ParamsLoaded {
+			e.initTrackerFromDB(ctx, pos.PositionSide, tracker)
 		}
-
-		// 只有亏损时才检查止损（realTimeUnrealizedPnl < 0）
-		if realTimeUnrealizedPnl >= 0 {
-			continue
-		}
-
-		// 计算保证金（从持仓数据计算）
-		// 保证金 = |持仓数量| × 开仓价格 / 杠杆
-		// 或直接使用交易所返回的 marginSize（如果有）
-		margin := pos.Margin
-		if margin <= 0 && pos.EntryPrice > 0 && robot.Leverage > 0 {
-			margin = math.Abs(pos.PositionAmt) * pos.EntryPrice / float64(robot.Leverage)
+		// 规则：止损/止盈分母必须使用“订单表冻结的保证金”（下单成功后回填），缺失时才兜底用持仓计算值。
+		if tracker != nil && tracker.EntryMargin > 0 {
+			margin = tracker.EntryMargin
 		}
 		if margin <= 0 {
+			// 最终仍无保证金：无法计算止损分母，跳过
+			continue
+		}
+		stopLossPercent := 0.0
+		if tracker != nil {
+			stopLossPercent = tracker.StopLossPercent
+		}
+		// 兼容：冻结参数缺失（老订单）时回退到“当前策略参数”
+		if stopLossPercent <= 0 {
+			if sp, _, _ := e.getFallbackStrategyParams(ctx); sp != nil && sp.StopLossPercent > 0 {
+				stopLossPercent = sp.StopLossPercent
+				if tracker != nil && tracker.StopLossPercent <= 0 {
+					tracker.StopLossPercent = stopLossPercent
+				}
+			}
+		}
+		if stopLossPercent <= 0 {
+			continue // 未设置止损百分比（按该订单冻结策略）
+		}
+
+		// 未实现盈亏口径（统一三家交易所）：
+		// - 以实时风控价（MarkPrice优先）估算未实现盈亏，确保止损/止盈/血条与“实时行情”一致
+		// - 计算公式：(currentPrice - entryPrice) * |qty| * direction（SHORT 为 -1）
+		// - 若 entry/qty 不可用，则回退到交易所返回的 pos.UnrealizedPnl
+		effectiveUnrealizedPnl := pos.UnrealizedPnl
+		if pos.EntryPrice > 0 && currentPrice > 0 && qtyAbs > positionAmtEpsilon {
+			dir := 1.0
+			if strings.ToUpper(strings.TrimSpace(pos.PositionSide)) == "SHORT" {
+				dir = -1.0
+			}
+			effectiveUnrealizedPnl = (currentPrice - pos.EntryPrice) * qtyAbs * dir
+		}
+
+		// 只有亏损时才检查止损（effectiveUnrealizedPnl < 0）
+		if effectiveUnrealizedPnl >= 0 {
 			continue
 		}
 
@@ -2093,16 +3255,31 @@ func (e *RobotEngine) checkStopLossAndClose(ctx context.Context, currentPrice fl
 		// 止损金额 = 保证金 × 止损百分比
 		// 止损进度 = |未实现盈亏| / 止损金额 × 100%
 		stopLossAmount := margin * (stopLossPercent / 100.0)
-		absUnrealizedPnl := math.Abs(realTimeUnrealizedPnl)
+		if stopLossAmount <= 0 {
+			continue
+		}
+		absUnrealizedPnl := math.Abs(effectiveUnrealizedPnl)
 		progress := (absUnrealizedPnl / stopLossAmount) * 100.0
 
 		// 如果止损进度达到100%，立即执行平仓
-		if progress >= 100.0 {
-			g.Log().Warningf(ctx, "[RobotEngine] robotId=%d 止损进度达到100%%，立即执行平仓: positionSide=%s, progress=%.2f%%, unrealizedPnl=%.4f, margin=%.4f, stopLossPercent=%.2f%%",
-				e.Robot.Id, pos.PositionSide, progress, pos.UnrealizedPnl, margin, stopLossPercent)
+		// 说明：前端血条用 toFixed(1) 做显示，99.95% 会显示为 100.0%；
+		// 为避免“血条到100%但未触发”的边界问题，这里增加 0.05% 容差与前端一致。
+		if progress >= 99.95 {
+			// 【防风暴】同一方向在短时间内只允许触发一次止损平仓（避免每个 tick 都刷日志/打API）
+			if !e.tryAcquireCloseInFlight(pos.PositionSide, "stop_loss", 3*time.Second) {
+				continue
+			}
+
+			if derivedQty {
+				g.Log().Warningf(ctx, "[RobotEngine] robotId=%d 止损触发(派生qty)，执行平仓: positionSide=%s, qty=%.10f, progress=%.2f%%, unrealizedPnl=%.6f, margin=%.6f, stopLossPercent=%.2f%%",
+					e.Robot.Id, pos.PositionSide, qtyAbs, progress, effectiveUnrealizedPnl, margin, stopLossPercent)
+			} else {
+				g.Log().Warningf(ctx, "[RobotEngine] robotId=%d 止损触发，执行平仓: positionSide=%s, progress=%.2f%%, unrealizedPnl=%.6f, margin=%.6f, stopLossPercent=%.2f%%",
+					e.Robot.Id, pos.PositionSide, progress, effectiveUnrealizedPnl, margin, stopLossPercent)
+			}
 
 			// 执行平仓（使用交易所持仓数据）
-			e.executeStopLossCloseByPosition(ctx, pos)
+			e.executeStopLossCloseByPosition(ctx, clonePositionWithQty(pos, qtyAbs))
 		}
 	}
 }
@@ -2126,8 +3303,9 @@ func (e *RobotEngine) saveCloseLog(ctx context.Context, closeType string, pos *e
 	}
 	err := dao.TradingOrder.Ctx(ctx).
 		Where("robot_id", robot.Id).
-		Where("direction", direction).
-		Where("status", OrderStatusOpen).
+		// 兼容历史数据：direction 可能为 LONG/SHORT/Long 等，统一按 lower(direction) 匹配
+		Where("LOWER(direction) = ?", direction).
+		Where("status IN (?)", []int{OrderStatusPending, OrderStatusOpen}).
 		Fields("id").
 		Scan(&localOrder)
 	if err == nil && localOrder.Id > 0 {
@@ -2210,11 +3388,17 @@ func (e *RobotEngine) executeStopLossCloseByPosition(ctx context.Context, pos *e
 		return
 	}
 
+	// 【防重复】与开仓/止盈共用同一把锁，避免同一时刻并发下单/平仓
+	e.orderLock.Lock()
+	defer e.orderLock.Unlock()
+
 	g.Log().Infof(ctx, "[RobotEngine] robotId=%d 执行止损平仓: symbol=%s, positionSide=%s, quantity=%.6f, unrealizedPnl=%.4f",
 		robot.Id, robot.Symbol, pos.PositionSide, quantity, pos.UnrealizedPnl)
 
 	// 调用交易所API执行平仓
-	closeOrder, err := e.Exchange.ClosePosition(ctx, robot.Symbol, pos.PositionSide, quantity)
+	closeCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	closeOrder, err := e.Exchange.ClosePosition(closeCtx, robot.Symbol, pos.PositionSide, quantity)
 	if err != nil {
 		g.Log().Errorf(ctx, "[RobotEngine] robotId=%d 止损平仓失败: positionSide=%s, err=%v",
 			robot.Id, pos.PositionSide, err)
@@ -2239,7 +3423,11 @@ func (e *RobotEngine) executeStopLossCloseByPosition(ctx context.Context, pos *e
 	e.removePositionFromCache(pos.PositionSide)
 
 	// 【页面显示优化】平仓后顺便刷新余额缓存（账户权益/钱包余额），避免长期不更新
-	e.refreshBalanceCacheAfterTrade(ctx, "after_stop_loss_close")
+	go func() {
+		bctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		defer cancel()
+		e.refreshBalanceCacheAfterTrade(bctx, "after_stop_loss_close")
+	}()
 	g.Log().Infof(ctx, "[RobotEngine] robotId=%d 止损平仓完成: 已更新订单状态和内存缓存", robot.Id)
 }
 
@@ -2307,9 +3495,17 @@ func (e *RobotEngine) executeStopLossClose(ctx context.Context, order *entity.Tr
 	g.Log().Infof(ctx, "[RobotEngine] robotId=%d 止损平仓成功: orderId=%d, exchangeOrderId=%s, unrealizedPnl=%.4f",
 		robot.Id, order.Id, closeOrder.OrderId, order.UnrealizedProfit)
 
+	// 【关键清理】止损平仓成功后，立即清除内存持仓/Tracker + positions UI缓存，避免“不可关闭原则”残留到下一次持仓
+	// 说明：
+	// - 止损链路通常依赖后续同步来落库/更新状态，但展示层不应在同步窗口期继续显示旧的启动止盈/血条
+	// - 即使交易所短暂仍返回持仓，下次同步会重新加载；这里的清理只影响内存展示/风控状态，不影响交易所真实持仓
+	e.ClearPosition(ctx, positionSide)
+	invalidateRobotPositionsCache(robot.Id)
+
 	// 【优化】立即同步持仓数据和订单状态，确保状态一致性
 	go func() {
-		e.syncAccountDataIfNeeded(ctx, "after_trade")
+		// OKX/Gate：用更快的“平仓后快照刷新”，缩短页面显示滞后
+		e.syncAccountDataIfNeeded(ctx, "after_close")
 		g.Log().Debugf(ctx, "[RobotEngine] robotId=%d 止损平仓成功，等待下次自动同步: orderId=%d",
 			robot.Id, order.Id)
 	}()
@@ -2333,61 +3529,27 @@ func (e *RobotEngine) checkTakeProfitAndClose(ctx context.Context, currentPrice 
 	// 【重要】检查自动平仓开关
 	e.mu.RLock()
 	robot := e.Robot
-	strategyParams := e.CurrentStrategyParams
 	positions := e.CurrentPositions // 使用引擎缓存的持仓（交易所实时数据）
 	e.mu.RUnlock()
 
-	if robot == nil || robot.AutoCloseEnabled != 1 {
-		return // 自动平仓未开启，不执行止盈回撤
+	if robot == nil {
+		return
 	}
+	// 重要：自动平仓开关只控制“是否执行平仓动作”，不应该阻断“自动启动止盈回撤开关”。
+	// 否则会出现：前端启动止盈血条已满（达到启动阈值），但 TakeProfitEnabled 一直为 false。
+	autoCloseEnabled := robot.AutoCloseEnabled == 1
 
 	// 如果没有持仓，无需检查
 	if len(positions) == 0 {
 		return
 	}
 
-	// 【重要】从策略模板读取止盈参数
-	var autoStartPercent, profitRetreatPercent float64
-	if strategyParams != nil {
-		autoStartPercent = strategyParams.AutoStartRetreatPercent
-		profitRetreatPercent = strategyParams.ProfitRetreatPercent
-		g.Log().Debugf(ctx, "[RobotEngine] robotId=%d 止盈参数(来自策略模板): autoStartPercent=%.2f%%, profitRetreatPercent=%.2f%%",
-			robot.Id, autoStartPercent, profitRetreatPercent)
-	} else {
-		// 【调试】策略模板为空，输出详细信息帮助排查
-		g.Log().Warningf(ctx, "[RobotEngine] robotId=%d 【问题】CurrentStrategyParams为nil! 需要检查策略模板加载逻辑。MarketRiskMapping=%v",
-			robot.Id, e.MarketRiskMapping)
-		return
-	}
-
 	// 【优化】遍历交易所实时持仓
 	for _, pos := range positions {
-		// 跳过无效持仓
-		if math.Abs(pos.PositionAmt) < 0.0001 {
-			continue
-		}
-
-		// 【重要修复】基于实时价格计算未实现盈亏，而不是使用 pos.UnrealizedPnl（可能过时2分钟）
-		// 做多：(当前价格 - 开仓价格) * 数量
-		// 做空：(开仓价格 - 当前价格) * 数量
-		var realTimeUnrealizedPnl float64
-		if pos.EntryPrice > 0 && math.Abs(pos.PositionAmt) > 0 {
-			if pos.PositionSide == "LONG" {
-				realTimeUnrealizedPnl = (currentPrice - pos.EntryPrice) * math.Abs(pos.PositionAmt)
-			} else {
-				realTimeUnrealizedPnl = (pos.EntryPrice - currentPrice) * math.Abs(pos.PositionAmt)
-			}
-		} else {
-			// 如果没有开仓价格，降级使用交易所返回的值（可能过时）
-			realTimeUnrealizedPnl = pos.UnrealizedPnl
-		}
-
-		// 计算保证金
-		margin := pos.Margin
-		if margin <= 0 && pos.EntryPrice > 0 && robot.Leverage > 0 {
-			margin = math.Abs(pos.PositionAmt) * pos.EntryPrice / float64(robot.Leverage)
-		}
-		if margin <= 0 {
+		qtyAbs, margin, _ := calcRiskQtyAndMargin(pos, robot)
+		// 持仓存在性的判断应以 qty 为准；margin 允许为 0（部分交易所/事件窗口期会缺失），
+		// 后续会优先用“订单冻结保证金”(tracker.EntryMargin) 作为止盈分母。
+		if qtyAbs <= positionAmtEpsilon {
 			continue
 		}
 
@@ -2410,30 +3572,110 @@ func (e *RobotEngine) checkTakeProfitAndClose(ctx context.Context, currentPrice 
 		}
 		e.mu.Unlock()
 
-		// 【恢复机制】服务重启/状态丢失时：从数据库恢复止盈回撤启动状态与最高盈利
-		if isNewTracker {
+		// 【恢复机制】服务重启/状态丢失时：从数据库恢复止盈回撤启动状态/最高盈利/冻结参数
+		if isNewTracker || (tracker != nil && !tracker.ParamsLoaded) {
 			e.initTrackerFromDB(ctx, pos.PositionSide, tracker)
+		}
+		// 规则：启动止盈/止盈回撤分母必须使用“订单表冻结的保证金”，缺失时才兜底用持仓计算值。
+		if tracker != nil && tracker.EntryMargin > 0 {
+			margin = tracker.EntryMargin
+		}
+		if margin <= 0 {
+			// 最终仍无保证金：无法计算启动止盈/回撤止盈分母，跳过
+			continue
+		}
+
+		// ===== 关键：止盈参数必须来自“开仓时冻结的策略参数”=====
+		autoStartPercent := 0.0
+		profitRetreatPercent := 0.0
+		if tracker != nil {
+			autoStartPercent = tracker.AutoStartRetreatPercent
+			profitRetreatPercent = tracker.ProfitRetreatPercent
+		}
+		// 兼容：冻结参数缺失（老订单）时回退到“当前策略参数”，避免永远不自动止盈
+		if autoStartPercent <= 0 && profitRetreatPercent <= 0 {
+			if sp, _, _ := e.getFallbackStrategyParams(ctx); sp != nil {
+				if autoStartPercent <= 0 && sp.AutoStartRetreatPercent > 0 {
+					autoStartPercent = sp.AutoStartRetreatPercent
+					if tracker != nil && tracker.AutoStartRetreatPercent <= 0 {
+						tracker.AutoStartRetreatPercent = autoStartPercent
+					}
+				}
+				if profitRetreatPercent <= 0 && sp.ProfitRetreatPercent > 0 {
+					profitRetreatPercent = sp.ProfitRetreatPercent
+					if tracker != nil && tracker.ProfitRetreatPercent <= 0 {
+						tracker.ProfitRetreatPercent = profitRetreatPercent
+					}
+				}
+			}
+		}
+		// 若该订单未配置止盈参数，则不启动/不检查止盈回撤
+		if autoStartPercent <= 0 && profitRetreatPercent <= 0 {
+			// 仍允许手动开启止盈（TakeProfitEnabled），但没有回撤阈值无法触发自动平仓
+			if tracker == nil || !tracker.TakeProfitEnabled {
+				continue
+			}
+		}
+
+		// 未实现盈亏口径（统一三家交易所）：
+		// - 以实时风控价（MarkPrice优先）估算未实现盈亏，确保“启动止盈/回撤止盈”跟随实时行情
+		// - 计算公式：(currentPrice - entryPrice) * |qty| * direction（SHORT 为 -1）
+		// - 若 entry/qty 不可用，则回退到交易所返回的 pos.UnrealizedPnl
+		effectiveUnrealizedPnl := pos.UnrealizedPnl
+		if pos.EntryPrice > 0 && currentPrice > 0 && qtyAbs > positionAmtEpsilon {
+			dir := 1.0
+			if strings.ToUpper(strings.TrimSpace(pos.PositionSide)) == "SHORT" {
+				dir = -1.0
+			}
+			effectiveUnrealizedPnl = (currentPrice - pos.EntryPrice) * qtyAbs * dir
 		}
 
 		// 【内存优化】更新最高盈利（只增不减）
-		if realTimeUnrealizedPnl > tracker.HighestProfit {
-			tracker.HighestProfit = realTimeUnrealizedPnl
+		if effectiveUnrealizedPnl > tracker.HighestProfit {
+			tracker.HighestProfit = effectiveUnrealizedPnl
+			// 若止盈已启动，持续把最高盈利“只增不减”落库，支持服务重启后继续回撤止盈
+			e.maybePersistHighestProfit(pos.PositionSide, tracker)
 		}
 
 		// 【自动启动止盈回撤】检查是否满足启动条件
 		// 条件：当前盈利百分比 = 未实现盈亏/保证金×100% >= 设定的启动止盈百分比
-		if !tracker.TakeProfitEnabled && autoStartPercent > 0 && realTimeUnrealizedPnl > 0 {
-			currentProfitPercent := (realTimeUnrealizedPnl / margin) * 100.0
-			if currentProfitPercent >= autoStartPercent {
+		if autoStartPercent > 0 && effectiveUnrealizedPnl > 0 {
+			currentProfitPercent := (effectiveUnrealizedPnl / margin) * 100.0
+			// 说明：前端"启动止盈血条"通常用 toFixed(1) 显示进度，
+			// 例如 progress=99.95% 会显示为 100.0%，但严格比较 currentProfitPercent>=autoStartPercent 会导致"血条100%但未启动止盈"。
+			// 这里用与前端一致的进度口径做容差：progress>=99.95 即视为到达 100.0%。
+			startProgress := (currentProfitPercent / autoStartPercent) * 100.0
+
+			// 检查血条是否达到100%
+			shouldPushProgress := startProgress >= 99.95 || currentProfitPercent >= autoStartPercent
+
+			if !tracker.TakeProfitEnabled && shouldPushProgress {
+				// record state transition for UI notification (tracker change does not emit exchange position events)
+				wasEnabled := tracker.TakeProfitEnabled
 				tracker.TakeProfitEnabled = true
-				// 【重要】启动时，当前盈利就是最高盈利的起点
-				if realTimeUnrealizedPnl > tracker.HighestProfit {
-					tracker.HighestProfit = realTimeUnrealizedPnl
+				if tracker.TakeProfitEnabledAt.IsZero() {
+					tracker.TakeProfitEnabledAt = time.Now()
 				}
+				// 【重要】启动时，当前盈利就是最高盈利的起点
+				if effectiveUnrealizedPnl > tracker.HighestProfit {
+					tracker.HighestProfit = effectiveUnrealizedPnl
+				}
+				// 标记一次"已持久化基准"，避免后续频繁重复写入
+				tracker.LastHighestProfitPersistAt = time.Now()
+				tracker.LastHighestProfitPersistValue = tracker.HighestProfit
 				// 【持久化】写入数据库，支持服务重启后继续止盈回撤（不可关闭原则）
 				go e.persistProfitRetreatStarted(ctx, pos.PositionSide, tracker.HighestProfit)
-				g.Log().Infof(ctx, "[RobotEngine] robotId=%d 【自动启动】止盈回撤已自动启动: positionSide=%s, currentProfitPercent=%.2f%% >= autoStartPercent=%.2f%%, highestProfit=%.4f",
-					e.Robot.Id, pos.PositionSide, currentProfitPercent, autoStartPercent, tracker.HighestProfit)
+				g.Log().Infof(ctx, "[RobotEngine] robotId=%d 【自动启动】止盈回撤已自动启动: positionSide=%s, currentProfitPercent=%.4f%%, autoStartPercent=%.4f%%, startProgress=%.2f%%, highestProfit=%.4f",
+					e.Robot.Id, pos.PositionSide, currentProfitPercent, autoStartPercent, startProgress, tracker.HighestProfit)
+
+				// 【优化】在启动止盈血条达到100%并且开启"启动止盈开关"后立即给前端推送
+				// 这样前端可以同时看到血条100%和开关开启的状态，确保数据一致性
+				// 注意：notifyPositionsDeltaAsync 会调用 GetRobotPositions，返回完整的持仓数据（包括血条和开关状态）
+				if !wasEnabled {
+					// 立即推送，确保前端能及时看到开关状态变化
+					e.notifyPositionsDeltaAsync("take_profit_auto_enabled")
+					g.Log().Debugf(ctx, "[RobotEngine] robotId=%d 【关键节点】血条达到100%，已推送开关状态更新", e.Robot.Id)
+				}
 			}
 		}
 
@@ -2445,10 +3687,22 @@ func (e *RobotEngine) checkTakeProfitAndClose(ctx context.Context, currentPrice 
 			continue
 		}
 
+		// 未开启自动平仓：允许“自动启动止盈回撤开关/血条展示/最高盈利跟踪”，但不执行止盈平仓。
+		if !autoCloseEnabled {
+			continue
+		}
+
+		// 【体验优化】止盈刚启动的短暂保护：避免 Bitget/行情抖动导致“刚启动就平仓”
+		// 说明：刚启动时，交易所持仓字段可能短暂缺失（entry/pnl）或前后两次 tick 差异很大；
+		// 这里给 2 秒缓冲，让 highestProfit/实时盈亏稳定后再评估回撤触发。
+		if !tracker.TakeProfitEnabledAt.IsZero() && time.Since(tracker.TakeProfitEnabledAt) < 2*time.Second {
+			continue
+		}
+
 		// 【重要修复】如果刚手动启动止盈（HighestProfit很小），需要用当前盈亏初始化
 		// 这是因为 SetTakeProfitEnabled 只能设置一个极小值，实际的最高盈利需要在这里设置
-		if tracker.HighestProfit <= 0.001 && realTimeUnrealizedPnl > 0 {
-			tracker.HighestProfit = realTimeUnrealizedPnl
+		if tracker.HighestProfit <= 0.001 && effectiveUnrealizedPnl > 0 {
+			tracker.HighestProfit = effectiveUnrealizedPnl
 			g.Log().Infof(ctx, "[RobotEngine] robotId=%d 初始化止盈最高盈利: positionSide=%s, highestProfit=%.4f",
 				e.Robot.Id, pos.PositionSide, tracker.HighestProfit)
 		}
@@ -2457,20 +3711,21 @@ func (e *RobotEngine) checkTakeProfitAndClose(ctx context.Context, currentPrice 
 		// 【修复】移除 tracker.HighestProfit > 0 条件，改为在内部处理
 		if isTakeProfitEnabled && profitRetreatPercent > 0 {
 			// 【调试日志】输出每次检查的详细数据
-			g.Log().Infof(ctx, "[RobotEngine] robotId=%d 【止盈检查】positionSide=%s, takeProfitEnabled=%v, profitRetreatPercent=%.2f%%, highestProfit=%.4f, currentPnl=%.4f, entryPrice=%.4f, currentPrice=%.4f",
-				e.Robot.Id, pos.PositionSide, isTakeProfitEnabled, profitRetreatPercent, tracker.HighestProfit, realTimeUnrealizedPnl, pos.EntryPrice, currentPrice)
+			// 高频日志降级：止盈检查每 tick 都会触发，Info 会刷屏影响实时报价/WS
+			g.Log().Debugf(ctx, "[RobotEngine] robotId=%d 【止盈检查】positionSide=%s, takeProfitEnabled=%v, profitRetreatPercent=%.2f%%, highestProfit=%.4f, currentPnl=%.4f, entryPrice=%.4f, currentPrice=%.4f",
+				e.Robot.Id, pos.PositionSide, isTakeProfitEnabled, profitRetreatPercent, tracker.HighestProfit, effectiveUnrealizedPnl, pos.EntryPrice, currentPrice)
 
 			// 【修复】如果最高盈利还没有被正确初始化（小于等于0.001），跳过本次检查
 			// 等待下次有正向盈利时初始化
 			if tracker.HighestProfit <= 0.001 {
 				g.Log().Warningf(ctx, "[RobotEngine] robotId=%d 止盈回撤已启动但最高盈利未初始化（<=0.001），等待盈利出现: positionSide=%s, currentPnl=%.4f, highestProfit=%.4f",
-					e.Robot.Id, pos.PositionSide, realTimeUnrealizedPnl, tracker.HighestProfit)
+					e.Robot.Id, pos.PositionSide, effectiveUnrealizedPnl, tracker.HighestProfit)
 				continue
 			}
 
 			// 计算当前回撤百分比（使用实时盈亏）
 			// 公式：(最高盈利 - 当前盈利) / 最高盈利 × 100%
-			currentRetreatPercent := ((tracker.HighestProfit - realTimeUnrealizedPnl) / tracker.HighestProfit) * 100.0
+			currentRetreatPercent := ((tracker.HighestProfit - effectiveUnrealizedPnl) / tracker.HighestProfit) * 100.0
 
 			// 计算血条百分比（供调试用）
 			bloodBarPercent := 100.0 - (currentRetreatPercent/profitRetreatPercent)*100.0
@@ -2481,13 +3736,15 @@ func (e *RobotEngine) checkTakeProfitAndClose(ctx context.Context, currentPrice 
 				bloodBarPercent = 100
 			}
 
-			g.Log().Infof(ctx, "[RobotEngine] robotId=%d 【止盈计算】回撤百分比=%.2f%%, 设定阈值=%.2f%%, 血条=%.2f%%, 是否触发=%v",
+			// 高频日志降级：详算日志改为 Debug
+			g.Log().Debugf(ctx, "[RobotEngine] robotId=%d 【止盈计算】回撤百分比=%.2f%%, 设定阈值=%.2f%%, 血条=%.2f%%, 是否触发=%v",
 				e.Robot.Id, currentRetreatPercent, profitRetreatPercent, bloodBarPercent, currentRetreatPercent >= profitRetreatPercent)
 
 			// 【安全检查】如果回撤百分比为负数（当前盈利超过最高盈利，应该更新最高盈利）
 			if currentRetreatPercent < 0 {
 				// 当前盈利超过了最高盈利，更新最高盈利
-				tracker.HighestProfit = realTimeUnrealizedPnl
+				tracker.HighestProfit = effectiveUnrealizedPnl
+				e.maybePersistHighestProfit(pos.PositionSide, tracker)
 				g.Log().Infof(ctx, "[RobotEngine] robotId=%d 当前盈利超过最高盈利，更新: highestProfit=%.4f",
 					e.Robot.Id, tracker.HighestProfit)
 				continue
@@ -2501,10 +3758,10 @@ func (e *RobotEngine) checkTakeProfitAndClose(ctx context.Context, currentPrice 
 			if currentRetreatPercent >= profitRetreatPercent || currentRetreatPercent > 200 {
 				if currentRetreatPercent > 200 {
 					g.Log().Warningf(ctx, "[RobotEngine] robotId=%d 【触发止盈-异常回撤】回撤百分比异常大: %.2f%%（当前盈亏=%.4f, 最高盈利=%.4f），立即执行平仓",
-						e.Robot.Id, currentRetreatPercent, realTimeUnrealizedPnl, tracker.HighestProfit)
+						e.Robot.Id, currentRetreatPercent, effectiveUnrealizedPnl, tracker.HighestProfit)
 				} else {
 					g.Log().Warningf(ctx, "[RobotEngine] robotId=%d 【触发止盈】止盈回撤达到阈值，立即执行平仓: positionSide=%s, currentRetreatPercent=%.2f%%, profitRetreatPercent=%.2f%%, highestProfit=%.4f, realTimeUnrealizedPnl=%.4f",
-						e.Robot.Id, pos.PositionSide, currentRetreatPercent, profitRetreatPercent, tracker.HighestProfit, realTimeUnrealizedPnl)
+						e.Robot.Id, pos.PositionSide, currentRetreatPercent, profitRetreatPercent, tracker.HighestProfit, effectiveUnrealizedPnl)
 				}
 				// 执行平仓（使用交易所持仓数据）
 				e.executeTakeProfitCloseByPosition(ctx, pos, "take_profit")
@@ -2531,6 +3788,12 @@ func (e *RobotEngine) executeTakeProfitCloseByPosition(ctx context.Context, pos 
 		return
 	}
 
+	// 【防风暴】同一方向的平仓在短时间内只允许触发一次
+	if !e.tryAcquireCloseInFlight(pos.PositionSide, reason, 3*time.Second) {
+		g.Log().Debugf(ctx, "[RobotEngine] robotId=%d 止盈平仓跳过（冷却中）: positionSide=%s, reason=%s", robot.Id, pos.PositionSide, reason)
+		return
+	}
+
 	// 【防重复平仓】先检查数据库中订单状态，如果已经是平仓中或已平仓，则跳过
 	direction := "long"
 	if pos.PositionSide == "SHORT" {
@@ -2538,8 +3801,10 @@ func (e *RobotEngine) executeTakeProfitCloseByPosition(ctx context.Context, pos 
 	}
 	orderCount, err := dao.TradingOrder.Ctx(ctx).
 		Where("robot_id", robot.Id).
-		Where("direction", direction).
-		Where("status", OrderStatusOpen). // 只查询持仓中的订单
+		// 兼容历史数据：direction 可能为 LONG/SHORT/Long 等，统一按 lower(direction) 匹配
+		Where("LOWER(direction) = ?", direction).
+		// 防重复平仓：pending/open 都认为“需要保护”
+		Where("status IN (?)", []int{OrderStatusPending, OrderStatusOpen}).
 		Count()
 	if err != nil || orderCount == 0 {
 		// 重要：这里不再直接 return。
@@ -2558,7 +3823,9 @@ func (e *RobotEngine) executeTakeProfitCloseByPosition(ctx context.Context, pos 
 		robot.Id, robot.Symbol, pos.PositionSide, quantity, pos.UnrealizedPnl, reason)
 
 	// 调用交易所API执行平仓
-	closeOrder, closeErr := e.Exchange.ClosePosition(ctx, robot.Symbol, pos.PositionSide, quantity)
+	closeCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	closeOrder, closeErr := e.Exchange.ClosePosition(closeCtx, robot.Symbol, pos.PositionSide, quantity)
 	if closeErr != nil {
 		g.Log().Errorf(ctx, "[RobotEngine] robotId=%d 止盈平仓失败: positionSide=%s, err=%v",
 			robot.Id, pos.PositionSide, closeErr)
@@ -2583,8 +3850,35 @@ func (e *RobotEngine) executeTakeProfitCloseByPosition(ctx context.Context, pos 
 	e.removePositionFromCache(pos.PositionSide)
 
 	// 【页面显示优化】平仓后顺便刷新余额缓存（账户权益/钱包余额），避免长期不更新
-	e.refreshBalanceCacheAfterTrade(ctx, "after_take_profit_close")
+	go func() {
+		bctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		defer cancel()
+		e.refreshBalanceCacheAfterTrade(bctx, "after_take_profit_close")
+	}()
 	g.Log().Infof(ctx, "[RobotEngine] robotId=%d 止盈平仓完成: 已更新订单状态和内存缓存", robot.Id)
+
+	// 推送“平仓成功(自动)”事件给前端：用于机器人列表持仓秒级消失（不依赖交易所 1min 延迟）
+	if robot != nil && robot.UserId > 0 {
+		dir := "long"
+		if pos.PositionSide == "SHORT" {
+			dir = "short"
+		}
+		websocket.SendToUser(robot.UserId, &websocket.WResponse{
+			Event: "toogo/robot/trade/event",
+			Data: g.Map{
+				"type":           "close_success",
+				"action":         "close",
+				"closeType":      "take_profit",
+				"robotId":        robot.Id,
+				"symbol":         robot.Symbol,
+				"positionSide":   pos.PositionSide,
+				"direction":      dir,
+				"closeOrderId":   closeOrder.OrderId,
+				"realizedProfit": pos.UnrealizedPnl,
+				"ts":             gtime.Now().TimestampMilli(),
+			},
+		})
+	}
 }
 
 // executeTakeProfitClose 执行止盈平仓
@@ -2621,7 +3915,8 @@ func (e *RobotEngine) executeTakeProfitClose(ctx context.Context, order *entity.
 
 	// 【优化】立即同步持仓数据和订单状态，确保状态一致性
 	go func() {
-		e.syncAccountDataIfNeeded(ctx, "after_trade")
+		// OKX/Gate：用更快的“平仓后快照刷新”，缩短页面显示滞后
+		e.syncAccountDataIfNeeded(ctx, "after_close")
 		g.Log().Debugf(ctx, "[RobotEngine] robotId=%d 止盈平仓成功，等待下次自动同步: orderId=%d",
 			robot.Id, order.Id)
 	}()
@@ -2810,15 +4105,40 @@ func (e *RobotEngine) getRealTimeWindowAndThreshold() (window int, threshold flo
 	ctx := context.Background()
 
 	// 【步骤1】获取全局实时市场状态
-	globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(e.Platform, e.Robot.Symbol)
+	ap := e.analysisPlatform(ctx)
+	globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(ap, e.Robot.Symbol)
 	if globalAnalysis == nil || globalAnalysis.MarketState == "" {
-		g.Log().Warningf(ctx, "[RobotEngine] robotId=%d 全局市场分析器未返回市场状态数据", e.Robot.Id)
-		return 0, 0
+		// 启动期/短暂空窗：分析器可能尚未产出；此时用 MonitorConfig 兜底避免窗口信号完全失效
+		fallbackWindow := 60
+		fallbackThreshold := 10.0
+		if e.MonitorConfig != nil {
+			if e.MonitorConfig.Window > 0 {
+				fallbackWindow = e.MonitorConfig.Window
+			}
+			if e.MonitorConfig.Threshold > 0 {
+				fallbackThreshold = e.MonitorConfig.Threshold
+			}
+		}
+		g.Log().Debugf(ctx, "[RobotEngine] robotId=%d 全局市场状态未就绪，使用MonitorConfig兜底: window=%ds, threshold=%.2f",
+			e.Robot.Id, fallbackWindow, fallbackThreshold)
+		return fallbackWindow, fallbackThreshold
 	}
 	marketState := normalizeMarketState(string(globalAnalysis.MarketState))
 	if marketState == "" {
-		g.Log().Warningf(ctx, "[RobotEngine] robotId=%d 市场状态为空", e.Robot.Id)
-		return 0, 0
+		// 极端情况：MarketState 字段异常，仍兜底
+		fallbackWindow := 60
+		fallbackThreshold := 10.0
+		if e.MonitorConfig != nil {
+			if e.MonitorConfig.Window > 0 {
+				fallbackWindow = e.MonitorConfig.Window
+			}
+			if e.MonitorConfig.Threshold > 0 {
+				fallbackThreshold = e.MonitorConfig.Threshold
+			}
+		}
+		g.Log().Debugf(ctx, "[RobotEngine] robotId=%d 市场状态为空，使用MonitorConfig兜底: window=%ds, threshold=%.2f",
+			e.Robot.Id, fallbackWindow, fallbackThreshold)
+		return fallbackWindow, fallbackThreshold
 	}
 
 	// 【步骤2】根据创建机器人时提交的映射关系选择风险偏好
@@ -3089,58 +4409,14 @@ func (e *RobotEngine) EvaluateWindowSignal() *RobotSignal {
 		e.SignalHistory = e.SignalHistory[len(e.SignalHistory)-100:]
 	}
 
-	// 【优化】每个信号只保存一次预警记录
-	// 只在信号方向变化时保存，信号持续存在时不重复保存
+	// 记录“上一次窗口信号方向”（仅内存态，用于避免重复的方向变化提示）
+	// 注意：写库/下单已迁移到异步 worker，确保任何交易问题不影响行情报价。
 	if newSignal != "neutral" {
 		signal.AlignedTimeframes = 1
-
-		// 复制信号副本
-		signalCopy := *signal
-
-		// 信号方向变化时记录日志
-		isNewDirection := newSignal != e.LastWindowSignal
-
-		logCtx := context.Background()
-		g.Log().Infof(logCtx, "[RobotEngine] robotId=%d 检测到信号: newSignal=%s, lastSignal=%s, isNew=%v",
-			e.Robot.Id, newSignal, e.LastWindowSignal, isNewDirection)
-
-		// 【优化】每个信号只保存一次：只在信号方向变化时保存
-		if isNewDirection {
-			g.Log().Infof(logCtx, "[RobotEngine] robotId=%d 新方向信号: %s, price=%.2f",
-				e.Robot.Id, newSignal, currentPrice)
+		if newSignal != e.LastWindowSignal {
 			e.LastWindowSignal = newSignal
-
-			// 【关键修复】在触发下单前，先检查内存缓存是否已有该方向的持仓
-			// 解决 LONG → NEUTRAL → LONG 导致的重复下单问题
-			positionSide := "LONG"
-			if newSignal == "short" {
-				positionSide = "SHORT"
-			}
-			if e.HasActivePosition(positionSide) {
-				g.Log().Infof(logCtx, "[RobotEngine] robotId=%d 内存缓存已有%s方向持仓，跳过下单",
-					e.Robot.Id, positionSide)
-				// 已有持仓，不触发下单（不需要保存预警记录，因为不会下单）
-			} else {
-				// 无持仓，保存预警记录并触发下单
-				logId := e.saveSignalAlertSimple(&signalCopy)
-				if logId > 0 {
-					g.Log().Infof(logCtx, "[RobotEngine] 预警记录已保存: robotId=%d, logId=%d, direction=%s, action=%s",
-						e.Robot.Id, logId, signalCopy.Direction, signalCopy.Action)
-
-					// 触发自动下单（异步执行）
-					go func() {
-						ctx := context.Background()
-						e.Trader.TryAutoTradeAndUpdate(ctx, &signalCopy, logId)
-					}()
-				} else {
-					g.Log().Warningf(logCtx, "[RobotEngine] 保存预警记录失败: robotId=%d, direction=%s, action=%s",
-						e.Robot.Id, signalCopy.Direction, signalCopy.Action)
-				}
-			}
 		}
-		// 信号方向不变时，不保存预警记录（每个信号只保存一次）
 	} else {
-		// 信号变为 neutral 时，重置状态
 		e.LastWindowSignal = "neutral"
 	}
 
@@ -3161,6 +4437,98 @@ func (e *RobotEngine) saveSignalAlertSimple(signal *RobotSignal) int64 {
 	if robot == nil {
 		g.Log().Errorf(ctx, "[RobotEngine] robot为nil，无法保存预警记录")
 		return 0
+	}
+
+	// ===== 做方向预警记录前检查同方向的持仓；同方向有持仓则不预警 =====
+	// 【优化】三层检查机制：1. 数据库订单状态（快速可靠） 2. 内存持仓（快速补充） 3. 交易所实际持仓（最权威，带缓存）
+	// 说明：交易所持仓是最权威的数据源，但查询较慢，使用缓存避免频繁查询
+	dir := strings.ToUpper(strings.TrimSpace(signal.Direction))
+	if dir == "LONG" || dir == "SHORT" {
+		positionSide := dir // LONG/SHORT
+		hasSameSidePos := false
+
+		// 1. 优先检查数据库中的订单状态（PENDING/OPEN），快速且可靠
+		// 查询是否有同方向的未完成订单（包括 pending 和 open 状态）
+		dbDirection := strings.ToLower(positionSide) // 数据库存储为小写
+		count, err := dao.TradingOrder.Ctx(ctx).
+			Where("robot_id", robot.Id).
+			Where("LOWER(direction) = ?", dbDirection).
+			Where("status IN (?)", []int{OrderStatusPending, OrderStatusOpen}).
+			Where("(close_time IS NULL OR EXTRACT(YEAR FROM close_time)=2006)"). // 排除已平仓的订单
+			Count()
+		if err == nil && count > 0 {
+			hasSameSidePos = true
+			g.Log().Debugf(ctx, "[RobotEngine] robotId=%d %s 方向数据库中有%d个未完成订单，同方向不再预警", robot.Id, dir, count)
+		} else if err != nil {
+			// 数据库查询失败时，记录警告但不阻塞，继续检查内存和交易所
+			g.Log().Debugf(ctx, "[RobotEngine] robotId=%d 查询数据库订单状态失败，继续检查内存和交易所: err=%v", robot.Id, err)
+		}
+
+		// 2. 如果数据库检查未发现持仓，再检查内存持仓（快速补充）
+		// 这样可以处理数据库查询失败或数据不一致的情况
+		if !hasSameSidePos {
+			e.mu.RLock()
+			if len(e.CurrentPositions) > 0 {
+				for _, p := range e.CurrentPositions {
+					if p == nil {
+						continue
+					}
+					if strings.EqualFold(strings.TrimSpace(p.PositionSide), positionSide) && math.Abs(p.PositionAmt) > positionAmtEpsilon {
+						hasSameSidePos = true
+						break
+					}
+				}
+			}
+			e.mu.RUnlock()
+			if hasSameSidePos {
+				g.Log().Debugf(ctx, "[RobotEngine] robotId=%d %s 方向内存中有持仓，同方向不再预警", robot.Id, dir)
+			}
+		}
+
+		// 3. 如果数据库和内存都未发现持仓，最后检查交易所实际持仓（最权威，但较慢）
+		// 使用 GetPositionsSmart 的缓存机制（10秒缓存），避免频繁查询交易所API
+		// 只在数据库和内存都没有持仓时才查询交易所，减少API调用频率
+		if !hasSameSidePos {
+			// 使用较短的超时（3秒），避免阻塞预警记录流程
+			exchangeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			// 使用10秒缓存，避免频繁查询交易所API
+			// 如果缓存有效（10秒内），直接返回缓存，不会真正调用API
+			positions, err := e.GetPositionsSmart(exchangeCtx, 10*time.Second)
+			cancel()
+			if err == nil && len(positions) > 0 {
+				for _, p := range positions {
+					if p == nil {
+						continue
+					}
+					if strings.EqualFold(strings.TrimSpace(p.PositionSide), positionSide) && math.Abs(p.PositionAmt) > positionAmtEpsilon {
+						hasSameSidePos = true
+						g.Log().Debugf(ctx, "[RobotEngine] robotId=%d %s 方向交易所实际持仓中存在持仓(数量=%.4f)，同方向不再预警", robot.Id, dir, p.PositionAmt)
+						break
+					}
+				}
+			} else if err != nil {
+				// 交易所查询失败或超时，记录调试日志但不阻塞预警流程
+				// 这种情况可能是网络问题或交易所API暂时不可用，允许继续预警
+				g.Log().Debugf(ctx, "[RobotEngine] robotId=%d 查询交易所持仓失败（可能超时或网络问题），允许预警: err=%v", robot.Id, err)
+			}
+		}
+
+		if hasSameSidePos {
+			return 0
+		}
+	}
+
+	// ===== 预警写库去重：上一条预警若同方向则不再发布 =====
+	// 说明：窗口信号在阈值附近会出现 neutral/long/neutral/long 抖动。
+	// 需求变更：不再按时间窗口节流，而是“只要上一条预警也是同方向就跳过”。
+	if dir == "LONG" || dir == "SHORT" {
+		e.mu.RLock()
+		lastDir := strings.ToUpper(strings.TrimSpace(e.lastSignalAlertDir))
+		e.mu.RUnlock()
+		if lastDir == dir {
+			g.Log().Debugf(ctx, "[RobotEngine] robotId=%d %s 方向预警上一条已是同方向，跳过写库", robot.Id, dir)
+			return 0
+		}
 	}
 
 	// 获取市场状态（规范化）
@@ -3233,6 +4601,25 @@ func (e *RobotEngine) saveSignalAlertSimple(signal *RobotSignal) int64 {
 	if err != nil {
 		g.Log().Errorf(ctx, "[RobotEngine] 提交事务失败: %v", err)
 		return 0
+	}
+
+	// 写库成功后更新“上一条预警方向”
+	{
+		dir := strings.ToUpper(strings.TrimSpace(signal.Direction))
+		if dir == "LONG" || dir == "SHORT" {
+			e.mu.Lock()
+			e.lastSignalAlertDir = dir
+			e.mu.Unlock()
+		}
+	}
+
+	// AutoTrade realtime trigger (best-effort):
+	// Signal log is "signal only", but auto-trade is centrally driven by RobotTaskManager scanning pending logs.
+	// Here we trigger an immediate scan for this robot to avoid waiting up to 5s.
+	{
+		if robot.AutoTradeEnabled == 1 {
+			GetRobotTaskManager().TriggerAutoTradeScan(robot.Id)
+		}
 	}
 
 	g.Log().Infof(ctx, "[RobotEngine] ✅ 预警记录已保存: robotId=%d, logId=%d, direction=%s",
@@ -3543,44 +4930,79 @@ func (e *RobotEngine) getIndicatorSignals() (bool, bool, bool, bool) {
 
 // GetStatus 获取引擎状态
 func (e *RobotEngine) GetStatus() *RobotEngineStatus {
+	// 注意：该方法会被页面高频轮询调用；务必避免持锁做慢操作/写锁阻塞行情回调。
 	e.mu.RLock()
-	defer e.mu.RUnlock()
+	robot := e.Robot
+	platform := e.Platform
+	running := e.running
+	accountBal := e.AccountBalance
+	lastAnalysis := e.LastAnalysis
+	lastSignal := e.LastSignal
+	positions := e.CurrentPositions
+	e.mu.RUnlock()
+
+	if robot == nil {
+		return nil
+	}
 
 	status := &RobotEngineStatus{
-		RobotId:   e.Robot.Id,
-		Symbol:    e.Robot.Symbol,
-		Platform:  e.Platform,
-		Running:   e.running,
-		Connected: e.LastTicker != nil && time.Since(e.LastTickerUpdate) < 10*time.Second,
+		RobotId:  robot.Id,
+		Symbol:   robot.Symbol,
+		Platform: platform,
+		Running:  running,
 	}
 
-	if e.LastTicker != nil {
-		status.LastPrice = e.LastTicker.LastPrice
+	// ===== 行情：统一走全局 MarketServiceManager（与机器人交易/订单链路隔离） =====
+	// 这样即便机器人引擎在下单/DB/同步上异常，报价仍可用。
+	if tk := market.GetMarketServiceManager().GetTicker(platform, robot.Symbol); tk != nil {
+		lastPrice := tk.LastPrice
+		if lastPrice <= 0 {
+			lastPrice = tk.EffectiveMarkPrice()
+		}
+		status.LastPrice = lastPrice
+
+		// connected 的判定：优先用 ticker.Timestamp；缺失则只要有数据即视为连接中
+		connected := true
+		if tk.Timestamp > 0 {
+			updatedAt := time.Time{}
+			// 兼容：秒/毫秒时间戳
+			if tk.Timestamp < 1_000_000_000_000 {
+				updatedAt = time.Unix(tk.Timestamp, 0)
+			} else {
+				updatedAt = time.UnixMilli(tk.Timestamp)
+			}
+			connected = time.Since(updatedAt) < 10*time.Second
+		}
+		status.Connected = connected
+	} else {
+		status.Connected = false
 	}
 
-	if e.AccountBalance != nil {
-		status.TotalBalance = e.AccountBalance.TotalBalance
-		status.AvailBalance = e.AccountBalance.AvailableBalance
+	// ===== 账户（仍来自引擎缓存，避免频繁打交易所 API）=====
+	if accountBal != nil {
+		status.TotalBalance = accountBal.TotalBalance
+		status.AvailBalance = accountBal.AvailableBalance
 	}
 
-	if e.LastAnalysis != nil {
-		status.MarketState = normalizeMarketState(e.LastAnalysis.MarketState)
-		status.TrendDirection = e.LastAnalysis.TrendDirection
-		status.Volatility = e.LastAnalysis.Volatility
+	// ===== 分析/信号（引擎内存态）=====
+	if lastAnalysis != nil {
+		status.MarketState = normalizeMarketState(lastAnalysis.MarketState)
+		status.TrendDirection = lastAnalysis.TrendDirection
+		status.Volatility = lastAnalysis.Volatility
 	}
 
 	// 【已移除】风险偏好不再从 Robot.RiskPreference 获取，统一从映射关系获取
 	// status.RiskPreference 字段保留为空或从映射关系获取（如果需要显示）
 	status.RiskPreference = ""
 
-	if e.LastSignal != nil {
-		status.SignalDirection = e.LastSignal.Direction
-		status.SignalStrength = e.LastSignal.Strength
-		status.SignalConfidence = e.LastSignal.Confidence
+	if lastSignal != nil {
+		status.SignalDirection = lastSignal.Direction
+		status.SignalStrength = lastSignal.Strength
+		status.SignalConfidence = lastSignal.Confidence
 	}
 
 	// 持仓信息
-	for _, pos := range e.CurrentPositions {
+	for _, pos := range positions {
 		if pos.PositionAmt != 0 {
 			status.HasPosition = true
 			status.PositionSide = pos.PositionSide
@@ -3599,7 +5021,8 @@ func (e *RobotEngine) GetStatus() *RobotEngineStatus {
 
 	// 【优化】从全局市场分析器获取当前市场状态
 	currentState := ""
-	globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(e.Platform, e.Robot.Symbol)
+	ap := e.analysisPlatform(context.Background())
+	globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(ap, robot.Symbol)
 	if globalAnalysis != nil {
 		currentState = normalizeMarketState(string(globalAnalysis.MarketState))
 	}
@@ -3613,13 +5036,13 @@ func (e *RobotEngine) GetStatus() *RobotEngineStatus {
 		currentRiskPref = e.MarketRiskMapping[currentState]
 		e.mu.RUnlock()
 		if currentRiskPref == "" {
-			g.Log().Warningf(context.Background(), "[RobotEngine] robotId=%d 市场状态=%s 在映射关系中未找到对应的风险偏好", e.Robot.Id, currentState)
+			g.Log().Warningf(context.Background(), "[RobotEngine] robotId=%d 市场状态=%s 在映射关系中未找到对应的风险偏好", robot.Id, currentState)
 		}
 	}
 	status.CurrentRiskPref = currentRiskPref
 
 	// 价格窗口数据（用于实时图表）
-	e.priceLock.Lock()
+	e.priceLock.RLock()
 	if len(e.PriceWindow) > 0 {
 		status.PriceWindowData = make([]PriceWindowPoint, len(e.PriceWindow))
 		minPrice := e.PriceWindow[0].Price
@@ -3648,12 +5071,12 @@ func (e *RobotEngine) GetStatus() *RobotEngineStatus {
 			status.ShortTriggerPrice = maxPrice - threshold
 		}
 	}
-	e.priceLock.Unlock()
+	e.priceLock.RUnlock()
 
 	// 信号详情
-	if e.LastSignal != nil {
-		status.SignalProgress = e.LastSignal.SignalProgress
-		status.SignalReason = e.LastSignal.Reason
+	if lastSignal != nil {
+		status.SignalProgress = lastSignal.SignalProgress
+		status.SignalReason = lastSignal.Reason
 	}
 
 	return status
@@ -4333,6 +5756,48 @@ func NewRobotTrader(engine *RobotEngine) *RobotTrader {
 	return &RobotTrader{engine: engine}
 }
 
+// updateOrderOpenFreeze 下单成功后，将“实际执行”的开仓关键数据冻结回订单表（用于血条/止盈止损/平仓分母）
+// 说明：
+// - OKX 可能因最小张数/步进对齐导致 qty/margin/marginPercent 上调
+// - Binance/Gate 可能在回执中返回实际成交数量（FilledQty），与提交 qty 不一致
+// 这些都必须在“下单成功后”立即写回订单表，避免 UI/风控/平仓读到旧值。
+func (t *RobotTrader) updateOrderOpenFreeze(ctx context.Context, orderId int64, entryPrice, quantity, margin float64, leverage int, marginPercent float64) {
+	if orderId <= 0 {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	update := g.Map{
+		"updated_at": gtime.Now(),
+	}
+	if entryPrice > 0 {
+		update["open_price"] = entryPrice
+		update["avg_price"] = entryPrice
+		update["price"] = entryPrice
+	}
+	if quantity > 0 {
+		update["quantity"] = quantity
+		update["filled_qty"] = quantity
+	}
+	if leverage > 0 {
+		update["leverage"] = leverage
+	}
+	if margin > 0 {
+		update["margin"] = margin
+		update["open_margin"] = margin
+	}
+	if marginPercent > 0 {
+		update["margin_percent"] = marginPercent
+	}
+	_, err := dao.TradingOrder.Ctx(ctx).
+		Where(dao.TradingOrder.Columns().Id, orderId).
+		Update(update)
+	if err != nil {
+		g.Log().Warningf(ctx, "[RobotTrader] 回填订单开仓冻结数据失败(忽略): orderId=%d err=%v", orderId, err)
+	}
+}
+
 // TryAutoTradeAndUpdate 尝试自动下单并更新预警记录
 // 【重新设计】简化流程：
 // 1. 信号生成 → 立即触发检查（自动交易开关、一个方向只能有一单）
@@ -4344,6 +5809,18 @@ func (t *RobotTrader) TryAutoTradeAndUpdate(ctx context.Context, signal *RobotSi
 		if logId > 0 {
 			t.saveExecutionLog(ctx, logId, 0, "order_failed", "failed", "机器人不存在", map[string]interface{}{
 				"step": "robot_check",
+			})
+		}
+		return
+	}
+
+	// 【规则】当机器人状态为运行中时，自动下单功能才运行
+	// 说明：引擎存在并不等价于“允许自动下单”（例如暂停/错误/停用场景仍可能残留信号/回调）。
+	if robot.Status != 2 {
+		if logId > 0 {
+			t.saveExecutionLog(ctx, logId, 0, "order_failed", "failed", "机器人非运行中状态，禁止自动下单", map[string]interface{}{
+				"step":        "robot_status",
+				"robotStatus": robot.Status,
 			})
 		}
 		return
@@ -4380,31 +5857,6 @@ func (t *RobotTrader) TryAutoTradeAndUpdate(ctx context.Context, signal *RobotSi
 		return
 	}
 
-	// 【重要】使用原子操作标记预警记录为已处理（防止并发重复下单）
-	// 使用数据库的原子更新操作：UPDATE ... SET is_processed=1 WHERE id=? AND is_processed=0
-	// 如果更新影响的行数为0，说明已经被其他goroutine处理了，直接返回
-	if logId > 0 {
-		result, err := g.DB().Model("hg_trading_signal_log").Ctx(ctx).
-			Where("id", logId).
-			Where("(is_processed = 0 OR is_processed IS NULL)"). // 只更新未处理的记录
-			Update(g.Map{
-				"is_processed": 1, // 标记为已处理
-			})
-
-		if err != nil {
-			g.Log().Errorf(ctx, "[RobotTrader] robotId=%d 更新预警记录logId=%d的已读标识失败: %v", robot.Id, logId, err)
-			// 即使更新失败，也继续执行（避免因数据库问题导致无法下单）
-		} else {
-			rowsAffected, _ := result.RowsAffected()
-			if rowsAffected == 0 {
-				// 影响行数为0，说明已经被其他goroutine处理了
-				g.Log().Infof(ctx, "[RobotTrader] robotId=%d 预警记录logId=%d已被其他goroutine处理（is_processed=1），跳过重复下单", robot.Id, logId)
-				return
-			}
-			g.Log().Infof(ctx, "[RobotTrader] robotId=%d 预警记录logId=%d已标记为已处理（is_processed=1），开始执行下单", robot.Id, logId)
-		}
-	}
-
 	// 检查自动交易开关
 	t.engine.mu.RLock()
 	autoTradeEnabled := robot.AutoTradeEnabled
@@ -4420,13 +5872,36 @@ func (t *RobotTrader) TryAutoTradeAndUpdate(ctx context.Context, signal *RobotSi
 		return
 	}
 
+	// 【并发幂等】只有在“允许自动下单”的前置条件都满足后，才将预警记录标记为已处理
+	// - 防止：自动下单开关关闭/机器人非运行中时，把信号提前标记为已处理，导致后续无法追溯/重试
+	// - 防止：并发重复下单（同一条 signal_log 只允许一个 goroutine 进入下单链路）
+	if logId > 0 {
+		result, err := g.DB().Model("hg_trading_signal_log").Ctx(ctx).
+			Where("id", logId).
+			Where("(is_processed = 0 OR is_processed IS NULL)").
+			Update(g.Map{
+				"is_processed": 1,
+			})
+		if err != nil {
+			g.Log().Errorf(ctx, "[RobotTrader] robotId=%d 更新预警记录logId=%d的已读标识失败: %v", robot.Id, logId, err)
+			// 即使更新失败，也继续执行（避免因数据库问题导致无法下单）
+		} else {
+			rowsAffected, _ := result.RowsAffected()
+			if rowsAffected == 0 {
+				g.Log().Infof(ctx, "[RobotTrader] robotId=%d 预警记录logId=%d已被其他goroutine处理（is_processed=1），跳过重复下单", robot.Id, logId)
+				return
+			}
+			g.Log().Infof(ctx, "[RobotTrader] robotId=%d 预警记录logId=%d已标记为已处理（is_processed=1），开始执行下单", robot.Id, logId)
+		}
+	}
+
 	// 【优化】检查一个方向只能有一单
 	positionSide := "LONG"
 	if signal.Direction == "SHORT" {
 		positionSide = "SHORT"
 	}
 
-	// 检查交易所实时持仓
+	// 检查交易所实时持仓（以交易所为准，交易所是唯一真实来源）
 	if t.engine.Exchange == nil {
 		if logId > 0 {
 			t.saveExecutionLog(ctx, logId, 0, "order_failed", "failed", "交易所实例不存在，无法检查持仓", map[string]interface{}{
@@ -4455,6 +5930,216 @@ func (t *RobotTrader) TryAutoTradeAndUpdate(ctx context.Context, signal *RobotSi
 	t.engine.CurrentPositions = positions
 	t.engine.LastPositionUpdate = time.Now()
 	t.engine.mu.Unlock()
+
+	// ===== 【优化】以交易所实时持仓为准，修复数据库不一致 =====
+	// 说明：
+	// - 交易所是唯一真实来源，如果交易所无持仓，但数据库有 OPEN 订单，说明数据不一致，需要修复
+	// - 对于 PENDING 订单：如果交易所无持仓且超时（90秒），取消订单释放占用
+	// - 这样可以避免数据库残留导致误判，同时保持对"下单成功但持仓尚未可见"窗口期的保护
+	dbDirection := "long"
+	if positionSide == "SHORT" {
+		dbDirection = "short"
+	}
+
+	// 构建交易所持仓方向映射
+	exchangeHasPosition := make(map[string]bool)
+	for _, pos := range positions {
+		if pos != nil && math.Abs(pos.PositionAmt) > positionAmtEpsilon {
+			exchangeHasPosition[pos.PositionSide] = true
+		}
+	}
+
+	// 检查数据库中的 OPEN 订单，如果交易所无持仓，更新为已平仓
+	var openOrders []*entity.TradingOrder
+	query := dao.TradingOrder.Ctx(ctx).
+		Where("robot_id", robot.Id).
+		Where("status", OrderStatusOpen).
+		Where("(close_time IS NULL OR EXTRACT(YEAR FROM close_time)=2006)")
+	if robot.DualSidePosition == 1 {
+		query = query.Where("direction", dbDirection)
+	}
+	_ = query.Scan(&openOrders)
+
+	for _, order := range openOrders {
+		if order == nil {
+			continue
+		}
+		orderSide := "LONG"
+		if strings.ToLower(strings.TrimSpace(order.Direction)) == "short" {
+			orderSide = "SHORT"
+		}
+		// 如果交易所无持仓，但数据库显示 OPEN，说明已平仓但状态未更新
+		if !exchangeHasPosition[orderSide] {
+			g.Log().Warningf(ctx, "[RobotTrader] 检测到数据不一致：交易所无持仓但数据库订单仍为 OPEN，正在修复: robotId=%d orderId=%d direction=%s",
+				robot.Id, order.Id, order.Direction)
+			// 调用同步服务修复订单状态（会自动获取平仓信息）
+			GetOrderStatusSyncService().TriggerRobotSync(robot.Id)
+		}
+	}
+
+	// 检查 PENDING 订单：如果交易所无持仓且超时，取消订单释放占用
+	var pendingOrders []*entity.TradingOrder
+	pendingQuery := dao.TradingOrder.Ctx(ctx).
+		Where("robot_id", robot.Id).
+		Where("status", OrderStatusPending)
+	if robot.DualSidePosition == 1 {
+		pendingQuery = pendingQuery.Where("direction", dbDirection)
+	}
+	_ = pendingQuery.Scan(&pendingOrders)
+
+	pendingTimeout := 90 * time.Second
+	now := time.Now()
+	for _, order := range pendingOrders {
+		if order == nil {
+			continue
+		}
+		orderSide := "LONG"
+		if strings.ToLower(strings.TrimSpace(order.Direction)) == "short" {
+			orderSide = "SHORT"
+		}
+		// 如果交易所无持仓且 PENDING 超时，取消订单
+		if !exchangeHasPosition[orderSide] {
+			t0 := time.Time{}
+			if order.OpenTime != nil && !order.OpenTime.IsZero() {
+				t0 = order.OpenTime.Time
+			} else if order.CreatedAt != nil && !order.CreatedAt.IsZero() {
+				t0 = order.CreatedAt.Time
+			}
+			if !t0.IsZero() && now.Sub(t0) >= pendingTimeout {
+				_, _ = dao.TradingOrder.Ctx(ctx).
+					Where("id", order.Id).
+					Where("status", OrderStatusPending).
+					Update(g.Map{
+						"status":     OrderStatusCancelled,
+						"updated_at": gtime.Now(),
+					})
+				g.Log().Warningf(ctx, "[RobotTrader] PENDING订单超时且交易所无持仓，已自动取消以释放占用: robotId=%d orderId=%d direction=%s age=%s",
+					robot.Id, order.Id, order.Direction, now.Sub(t0).String())
+			}
+		}
+	}
+
+	// ===== DB 维度的"同方向只能一单"检查（修复后再次检查）=====
+	// 说明：
+	// - 在修复数据不一致后，再次检查数据库订单状态
+	// - 这样可以避免"下单成功但持仓尚未在 positions 中可见"的窗口期问题
+	if robot.DualSidePosition == 0 {
+		// 单向：任意方向已有 PENDING/OPEN 都拒绝（排除已平仓订单）
+		cnt, _ := dao.TradingOrder.Ctx(ctx).
+			Where("robot_id", robot.Id).
+			Where("status IN (?)", []int{OrderStatusPending, OrderStatusOpen}).
+			Where("(close_time IS NULL OR EXTRACT(YEAR FROM close_time)=2006)").
+			Count()
+		if cnt > 0 {
+			reason := "单向持仓模式：本地订单存在未完成(PENDING/OPEN)记录，持仓只能有一单，拒绝新开仓（等待订单/持仓状态更新后再试）"
+			if logId > 0 {
+				t.saveExecutionLog(ctx, logId, 0, "order_failed", "failed", reason, map[string]interface{}{
+					"step":             "db_order_check_after_fix",
+					"dualSidePosition": robot.DualSidePosition,
+					"dbCount":          cnt,
+					"dbStatuses":       []int{OrderStatusPending, OrderStatusOpen},
+				})
+			}
+			g.Log().Infof(ctx, "[RobotTrader] robotId=%d %s", robot.Id, reason)
+			return
+		}
+	} else {
+		// 双向：同方向已有 PENDING/OPEN 都拒绝（禁止加仓，排除已平仓订单）
+		cnt, _ := dao.TradingOrder.Ctx(ctx).
+			Where("robot_id", robot.Id).
+			Where("direction", dbDirection).
+			Where("status IN (?)", []int{OrderStatusPending, OrderStatusOpen}).
+			Where("(close_time IS NULL OR EXTRACT(YEAR FROM close_time)=2006)").
+			Count()
+		if cnt > 0 {
+			directionText := "多头"
+			if positionSide == "SHORT" {
+				directionText = "空头"
+			}
+			reason := fmt.Sprintf("双向持仓模式：%s方向本地订单已存在未完成(PENDING/OPEN)记录，同方向只能一单（禁止加仓），拒绝新开仓（等待订单/持仓状态更新后再试）", directionText)
+			if logId > 0 {
+				t.saveExecutionLog(ctx, logId, 0, "order_failed", "failed", reason, map[string]interface{}{
+					"step":             "db_order_check_after_fix",
+					"dualSidePosition": robot.DualSidePosition,
+					"direction":        dbDirection,
+					"dbCount":          cnt,
+					"dbStatuses":       []int{OrderStatusPending, OrderStatusOpen},
+				})
+			}
+			g.Log().Infof(ctx, "[RobotTrader] robotId=%d %s", robot.Id, reason)
+			return
+		}
+	}
+
+	// ===== 锁定盈利开关：止盈开关已启动时禁止自动开新仓（直到止盈平仓解除） =====
+	// 说明：
+	// - 主要用于“止盈回撤（追踪止盈）已启动”的持仓阶段，禁止再开新仓，避免在盈利保护期间反复开仓稀释盈利
+	// - 触发条件：profit_lock_enabled=1 且 任意持仓方向已启动止盈（tracker.TakeProfitEnabled=true 或 DB profit_retreat_started=1）
+	profitLockEnabled := robot.ProfitLockEnabled
+	if profitLockEnabled == 0 {
+		// 默认开启（兼容老数据/未迁移字段）
+		profitLockEnabled = 1
+	}
+	if profitLockEnabled == 1 {
+		hasStartedTakeProfit := false
+		startedSides := make([]string, 0, 2)
+		exchangeSides := make(map[string]bool, 2)
+		// 先用内存 tracker 判断（零成本）
+		for _, pos := range positions {
+			if pos == nil || math.Abs(pos.PositionAmt) <= positionAmtEpsilon {
+				continue
+			}
+			// 记录交易所当前真实持仓方向（用于 DB 兜底时做交集判断，避免 DB 残留误拦截）
+			exchangeSides[pos.PositionSide] = true
+			tr := t.engine.GetPositionTracker(pos.PositionSide)
+			if tr != nil && tr.TakeProfitEnabled {
+				hasStartedTakeProfit = true
+				startedSides = append(startedSides, pos.PositionSide)
+			}
+		}
+		// tracker 缺失兜底：查 DB 当前持仓中订单是否已启动止盈
+		// （服务刚重启/刚恢复状态时很常见，避免“锁定盈利”失效）
+		//
+		// 关键修复：
+		// - DB 兜底必须与“交易所当前真实持仓方向”取交集，否则 DB 残留 OPEN 订单会导致机器人永久拒单
+		// - 若交易所当前无持仓，则不应触发“锁定盈利”拦截（锁定盈利是针对持仓阶段的保护）
+		if !hasStartedTakeProfit && len(exchangeSides) > 0 {
+			var rows []struct {
+				Direction string `json:"direction"`
+			}
+			_ = dao.TradingOrder.Ctx(ctx).
+				Where("robot_id", robot.Id).
+				Where("status", OrderStatusOpen).
+				Where("profit_retreat_started", 1).
+				Fields("direction").
+				Scan(&rows)
+
+			for _, r := range rows {
+				d := strings.ToLower(strings.TrimSpace(r.Direction))
+				side := "LONG"
+				if d == "short" {
+					side = "SHORT"
+				}
+				if exchangeSides[side] {
+					hasStartedTakeProfit = true
+					startedSides = append(startedSides, side)
+					break
+				}
+			}
+		}
+		if hasStartedTakeProfit {
+			reason := "锁定盈利开关已开启，且存在已启动止盈的持仓，禁止自动开新仓（等待止盈平仓后解除）"
+			if logId > 0 {
+				t.saveExecutionLog(ctx, logId, 0, "order_failed", "failed", reason, map[string]interface{}{
+					"step":              "profit_lock",
+					"profitLockEnabled": profitLockEnabled,
+					"startedSides":      startedSides,
+				})
+			}
+			g.Log().Infof(ctx, "[RobotTrader] robotId=%d %s", robot.Id, reason)
+			return
+		}
+	}
 
 	// 开仓限制规则（按你的最新定义）：
 	// - DualSidePosition=1（双向开单开启）：允许同时持有多+空，但【同方向只能一单】（不允许加仓）
@@ -4520,21 +6205,37 @@ func (t *RobotTrader) TryAutoTradeAndUpdate(ctx context.Context, signal *RobotSi
 		return
 	}
 
-	// 获取锁并执行下单
+	// 【优化】获取锁并执行下单
+	// 增加重试次数和超时时间，避免因短暂锁竞争导致下单失败
 	locked := false
-	for i := 0; i < 5; i++ {
+	maxRetries := 10 // 增加重试次数：从5次增加到10次
+	lockStartTime := time.Now()
+	for i := 0; i < maxRetries; i++ {
 		if t.engine.orderLock.TryLock() {
 			locked = true
+			lockWaitDuration := time.Since(lockStartTime)
+			if lockWaitDuration > 100*time.Millisecond {
+				g.Log().Debugf(ctx, "[RobotTrader] robotId=%d 获取下单锁成功，等待时间: %v (重试%d次)", robot.Id, lockWaitDuration, i)
+			}
 			break
 		}
-		time.Sleep(10 * time.Millisecond)
+		// 递增等待时间：40ms, 80ms, 120ms, 160ms, 200ms, 240ms, 280ms, 320ms, 360ms, 400ms
+		waitTime := time.Duration(40*(i+1)) * time.Millisecond
+		time.Sleep(waitTime)
 	}
 
 	if !locked {
+		lockWaitDuration := time.Since(lockStartTime)
+		g.Log().Warningf(ctx, "[RobotTrader] robotId=%d 获取下单锁超时: 等待时间=%v, 重试次数=%d。可能原因：1) 其他下单操作正在执行，2) 锁未正确释放，3) 系统负载过高",
+			robot.Id, lockWaitDuration, maxRetries)
 		if logId > 0 {
-			t.saveExecutionLog(ctx, logId, 0, "order_failed", "failed", "系统繁忙，获取锁超时", map[string]interface{}{
-				"step": "lock_acquire",
-			})
+			t.saveExecutionLog(ctx, logId, 0, "order_failed", "failed",
+				fmt.Sprintf("系统繁忙，获取锁超时（等待%v，重试%d次）。可能原因：其他下单操作正在执行或系统负载过高，请稍后重试", lockWaitDuration, maxRetries),
+				map[string]interface{}{
+					"step":             "lock_acquire",
+					"wait_duration_ms": lockWaitDuration.Milliseconds(),
+					"retry_count":      maxRetries,
+				})
 		}
 		return
 	}
@@ -4857,27 +6558,97 @@ func translateOppositePositionSide(positionSide string) string {
 
 // formatExchangeAPIError 格式化交易所API错误，提供友好的错误说明
 func formatExchangeAPIError(errorMsg string) string {
+	// 【优化】尝试解析OKX API错误响应中的sCode和sMsg
+	// OKX错误格式：raw={"code":"1","data":[{"sCode":"51008","sMsg":"Order failed. Your available USDT balance is insufficient..."}]}
+	if strings.Contains(errorMsg, "raw=") {
+		// 提取raw字段中的JSON
+		rawStart := strings.Index(errorMsg, "raw=")
+		if rawStart >= 0 {
+			rawJSON := errorMsg[rawStart+4:]
+			// 尝试解析JSON（使用gjson更安全，支持不完整的JSON）
+			jsonObj := gjson.New(rawJSON)
+			if jsonObj != nil {
+				// 尝试从data数组中提取sCode和sMsg
+				dataArray := jsonObj.Get("data").Array()
+				if len(dataArray) > 0 {
+					// gjson.New 可以直接接受 interface{} 类型
+					firstItemObj := gjson.New(dataArray[0])
+					sCode := firstItemObj.Get("sCode").String()
+					sMsg := firstItemObj.Get("sMsg").String()
+					if sCode != "" || sMsg != "" {
+						// 使用sCode和sMsg进行错误匹配
+						if sCode != "" && sMsg != "" {
+							errorMsg = fmt.Sprintf("sCode=%s sMsg=%s", sCode, sMsg)
+						} else if sMsg != "" {
+							errorMsg = sMsg
+						} else if sCode != "" {
+							errorMsg = fmt.Sprintf("sCode=%s", sCode)
+						}
+					}
+				}
+			}
+		}
+	}
+
 	// 常见错误码映射
 	errorMappings := map[string]string{
-		"-1021":                   "时间戳错误。解决方案：检查服务器时间同步（可能需要重启服务或配置NTP）",
-		"-2010":                   "订单被交易所拒绝。解决方案：1) 检查账户余额是否充足，2) 检查杠杆设置是否正确，3) 检查订单数量是否符合最小值要求",
-		"-2015":                   "无效订单参数。解决方案：检查订单配置（数量、价格、杠杆）是否符合交易所要求",
-		"-2019":                   "保证金不足。解决方案：1) 充值到交易所账户，2) 降低杠杆倍数，3) 降低保证金比例",
-		"insufficient balance":    "余额不足。解决方案：充值到交易所账户",
-		"insufficient margin":     "保证金不足。解决方案：1) 充值，2) 降低杠杆或保证金比例",
-		"position not found":      "持仓不存在，可能已被平仓",
-		"leverage not set":        "杠杆未设置。解决方案：检查杠杆配置",
-		"symbol not found":        "交易对不存在或未开放",
-		"market closed":           "市场已关闭，无法交易",
-		"order would immediately": "订单会立即触发强平，被拒绝",
-		"reduce only":             "只能平仓，不能开仓（可能是风控限制）",
+		// OKX错误码
+		"51008": "余额不足（可用USDT余额不足，可用保证金（USD）过低无法借贷）。解决方案：1) 充值USDT到交易所账户，2) 降低保证金比例，3) 降低杠杆倍数",
+		"51000": "余额不足。解决方案：充值到交易所账户",
+		"51001": "保证金不足。解决方案：1) 充值，2) 降低杠杆或保证金比例",
+		"51002": "持仓不存在，可能已被平仓",
+		"51003": "杠杆未设置。解决方案：检查杠杆配置",
+		"51004": "交易对不存在或未开放",
+		"51005": "市场已关闭，无法交易",
+		"51006": "订单会立即触发强平，被拒绝",
+		"51007": "只能平仓，不能开仓（可能是风控限制）",
+		// Binance错误码
+		"-1021": "时间戳错误。解决方案：检查服务器时间同步（可能需要重启服务或配置NTP）",
+		"-2010": "订单被交易所拒绝。解决方案：1) 检查账户余额是否充足，2) 检查杠杆设置是否正确，3) 检查订单数量是否符合最小值要求",
+		"-2015": "无效订单参数。解决方案：检查订单配置（数量、价格、杠杆）是否符合交易所要求",
+		"-2019": "保证金不足。解决方案：1) 充值到交易所账户，2) 降低杠杆倍数，3) 降低保证金比例",
+		// Binance Futures: min notional constraints (common for small balance / small qty).
+		// Example: API error (code=-4164): Order's notional must be no smaller than 100 (unless you choose reduce only).
+		"-4164": "名义价值不足（订单名义价值未达到交易所最小门槛，例如 BTCUSDT 常见要求≥100 USDT）。解决方案：1) 增加账户余额，2) 提高保证金比例或杠杆（在可控风险下），3) 改为交易所允许更小名义价值的标的/合约",
+		// 通用关键字匹配
+		"insufficient balance":             "余额不足。解决方案：充值到交易所账户",
+		"insufficient margin":              "保证金不足。解决方案：1) 充值，2) 降低杠杆或保证金比例",
+		"available.*balance.*insufficient": "可用余额不足。解决方案：1) 充值USDT到交易所账户，2) 检查是否有其他订单占用保证金，3) 降低保证金比例",
+		"margin.*too.*low":                 "保证金过低。解决方案：1) 充值，2) 降低杠杆倍数，3) 降低保证金比例",
+		"position not found":               "持仓不存在，可能已被平仓",
+		"leverage not set":                 "杠杆未设置。解决方案：检查杠杆配置",
+		"symbol not found":                 "交易对不存在或未开放",
+		"market closed":                    "市场已关闭，无法交易",
+		"order would immediately":          "订单会立即触发强平，被拒绝",
+		"reduce only":                      "只能平仓，不能开仓（可能是风控限制）",
 	}
 
 	// 查找匹配的错误码或关键字
 	lowerMsg := strings.ToLower(errorMsg)
 	for keyword, description := range errorMappings {
-		if strings.Contains(lowerMsg, strings.ToLower(keyword)) {
+		// 支持正则表达式匹配（简单版本）
+		if strings.Contains(keyword, ".*") {
+			// 简单的正则匹配（仅支持.*通配符）
+			pattern := strings.ReplaceAll(keyword, ".*", "")
+			if strings.Contains(lowerMsg, strings.ToLower(pattern)) {
+				return fmt.Sprintf("交易所API错误 [%s]：%s", keyword, description)
+			}
+		} else if strings.Contains(lowerMsg, strings.ToLower(keyword)) {
 			return fmt.Sprintf("交易所API错误 [%s]：%s", keyword, description)
+		}
+	}
+
+	// 未匹配到具体错误，返回原始错误信息（但尝试提取关键信息）
+	if strings.Contains(errorMsg, "sMsg=") {
+		// 提取sMsg内容
+		sMsgStart := strings.Index(errorMsg, "sMsg=")
+		if sMsgStart >= 0 {
+			sMsg := errorMsg[sMsgStart+5:]
+			// 截取到下一个空格或结束
+			if spaceIdx := strings.Index(sMsg, " "); spaceIdx > 0 {
+				sMsg = sMsg[:spaceIdx]
+			}
+			return fmt.Sprintf("交易所API错误：%s", sMsg)
 		}
 	}
 
@@ -5171,8 +6942,10 @@ func (t *RobotTrader) checkOpenPositionInDB(ctx context.Context, direction strin
 	count, err := dao.TradingOrder.Ctx(ctx).
 		Where("robot_id", t.engine.Robot.Id).
 		Where("symbol", t.engine.Robot.Symbol).
-		Where("direction", direction).
-		Where("status", OrderStatusOpen). // 持仓中
+		// 兼容历史数据：direction 可能为 LONG/SHORT/Long 等，统一按 lower(direction) 匹配
+		Where("LOWER(direction) = ?", direction).
+		// 同方向一单：pending/open 都算“占用”
+		Where("status IN (?)", []int{OrderStatusPending, OrderStatusOpen}).
 		Count()
 	if err != nil {
 		return false, err
@@ -5187,8 +6960,10 @@ func (t *RobotTrader) syncPositionFromDB(ctx context.Context, direction string) 
 	err := dao.TradingOrder.Ctx(ctx).
 		Where("robot_id", t.engine.Robot.Id).
 		Where("symbol", t.engine.Robot.Symbol).
-		Where("direction", direction).
-		Where("status", OrderStatusOpen).
+		// 兼容历史数据：direction 可能为 LONG/SHORT/Long 等，统一按 lower(direction) 匹配
+		Where("LOWER(direction) = ?", direction).
+		// 同方向一单：pending/open 都算“占用”
+		Where("status IN (?)", []int{OrderStatusPending, OrderStatusOpen}).
 		OrderDesc("created_at").
 		Limit(1).
 		Scan(&orders)
@@ -5325,7 +7100,9 @@ func (t *RobotTrader) preCreateOrder(ctx context.Context, signal *RobotSignal, s
 
 		// 市场状态和风险偏好
 		"market_state": marketState,
-		"risk_level":   riskPreference,
+		// 兼容字段：risk_level（历史字段）+ risk_preference（新字段，供冻结策略/平仓使用）
+		"risk_level":      riskPreference,
+		"risk_preference": riskPreference,
 
 		// 策略参数
 		"leverage":       leverage,
@@ -5628,13 +7405,36 @@ func (t *RobotTrader) getStrategyParamsForTrade(ctx context.Context) (marketStat
 	robot := t.engine.Robot
 
 	// 【步骤1】获取全局实时市场状态
-	globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(t.engine.Platform, robot.Symbol)
-	if globalAnalysis == nil {
-		return "", "", nil, gerror.New("全局市场分析器未返回市场状态数据，请检查市场分析服务是否正常运行")
+	ap := t.engine.analysisPlatform(ctx)
+	globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(ap, robot.Symbol)
+	if globalAnalysis != nil {
+		marketState = normalizeMarketState(string(globalAnalysis.MarketState))
 	}
-	marketState = normalizeMarketState(string(globalAnalysis.MarketState))
+
+	// 刚启动/刚订阅时全局分析器可能还没产出；为了不中断自动下单链路，这里做 ticker 兜底推断
 	if marketState == "" {
-		return "", "", nil, gerror.New("全局市场分析器未返回市场状态数据")
+		ticker := market.GetMarketServiceManager().GetTicker(t.engine.Platform, robot.Symbol)
+		if ticker != nil && ticker.LastPrice > 0 && ticker.High24h > 0 && ticker.Low24h > 0 {
+			// 复用 monitor.go 的轻量规则：用 24h 高低差 + 24h 涨跌幅 推断
+			priceRange := ticker.High24h - ticker.Low24h
+			volatilityPercent := (priceRange / ticker.LastPrice) * 100
+			switch {
+			case volatilityPercent >= 5:
+				marketState = "high_vol"
+			case volatilityPercent <= 1:
+				marketState = "low_vol"
+			case math.Abs(ticker.Change24h) >= 3:
+				marketState = "trend"
+			default:
+				marketState = "volatile"
+			}
+			marketState = normalizeMarketState(marketState)
+			g.Log().Warningf(ctx, "[RobotTrader] robotId=%d 全局市场分析器暂无数据，已使用ticker兜底推断市场状态=%s", robot.Id, marketState)
+		}
+	}
+
+	if marketState == "" {
+		return "", "", nil, gerror.New("全局市场分析器未返回市场状态数据（且ticker兜底失败）")
 	}
 
 	// 【步骤2】根据创建机器人时提交的映射关系选择风险偏好
@@ -5733,9 +7533,18 @@ func (t *RobotTrader) executeOpen(ctx context.Context, signal *RobotSignal, sign
 		return gerror.New(errMsg)
 	}
 
+	// 启动期/WS抖动时，LastTicker 可能尚未被回调填充；这里做一次 MarketServiceManager 兜底读取，避免“获取行情失败”
 	ticker := t.engine.LastTicker
 	if ticker == nil {
-		errMsg := "获取行情失败"
+		ticker = market.GetMarketServiceManager().GetTicker(t.engine.Platform, robot.Symbol)
+		if ticker != nil {
+			t.engine.mu.Lock()
+			t.engine.LastTicker = ticker
+			t.engine.mu.Unlock()
+		}
+	}
+	if ticker == nil {
+		errMsg := fmt.Sprintf("获取行情失败(platform=%s symbol=%s)", t.engine.Platform, robot.Symbol)
 		if signalLogId > 0 {
 			t.saveExecutionLog(ctx, signalLogId, 0, "order_failed", "failed", errMsg, map[string]interface{}{
 				"step": "ticker_check",
@@ -5767,6 +7576,8 @@ func (t *RobotTrader) executeOpen(ctx context.Context, signal *RobotSignal, sign
 	if marginPercent <= 0 {
 		marginPercent = 10
 	}
+	// 计划保证金比例（= 交易所逐仓“数量百分比”滑块）
+	marginPercentPlan := marginPercent
 
 	g.Log().Infof(ctx, "[RobotTrader] robotId=%d 【步骤2】策略参数获取成功: 市场=%s, 风险偏好=%s, 杠杆=%dx, 保证金=%.1f%%, 止损=%.1f%%, 启动止盈=%.1f%%, 止盈回撤=%.1f%%, 时间窗口=%d秒, 波动阈值=%.1f USDT, 可用余额=%.2f USDT（来源=%s）",
 		robot.Id, marketState, riskPreference, leverage, marginPercent,
@@ -5787,11 +7598,38 @@ func (t *RobotTrader) executeOpen(ctx context.Context, signal *RobotSignal, sign
 		balance.AvailableBalance, marginPercent, margin, margin, leverage, orderValue)
 
 	quantity := margin * float64(leverage) / ticker.LastPrice
+	if quantity <= 0 {
+		return gerror.Newf("下单数量无效：qty=%.8f（price=%.4f, leverage=%d, margin=%.4f）", quantity, ticker.LastPrice, leverage, margin)
+	}
+	// 计划值（用于对齐“滑块=计划保证金比例”的产品口径）
+	quantityPlan := quantity
+	marginPlan := margin
 
-	// 【优化】最小下单数量为0.0001，如果计算出的数量小于最小值，使用最小值0.0001
-	minQuantity := 0.0001
-	if quantity < minQuantity {
-		quantity = minQuantity
+	// ========= OKX 最小下单对齐（保持“最简公式”，但把 qty/margin/marginPercent 对齐到交易所最小张数）=========
+	// OKX 下单的最小单位是“合约张数”，会把基础币数量换算为张数并按 minSz/lotSz 向上取整。
+	// 如果我们不提前对齐，交易所会自动把 qty 调大，导致：
+	// - 平台显示的保证金（qty*price/leverage）与系统日志里的 margin 不一致
+	// - 甚至可能因 margin 不足而下单失败，但日志看不出原因
+	if strings.EqualFold(t.engine.Platform, "okx") {
+		if okxEx, ok := t.engine.Exchange.(*exchange.OKX); ok && okxEx != nil {
+			adjQty, contracts, ctVal, minSz, lotSz, aerr := okxEx.AdjustBaseQtyToMinContracts(ctx, robot.Symbol, quantity)
+			if aerr == nil && adjQty > quantity {
+				needMargin := adjQty * ticker.LastPrice / float64(leverage)
+				if needMargin > balance.AvailableBalance {
+					return gerror.Newf("OKX 最小下单限制：当前 qty=%.8f 折算张数过小；最小张数=%.4f(步进=%.4f)，ctVal=%.8f，需要至少 qty=%.8f(%.4f张)。按当前价%.2f、杠杆%dx，最低保证金约 %.2f USDT，但当前可用仅 %.2f USDT。解决方案：提高账户余额/提高保证金比例/降低价格波动币种",
+						quantity, minSz, lotSz, ctVal, adjQty, contracts, ticker.LastPrice, leverage, needMargin, balance.AvailableBalance)
+				}
+
+				g.Log().Infof(ctx, "[RobotTrader] robotId=%d OKX 数量按最小张数向上对齐: qty %.8f -> %.8f (contracts=%.4f, ctVal=%.8f, minSz=%.4f, lotSz=%.4f)",
+					robot.Id, quantity, adjQty, contracts, ctVal, minSz, lotSz)
+				quantity = adjQty
+				// 对齐后，保证金/保证金比例也应随之更新，保证日志与平台一致
+				margin = needMargin
+				if balance.AvailableBalance > 0 {
+					marginPercent = (needMargin / balance.AvailableBalance) * 100
+				}
+			}
+		}
 	}
 
 	// 确定方向
@@ -5834,7 +7672,10 @@ func (t *RobotTrader) executeOpen(ctx context.Context, signal *RobotSignal, sign
 	if lastSetLeverage != leverage {
 		g.Log().Infof(ctx, "[RobotTrader] robotId=%d 【步骤3.2】设置杠杆: symbol=%s, leverage=%dx (上次=%dx)",
 			robot.Id, robot.Symbol, leverage, lastSetLeverage)
-		if err := t.engine.Exchange.SetLeverage(ctx, robot.Symbol, leverage); err != nil {
+		// 为 SetLeverage 增加硬超时，避免网络问题导致整个下单流程卡死
+		levCtx, levCancel := context.WithTimeout(ctx, 5*time.Second)
+		defer levCancel()
+		if err := t.engine.Exchange.SetLeverage(levCtx, robot.Symbol, leverage); err != nil {
 			g.Log().Warningf(ctx, "[RobotTrader] robotId=%d 设置杠杆失败: %v（继续下单，使用平台当前杠杆）", robot.Id, err)
 		} else {
 			// 设置成功，更新缓存
@@ -5857,9 +7698,12 @@ func (t *RobotTrader) executeOpen(ctx context.Context, signal *RobotSignal, sign
 		"position_side":          positionSide,
 		"type":                   "MARKET",
 		"quantity":               quantity,
+		"quantity_plan":          quantityPlan,
 		"leverage":               leverage,
 		"margin":                 margin,
-		"margin_percent":         marginPercent,
+		"margin_plan":            marginPlan,
+		"margin_percent":         marginPercent,     // 实际执行占比（OKX可能上调）
+		"margin_percent_plan":    marginPercentPlan, // 计划占比（=滑块）
 		"entry_price":            entryPrice,
 		"market_state":           marketState,
 		"risk_preference":        riskPreference,
@@ -5867,9 +7711,15 @@ func (t *RobotTrader) executeOpen(ctx context.Context, signal *RobotSignal, sign
 		"auto_start_retreat":     strategyParams.AutoStartRetreatPercent,
 		"profit_retreat_percent": strategyParams.ProfitRetreatPercent,
 	}
-	t.saveExecutionLog(ctx, signalLogId, localOrderId, "order_submit", "pending", fmt.Sprintf("提交API下单: %s方向, 数量%.4f, 价格%.2f, 杠杆%dx, 保证金%.2f USDT", positionSide, quantity, entryPrice, leverage, margin), requestData)
+	t.saveExecutionLog(ctx, signalLogId, localOrderId, "order_submit", "pending",
+		fmt.Sprintf("提交API下单: %s方向, 数量%.4f, 价格%.2f, 杠杆%dx, 保证金%.2f USDT（计划%.1f%%, 实际%.1f%%）",
+			positionSide, quantity, entryPrice, leverage, margin, marginPercentPlan, marginPercent),
+		requestData)
 
-	order, err := t.engine.Exchange.CreateOrder(ctx, &exchange.OrderRequest{
+	// 为 CreateOrder 增加硬超时，避免 API/代理/网络卡住时一直 pending
+	orderCtx, orderCancel := context.WithTimeout(ctx, 12*time.Second)
+	defer orderCancel()
+	order, err := t.engine.Exchange.CreateOrder(orderCtx, &exchange.OrderRequest{
 		Symbol:       robot.Symbol,
 		Side:         side,
 		PositionSide: positionSide,
@@ -5881,6 +7731,24 @@ func (t *RobotTrader) executeOpen(ctx context.Context, signal *RobotSignal, sign
 	if err != nil {
 		responseData["error"] = err.Error()
 		g.Log().Errorf(ctx, "[RobotTrader] robotId=%d 【步骤3.3】交易所API下单失败: orderId=%d, err=%v", robot.Id, localOrderId, err)
+
+		// 【关键修复】必须落一条 order_failed 到执行日志，否则前端只会看到 order_submit(pending) 一直“进行中”
+		if signalLogId > 0 {
+			errText := err.Error()
+			// 超时场景提示更友好
+			if errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(errText), "deadline exceeded") {
+				errText = "交易所API下单超时（可能原因：代理/网络不通、交易所接口阻塞、DNS问题）。建议：检查服务器网络、代理配置、交易所连通性"
+			} else {
+				errText = formatExchangeAPIError(errText)
+			}
+			t.saveExecutionLog(ctx, signalLogId, localOrderId, "order_failed", "failed",
+				fmt.Sprintf("交易所API下单失败: %s", errText),
+				map[string]interface{}{
+					"step":         "exchange_api",
+					"request_data": requestData,
+					"error":        err.Error(),
+				})
+		}
 
 		// 【订单事件】记录交易所下单失败事件
 		RecordExchangeOrdered(ctx, localOrderId, "", requestData, responseData, false)
@@ -5917,6 +7785,26 @@ func (t *RobotTrader) executeOpen(ctx context.Context, signal *RobotSignal, sign
 	if order.AvgPrice > 0 {
 		entryPrice = order.AvgPrice
 	}
+
+	// Binance/Gate 可能在交易所侧做“数量步进对齐”，用实际回执数量回填 qty/margin/占比，保证后续日志/内存缓存一致
+	actualQty := quantity
+	if order.FilledQty > 0 {
+		actualQty = order.FilledQty
+	} else if order.Quantity > 0 {
+		actualQty = order.Quantity
+	}
+	if actualQty > 0 && math.Abs(actualQty-quantity) > 1e-12 {
+		quantity = actualQty
+		margin = (quantity * entryPrice) / float64(leverage)
+		if balance.AvailableBalance > 0 {
+			marginPercent = (margin / balance.AvailableBalance) * 100
+		}
+	}
+
+	// ✅ 下单成功后立即把“实际执行”的 qty/margin/leverage/marginPercent 冻结回订单（规则6）
+	// - 避免 OKX 最小张数对齐/回执数量不一致导致订单表仍是旧值
+	// - 平仓/血条/止损止盈统一读取订单冻结值
+	t.updateOrderOpenFreeze(ctx, localOrderId, entryPrice, quantity, margin, leverage, marginPercent)
 
 	g.Log().Infof(ctx, "[RobotTrader] robotId=%d 【步骤3.4】更新订单状态为OPEN: orderId=%d, exchangeOrderId=%s, entryPrice=%.2f",
 		robot.Id, localOrderId, order.OrderId, entryPrice)
@@ -5974,27 +7862,26 @@ func (t *RobotTrader) executeOpen(ctx context.Context, signal *RobotSignal, sign
 		}
 	}
 
-	// 标记信号日志最终成功（避免前端一直显示“进行中”）
-	if signalLogId > 0 {
-		t.saveExecutionLog(ctx, signalLogId, localOrderId, "order_success", "success",
-			fmt.Sprintf("下单成功: %s %s qty=%.4f exchangeOrderId=%s", robot.Symbol, positionSide, quantity, order.OrderId),
-			map[string]interface{}{
-				"step":            "done",
-				"exchangeOrderId": order.OrderId,
-			})
-	}
-
 	g.Log().Infof(ctx, "[RobotTrader] robotId=%d 【完成】开仓成功: localOrderId=%d, exchangeOrderId=%s, side=%s, qty=%.4f, price=%.2f, leverage=%dx, margin=%.2f%%, market=%s, risk=%s, 止损=%.1f%%, 启动止盈=%.1f%%, 止盈回撤=%.1f%%",
 		robot.Id, localOrderId, order.OrderId, side, quantity, entryPrice, leverage, marginPercent, marketState, riskPreference,
 		strategyParams.StopLossPercent, strategyParams.AutoStartRetreatPercent, strategyParams.ProfitRetreatPercent)
 
 	// 【优化】步骤5：更新内存缓存（成功后）
 	t.engine.mu.Lock()
-	// 初始化持仓跟踪器
+	// 初始化持仓跟踪器（带冻结参数：确保自动平仓使用“开仓时策略”）
 	t.engine.PositionTrackers[positionSide] = &PositionTracker{
 		PositionSide: positionSide,
 		EntryMargin:  margin,
 		EntryTime:    time.Now(),
+		OrderId:      localOrderId,
+
+		ParamsLoaded:            true,
+		StopLossPercent:         strategyParams.StopLossPercent,
+		AutoStartRetreatPercent: strategyParams.AutoStartRetreatPercent,
+		ProfitRetreatPercent:    strategyParams.ProfitRetreatPercent,
+		MarginPercent:           marginPercent,
+		MarketState:             marketState,
+		RiskPreference:          riskPreference,
 	}
 	// 更新 CurrentPositions：添加或更新持仓信息
 	if t.engine.CurrentPositions == nil {
@@ -6032,20 +7919,31 @@ func (t *RobotTrader) executeOpen(ctx context.Context, signal *RobotSignal, sign
 		})
 	}
 
-	// 【内存优化】新订单时重置 PositionTracker（清除旧订单的监控数据）
+	// 【内存优化】新订单时重置 PositionTracker（清除旧订单的监控数据），但保留“冻结参数”
 	t.engine.PositionTrackers[positionSide] = &PositionTracker{
 		PositionSide:      positionSide,
 		EntryMargin:       margin,
 		EntryTime:         time.Now(),
+		OrderId:           localOrderId,
 		HighestProfit:     0,     // 重置最高盈利
 		TakeProfitEnabled: false, // 重置止盈回撤开关
+
+		ParamsLoaded:            true,
+		StopLossPercent:         strategyParams.StopLossPercent,
+		AutoStartRetreatPercent: strategyParams.AutoStartRetreatPercent,
+		ProfitRetreatPercent:    strategyParams.ProfitRetreatPercent,
+		MarginPercent:           marginPercent,
+		MarketState:             marketState,
+		RiskPreference:          riskPreference,
 	}
 	g.Log().Infof(ctx, "[RobotTrader] robotId=%d 新订单已重置监控数据: positionSide=%s", robot.Id, positionSide)
 
 	t.engine.mu.Unlock()
 
-	// 【订单日志2】订单成功 - 记录订单成功信息
+	// 【订单日志】订单成功 - 只保留一条成功日志（详版），同时携带 step=done 以兼容前端“最终态”展示
 	t.saveExecutionLog(ctx, signalLogId, localOrderId, "order_success", "success", fmt.Sprintf("订单成功: 交易所订单ID=%s, %s方向, 数量%.4f, 成交价%.2f, 杠杆%dx", order.OrderId, positionSide, quantity, entryPrice, leverage), map[string]interface{}{
+		"step":                   "done",
+		"exchangeOrderId":        order.OrderId, // 兼容旧前端字段（camelCase）
 		"exchange_order_id":      order.OrderId,
 		"local_order_id":         localOrderId,
 		"side":                   side,
@@ -6066,11 +7964,61 @@ func (t *RobotTrader) executeOpen(ctx context.Context, signal *RobotSignal, sign
 
 	// 【优化】每1秒自动同步订单，无需手动触发
 	go func() {
-		t.engine.syncAccountDataIfNeeded(ctx, "after_trade")
-		g.Log().Debugf(ctx, "[RobotTrader] robotId=%d 开仓成功，等待下次自动同步: side=%s", robot.Id, positionSide)
+		// ===== 彻底消除“新开仓持仓闪烁” =====
+		// 问题根因：
+		// - after_trade 有 2s 节流 + 1s sleep，且开仓前刚 GetPositionsSmart 会把 LastPositionUpdate 刷新为“空缓存”
+		// - 导致 after_trade 直接跳过，持仓要等到下一次 periodic(60s) 或页面轮询才变为非空 → 前端出现“消失/等很久再出现”
+		//
+		// 解决策略：
+		// - 开仓成功后立刻强制刷新一次持仓（带超时/重试），直到看到该方向持仓或达到最大等待时间
+		// - 这样 WS/HTTP 下一次快照就能拿到非空，前端不会清空也不会闪
+		t.engine.forceRefreshPositionsAfterOpen(ctx, positionSide, 8*time.Second)
+		g.Log().Debugf(ctx, "[RobotTrader] robotId=%d 开仓成功，已触发强制刷新持仓: side=%s", robot.Id, positionSide)
 	}()
 
 	return nil
+}
+
+// forceRefreshPositionsAfterOpen 开仓成功后强制刷新持仓（带重试/超时），用于消除“新开仓首分钟持仓闪烁/延迟”
+// - wantSide: "LONG"/"SHORT"
+// - maxWait: 最大等待时间（例如 Bitget 偶发延迟）
+func (e *RobotEngine) forceRefreshPositionsAfterOpen(ctx context.Context, wantSide string, maxWait time.Duration) {
+	if e == nil {
+		return
+	}
+	start := time.Now()
+	// 给交易所一点点落地时间（避免第一次必然空）
+	time.Sleep(350 * time.Millisecond)
+
+	for {
+		if time.Since(start) > maxWait {
+			return
+		}
+		// 强制刷新（已内置 6s 超时，避免卡住）
+		posList, err := e.ForceRefreshPositions(ctx)
+		if err == nil && len(posList) > 0 {
+			found := false
+			for _, p := range posList {
+				if p == nil || math.Abs(p.PositionAmt) <= positionAmtEpsilon {
+					continue
+				}
+				if wantSide == "" || strings.EqualFold(p.PositionSide, wantSide) {
+					found = true
+					break
+				}
+			}
+			if found {
+				// 同步更新引擎缓存（ForceRefreshPositions 已更新，但这里确保 LastPositionUpdate 刷新）
+				e.mu.Lock()
+				e.CurrentPositions = posList
+				e.LastPositionUpdate = time.Now()
+				e.mu.Unlock()
+				return
+			}
+		}
+		// 交易所尚未返回持仓：短暂退避再试
+		time.Sleep(500 * time.Millisecond)
+	}
 }
 
 // recordOrder 记录订单到数据库（保留用于外部持仓补全等场景）

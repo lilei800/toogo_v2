@@ -1,0 +1,254 @@
+# ==========================================
+# HotGo/Toogo Docker 生产环境配置（服务器专用）
+# 使用方式：
+#   1) 复制/重命名为 config.yaml，或在容器里通过 GF_GCFG_PATH 指向此目录
+#   2) 把下面所有 CHANGE_ME_* 替换为你的真实值（强密码/随机密钥）
+#
+# 注意：
+# - 这里不使用 ${VAR:default} 形式的占位符（你本地已验证 gf 未展开会导致 panic）
+# - 数据库/Redis host 使用 docker compose 服务名：postgres / redis
+# ==========================================
+
+# hotgo系统配置
+system:
+  appName: "hotgo"
+  debug: false
+  mode: "product"
+  ipMethod: "whois"
+  isDemo: false
+  isCluster: false
+  log:
+    switch: true
+    queue: true
+    module: [ "admin", "api", "default" ]
+    skipCode: [ ]
+  serveLog:
+    switch: true
+    queue: true
+    levelFormat: [ "WARN", "ERRO", "FATA", "PANI" ]
+  i18n:
+    switch: true
+    defaultLanguage: "zh-CN"
+  addonsResourcePath: "resource"
+
+
+# 统一默认日志配置（生产建议别开 debug，避免日志/磁盘飙升）
+defaultLogger: &defaultLogger
+  level: "warning"
+  flags: 42
+  file: "{Y-m-d}.log"
+  stdoutColorDisabled: true
+  writerColorEnable: false
+  rotateExpire: "30d"
+  rotateBackupLimit: 10
+  rotateBackupCompress: 9
+
+
+# gf服务配置
+server:
+  address: ":8000"
+  openapiPath: ""   # 生产关闭
+  swaggerPath: ""   # 生产关闭
+  serverRoot: "resource/public"
+  DumpRouterMap: false
+  logPath: "logs/server"
+  ErrorStack: false
+  ErrorLogEnabled: true
+  errorLogPattern: "error/{Y-m-d}.log"
+  accessLogEnabled: true
+  accessLogPattern: "access/{Y-m-d}.log"
+  maxHeaderBytes: "100KB"
+  clientMaxBodySize: "200MB"
+  serverAgent: "HG HTTP Server"
+  pprofEnabled: false
+  logger:
+    path: "logs/server"
+    <<: *defaultLogger
+
+
+# tcp服务（容器内可保持默认；通常不对公网暴露）
+tcp:
+  server:
+    address: ":8099"
+  client:
+    cron:
+      group: "cron"
+      name: "cron1"
+      address: "127.0.0.1:8099"
+      appId: "1002"
+      secretKey: "CHANGE_ME_TCP_CRON_SECRET_KEY"
+    auth:
+      group: "auth"
+      name: "auth1"
+      address: "127.0.0.1:8099"
+      appId: "mengshuai"
+      secretKey: "CHANGE_ME_TCP_AUTH_SECRET_KEY"
+
+
+# 日志配置
+logger:
+  path: "logs/logger"
+  <<: *defaultLogger
+  cron:
+    path: "logs/cron"
+    <<: *defaultLogger
+  queue:
+    path: "logs/queue"
+    <<: *defaultLogger
+  tcpServer:
+    path: "logs/tcpServer"
+    <<: *defaultLogger
+  tcpClient:
+    path: "logs/tcpClient"
+    <<: *defaultLogger
+
+
+viewer:
+  paths: "resource/template"
+  defaultFile: "index.html"
+  delimiters: [ "@{", "}" ]
+  homeLayout: "home/index.html"
+
+
+setting:
+  title: "Toogo.Ai"
+  keywords: "量化交易,自动交易机器人,虚拟货币"
+  description: "Toogo.Ai"
+
+
+# 路由前缀（nginx 默认全量反代即可）
+router:
+  admin:
+    prefix: "/admin"
+    exceptLogin:
+      - "/sms/send"
+      - "/wechat/authorizeCall"
+      - "/site/logout"
+    exceptAuth:
+      - "/member/info"
+      - "/role/dynamic"
+      - "/notice/pullMessages"
+      - "/notice/readAll"
+      - "/notice/upRead"
+      - "/dictData/option"
+      - "/dictData/options"
+      - "/provinces/select"
+      - "/provinces/cityLabel"
+      - "/member/option"
+  api:
+    prefix: "/api"
+    exceptLogin: [ ]
+  websocket:
+    prefix: "/socket"
+    exceptLogin: [ ]
+  home:
+    prefix: "/home"
+    exceptLogin: [ ]
+
+
+# 缓存驱动（生产建议 redis）
+cache:
+  adapter: "redis"
+  fileDir: "./storage/cache"
+
+
+# 登录令牌（必须改！）
+token:
+  secretKey: "CHANGE_ME_TOKEN_SECRET_KEY"
+  expires: 604800
+  autoRefresh: true
+  refreshInterval: 86400
+  maxRefreshTimes: 30
+  # 生产更建议关闭多端登录（减少 token 状态复杂度）
+  multiLogin: false
+
+
+# 消息队列（项目默认使用 redis）
+queue:
+  switch: true
+  driver: "redis"
+  groupName: "toogo"
+  disk:
+    path: "./storage/diskqueue"
+    batchSize: 100
+    batchTime: 1
+    segmentSize: 10485760
+    segmentLimit: 3000
+  redis:
+    timeout: 0
+
+
+# Redis 配置（docker compose service name: redis）
+redis:
+  default:
+    address: "redis:6379"
+    db: "2"
+    pass: "CHANGE_ME_REDIS_PASSWORD"
+    idleTimeout: "20"
+
+
+# Database 配置（docker compose service name: postgres）
+database:
+  logger:
+    path: "logs/database"
+    <<: *defaultLogger
+    stdout: false
+  default:
+    # 格式：pgsql:用户名:密码@tcp(host:port)/库名
+    link: "pgsql:hotgo_user:CHANGE_ME_PG_PASSWORD@tcp(postgres:5432)/hotgo"
+    debug: false
+    Prefix: "hg_"
+
+
+jaeger:
+  switch: false
+  endpoint: "127.0.0.1:6831"
+
+
+# 生产环境强烈建议限制代码生成访问
+hggen:
+  allowedIPs: [ "127.0.0.1" ]
+  selectDbs: [ "default" ]
+  disableTables: [ "hg_sys_gen_codes", "hg_admin_role_casbin" ]
+  delimiters: [ "@{", "}" ]
+
+
+# ===========================================
+# Toogo/交易所配置（按你的实际情况调整）
+# ===========================================
+exchange:
+  proxy:
+    enabled: false
+    type: "socks5"
+    host: "127.0.0.1"
+    port: "10808"
+  rateLimit:
+    enabled: true
+    requestsPerSecond: 10
+    burst: 20
+  retry:
+    maxRetries: 3
+    baseDelay: 100
+    maxDelay: 5000
+
+
+toogo:
+  websocketEnabled: true
+  websocketOnly: false
+
+  debug:
+    orderPositionSync: true
+
+  privateWs:
+    enabled: true
+    platform:
+      bitget: false
+    pollingIntervalSecondsByPlatform:
+      bitget: 10
+
+  # 2c4g 建议适当收紧引擎内存占用（你 20 机器人也更稳）
+  engine:
+    maxRobotsPerUser: 10
+    priceWindowMaxSize: 500
+    signalHistoryMaxSize: 50
+

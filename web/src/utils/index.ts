@@ -50,7 +50,7 @@ export function renderNew(type = 'warning', text = 'New', color: object = newTag
         size: 'small',
         color,
       },
-      { default: () => text }
+      { default: () => text },
     );
 }
 
@@ -62,7 +62,7 @@ export function renderBadge(node: VNode) {
       dot: true,
       type: 'info',
     },
-    { default: () => node }
+    { default: () => node },
   );
 }
 
@@ -73,7 +73,7 @@ export const renderTag: SelectRenderTag = ({ option }) => {
     {
       type: option.listClass as 'success' | 'warning' | 'error' | 'info' | 'primary' | 'default',
     },
-    { default: () => option.label }
+    { default: () => option.label },
   );
 };
 
@@ -94,7 +94,7 @@ export const renderOptionTag = (type: DictType, value: any) => {
     },
     {
       default: () => dict.getLabel(type, value),
-    }
+    },
   );
 };
 
@@ -146,7 +146,7 @@ export const renderFile = (file: string) => {
     },
     {
       default: () => getFileExt(file),
-    }
+    },
   );
 };
 
@@ -187,7 +187,7 @@ export const renderPopoverMemberSumma = (member: MemberSumma | null | undefined)
             text: true,
             iconPlacement: 'right',
           },
-          { default: () => member.realName, icon: renderIcon(EllipsisHorizontalCircleOutline) }
+          { default: () => member.realName, icon: renderIcon(EllipsisHorizontalCircleOutline) },
         ),
       default: () =>
         h(
@@ -216,9 +216,9 @@ export const renderPopoverMemberSumma = (member: MemberSumma | null | undefined)
                 h('td', member.username),
               ]),
             ]),
-          ]
+          ],
         ),
-    }
+    },
   );
 };
 
@@ -410,13 +410,13 @@ export function lighten(color: string, amount: number) {
   amount = Math.trunc((255 * amount) / 100);
   return `#${addLight(color.substring(0, 2), amount)}${addLight(
     color.substring(2, 4),
-    amount
+    amount,
   )}${addLight(color.substring(4, 6), amount)}`;
 }
 
 export function openWindow(
   url: string,
-  opt?: { target?: TargetContext | string; noopener?: boolean; noreferrer?: boolean }
+  opt?: { target?: TargetContext | string; noopener?: boolean; noreferrer?: boolean },
 ) {
   const { target = '__blank', noopener = true, noreferrer = true } = opt || {};
   const feature: string[] = [];

@@ -76,6 +76,15 @@ type RobotStartReq struct {
 // RobotStartRes 启动机器人响应
 type RobotStartRes struct{}
 
+// RobotRestartReq 重启机器人请求（仅停用状态可重启）
+type RobotRestartReq struct {
+	g.Meta `path:"/trading/robot/restart" method:"post" tags:"交易管理" summary:"重启机器人" dc:"重启已停用的机器人"`
+	input.TradingRobotStartInp
+}
+
+// RobotRestartRes 重启机器人响应
+type RobotRestartRes struct{}
+
 // RobotPauseReq 暂停机器人请求
 type RobotPauseReq struct {
 	g.Meta `path:"/trading/robot/pause" method:"post" tags:"交易管理" summary:"暂停机器人" dc:"暂停指定的机器人"`

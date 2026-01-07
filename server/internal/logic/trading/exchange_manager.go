@@ -10,7 +10,7 @@ import (
 	"context"
 	"fmt"
 	"hotgo/addons/exchange"
-	"hotgo/addons/exchange_bitget/service"
+	"hotgo/addons/exchange_factory/service"
 	"hotgo/internal/library/contexts"
 	"sync"
 

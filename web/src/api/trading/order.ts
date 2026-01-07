@@ -79,4 +79,3 @@ export function getCloseLogDetail(params: { id: number }) {
     params,
   });
 }
-

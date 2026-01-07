@@ -1,6 +1,6 @@
 <template>
   <div class="password-reset-page">
-    <n-card title="重置密码" style="max-width: 420px; margin: 10vh auto;">
+    <n-card title="重置密码" style="max-width: 420px; margin: 10vh auto">
       <n-alert v-if="!token" type="error" style="margin-top: 12px">
         链接无效或缺少 token，请检查邮件链接是否完整。
       </n-alert>
@@ -9,7 +9,14 @@
         新密码长度 6~18 位。提交成功后将跳转到登录页。
       </n-alert>
 
-      <n-form ref="formRef" :model="form" :rules="rules" label-placement="left" size="large" style="margin-top: 16px">
+      <n-form
+        ref="formRef"
+        :model="form"
+        :rules="rules"
+        label-placement="left"
+        size="large"
+        style="margin-top: 16px"
+      >
         <n-form-item path="password" label="新密码">
           <n-input
             v-model:value="form.password"
@@ -29,7 +36,9 @@
           />
         </n-form-item>
         <n-space vertical :size="12">
-          <n-button type="primary" block :loading="loading" :disabled="!token" @click="handleSubmit">提交</n-button>
+          <n-button type="primary" block :loading="loading" :disabled="!token" @click="handleSubmit"
+            >提交</n-button
+          >
           <n-button block secondary @click="goLogin">返回登录</n-button>
         </n-space>
       </n-form>
@@ -108,4 +117,3 @@
     padding: 16px;
   }
 </style>
-

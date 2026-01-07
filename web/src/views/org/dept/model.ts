@@ -123,9 +123,9 @@ export const columns = [
             text: true,
             iconPlacement: 'right',
           },
-          { default: () => '部门名称', icon: renderIcon(HelpCircleOutline) }
+          { default: () => '部门名称', icon: renderIcon(HelpCircleOutline) },
         ),
-        '支持上下级部门，点击列表中左侧 > 按钮可展开下级部门列表'
+        '支持上下级部门，点击列表中左侧 > 按钮可展开下级部门列表',
       );
     },
     key: 'name',
@@ -140,7 +140,7 @@ export const columns = [
         },
         {
           default: () => row.name,
-        }
+        },
       );
     },
     width: 200,

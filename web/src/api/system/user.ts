@@ -99,7 +99,7 @@ export function PasswordReset(params: { token: string; password: string }) {
     },
     {
       isTransformResponse: false,
-    }
+    },
   );
 }
 
@@ -148,7 +148,7 @@ export function register(params) {
     },
     {
       isTransformResponse: false,
-    }
+    },
   );
 }
 
@@ -165,7 +165,7 @@ export function login(params) {
     },
     {
       isTransformResponse: false,
-    }
+    },
   );
 }
 
@@ -181,7 +181,7 @@ export function mobileLogin(params) {
     },
     {
       isTransformResponse: false,
-    }
+    },
   );
 }
 
@@ -196,7 +196,7 @@ export function logout() {
     },
     {
       isTransformResponse: false,
-    }
+    },
   );
 }
 
@@ -217,7 +217,7 @@ export function changePassword(params, uid) {
     },
     {
       isTransformResponse: false,
-    }
+    },
   );
 }
 

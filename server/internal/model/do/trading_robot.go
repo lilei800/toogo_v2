@@ -45,6 +45,7 @@ type TradingRobot struct {
 	RuntimeSeconds          any         // 已运行时长(秒)
 	AutoTradeEnabled        any         // 全自动下单：0=否,1=是
 	AutoCloseEnabled        any         // 全自动平仓：0=否,1=是
+	ProfitLockEnabled       any         // 锁定盈利开关：0=关闭,1=开启（止盈启动后禁止自动开新仓）
 	Remark                  any         // 备注
 	CreatedAt               *gtime.Time // 创建时间
 	UpdatedAt               *gtime.Time // 更新时间

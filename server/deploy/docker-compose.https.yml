@@ -1,0 +1,18 @@
+services:
+  nginx:
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./deploy_data/nginx_logs:/var/log/nginx
+      - ./deploy_data/certbot/www:/var/www/certbot
+      - ./deploy_data/certbot/conf:/etc/letsencrypt:ro
+
+  certbot:
+    image: certbot/certbot:latest
+    volumes:
+      - ./deploy_data/certbot/www:/var/www/certbot
+      - ./deploy_data/certbot/conf:/etc/letsencrypt
+    entrypoint: ["sh", "-lc"]
+

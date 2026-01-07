@@ -17,7 +17,7 @@ export const columns = [
         },
         {
           default: () => row.module,
-        }
+        },
       );
     },
   },
@@ -62,7 +62,7 @@ export const columns = [
         },
         {
           default: () => row.errorMsg + '(' + row.errorCode + ')',
-        }
+        },
       );
     },
   },

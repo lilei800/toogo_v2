@@ -19,7 +19,7 @@ export const columns = [
         },
         {
           default: () => row.id,
-        }
+        },
       );
     },
   },
@@ -61,7 +61,7 @@ export const columns = [
           },
           {
             default: () => row.username.substring(0, 2),
-          }
+          },
         );
       }
     },
@@ -91,7 +91,7 @@ export const columns = [
         },
         {
           default: () => row.browser,
-        }
+        },
       );
     },
   },

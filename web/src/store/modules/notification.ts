@@ -8,6 +8,7 @@ export interface INotificationStore {
   notifyUnread: number;
   noticeUnread: number;
   letterUnread: number;
+  customerServiceUnread: number;
   newMessage: MessageRow | null;
 }
 
@@ -33,10 +34,17 @@ export const notificationStore = defineStore({
         badgeProps: { type: 'info' },
         list: [],
       },
+      {
+        key: 9,
+        name: '客服',
+        badgeProps: { type: 'success' },
+        list: [],
+      },
     ],
     notifyUnread: 0,
     noticeUnread: 0,
     letterUnread: 0,
+    customerServiceUnread: 0,
     newMessage: null,
   }),
   getters: {
@@ -67,6 +75,10 @@ export const notificationStore = defineStore({
           this.messages[2].list.push(message);
           this.letterUnread++;
           break;
+        case 9:
+          this.messages[3].list.push(message);
+          this.customerServiceUnread++;
+          break;
       }
     },
     pullMessages() {
@@ -78,6 +90,7 @@ export const notificationStore = defineStore({
         this.messages[0].list = [];
         this.messages[1].list = [];
         this.messages[2].list = [];
+        this.messages[3].list = [];
 
         if (res.list?.length > 0) {
           for (let i = 0; i < res.list.length; i++) {
@@ -88,10 +101,12 @@ export const notificationStore = defineStore({
         this.notifyUnread = res.notifyCount;
         this.noticeUnread = res.noticeCount;
         this.letterUnread = res.letterCount;
+        this.customerServiceUnread = res.customerServiceCount ?? 0;
       });
     },
     getUnreadCount() {
-      const count = this.notifyUnread + this.noticeUnread + this.letterUnread;
+      const count =
+        this.notifyUnread + this.noticeUnread + this.letterUnread + this.customerServiceUnread;
       if (count > 0) {
         return count;
       }

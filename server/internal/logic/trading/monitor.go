@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gogf/gf/v2/errors/gerror"
@@ -33,6 +34,63 @@ import (
 type monitorImpl struct{}
 
 var Monitor = &monitorImpl{}
+
+// 终端洪流控制：
+// - Monitor.GetRobotAnalysis 通过 WS realtime 每秒调用一次
+// - 若 MarketAnalyzer 启动期没产出，会走 ticker 兜底推断 marketState
+// - 这不是异常（很常见），不应每秒 Warning 刷屏
+var (
+	monitorMarketStateFallbackLogAt sync.Map // key: robotId, value: time.Time
+	monitorMarketStateMissingLogAt  sync.Map // key: robotId, value: time.Time
+)
+
+func shouldLogMonitorOnceEvery(robotId int64, store *sync.Map, every time.Duration) bool {
+	if robotId <= 0 {
+		return false
+	}
+	now := time.Now()
+	if v, ok := store.Load(robotId); ok {
+		if t0, ok2 := v.(time.Time); ok2 && now.Sub(t0) < every {
+			return false
+		}
+	}
+	store.Store(robotId, now)
+	return true
+}
+
+// parseMarketRiskMappingFromRemark parses robot.Remark and returns a normalized marketRiskMapping.
+// Robot.Remark is compatible with 2 formats:
+// 1) legacy: a JSON object of map[string]string, e.g. {"trend":"balanced",...}
+// 2) new: a JSON object with field "marketRiskMapping", e.g. {"marketRiskMapping":{...},"riskParams":...}
+func parseMarketRiskMappingFromRemark(remark string) map[string]string {
+	if strings.TrimSpace(remark) == "" {
+		return map[string]string{}
+	}
+
+	// legacy mapping-only format
+	var mapping map[string]string
+	if err := json.Unmarshal([]byte(remark), &mapping); err == nil && len(mapping) > 0 {
+		normalized := make(map[string]string, len(mapping))
+		for k, v := range mapping {
+			normalized[normalizeMarketState(k)] = v
+		}
+		return normalized
+	}
+
+	// new full config format
+	var wrapper struct {
+		MarketRiskMapping map[string]string `json:"marketRiskMapping"`
+	}
+	if err := json.Unmarshal([]byte(remark), &wrapper); err == nil && len(wrapper.MarketRiskMapping) > 0 {
+		normalized := make(map[string]string, len(wrapper.MarketRiskMapping))
+		for k, v := range wrapper.MarketRiskMapping {
+			normalized[normalizeMarketState(k)] = v
+		}
+		return normalized
+	}
+
+	return map[string]string{}
+}
 
 // GetTicker 获取实时行情
 func (s *monitorImpl) GetTicker(ctx context.Context, in *input.TradingMonitorTickerInp) (*input.TradingMonitorTickerModel, error) {
@@ -341,8 +399,11 @@ func (s *monitorImpl) GetRobotAnalysis(ctx context.Context, robotId int64) (*tra
 		return res, nil
 	}
 	platform := apiConfig.Platform
-	platform = strings.ToLower(strings.TrimSpace(platform))
-	robot.Symbol = strings.ToUpper(strings.TrimSpace(robot.Symbol))
+	// IMPORTANT: 统一 platform/symbol 口径，避免 gate/gateio、BTCUSDT/BTC_USDT 等 key 不一致导致：
+	// - GetTicker 取不到缓存 → 前端显示“连接失败”
+	// - MarketAnalyzer 取不到K线 → marketStateRealtime 为空
+	platform = market.NormalizePlatform(platform)
+	robot.Symbol = market.NormalizeSymbol(robot.Symbol)
 
 	// ====== 优先从RobotEngine获取窗口信号数据 ======
 	engine := toogo.GetRobotTaskManager().GetEngine(robotId)
@@ -417,12 +478,19 @@ func (s *monitorImpl) GetRobotAnalysis(ctx context.Context, robotId int64) (*tra
 		}
 
 		// 尝试获取账户信息（可能失败，但不影响连接状态）
-		exchangeInst, err := ExchangeManager.GetExchange(ctx, robot.ApiConfigId)
-		if err == nil {
-			res.Account = s.buildAccountInfo(ctx, exchangeInst, robot)
+		//
+		// 重要：机器人运行中时，引擎已经持有可用的 Exchange 实例，并且 buildAccountInfo 会走引擎缓存/按需刷新。
+		// 不应强依赖 ExchangeManager 重新创建交易所实例（可能因为解密/代理/限流配置等失败），否则会导致前端长期看到 account=0 或 '--'。
+		if engine != nil {
+			res.Account = s.buildAccountInfo(ctx, nil, robot)
 		} else {
-			// 账户信息获取失败，使用空数据
-			res.Account = &trading.RobotAccountInfo{}
+			exchangeInst, err := ExchangeManager.GetExchange(ctx, robot.ApiConfigId)
+			if err == nil {
+				res.Account = s.buildAccountInfo(ctx, exchangeInst, robot)
+			} else {
+				// 账户信息获取失败：返回 nil，避免前端误显示 0.00 的假数据
+				res.Account = nil
+			}
 		}
 
 		// 填充机器人配置信息
@@ -452,9 +520,22 @@ func (s *monitorImpl) buildMarketStateRealtime(platform, symbol string) *trading
 	if platform == "" || symbol == "" {
 		return nil
 	}
-	analysis := market.GetMarketAnalyzer().GetAnalysis(platform, symbol)
+	analysisPlatform := market.ResolveAnalysisPlatform(context.Background(), platform)
+	analysis := market.GetMarketAnalyzer().GetAnalysis(analysisPlatform, symbol)
+	// 启动期/刚订阅时：分析器还没产出数据很常见。
+	// 但前端“多周期播报”面板是 v-if(marketStateRealtime)，nil 会导致整块消失，用户误以为“缺模块”。
+	// 这里返回一个“初始化中”的占位结构，等分析器产出后会自动覆盖为真实数据。
 	if analysis == nil {
-		return nil
+		return &trading.RobotMarketStateRealtime{
+			Platform:   platform,
+			Symbol:     symbol,
+			State:      "",
+			Confidence: 0,
+			VoteRatio:  0,
+			UpdatedAt:  time.Now().Format("2006-01-02 15:04:05"),
+			Timeframes: []*trading.RobotMarketStateTimeframe{},
+			Broadcast:  fmt.Sprintf("初始化中：等待多周期K线与市场分析器产出数据 (analysisSource=%s)", analysisPlatform),
+		}
 	}
 
 	normalize := func(state string) string {
@@ -493,7 +574,7 @@ func (s *monitorImpl) buildMarketStateRealtime(platform, symbol string) *trading
 	finalState := normalize(string(analysis.MarketState))
 
 	// 生成“播报”摘要（可直接展示/复制）
-	broadcast := fmt.Sprintf("最终=%s(%.2f)", finalState, analysis.MarketStateConf)
+	broadcast := fmt.Sprintf("最终=%s(%.2f) [analysisSource=%s]", finalState, analysis.MarketStateConf, analysisPlatform)
 	for _, tf := range timeframes {
 		broadcast += fmt.Sprintf(" | %s:%s V=%.2f D=%.2f w=%.2f", tf.Interval, tf.SmoothedState, tf.V, tf.D, tf.Weight)
 	}
@@ -544,6 +625,11 @@ func (s *monitorImpl) buildAccountInfo(ctx context.Context, exchangeInst exchang
 	account.TotalBalance = cachedBal.TotalBalance // 兼容旧字段
 	account.AvailableBalance = cachedBal.AvailableBalance
 
+	// 未实现盈亏口径：
+	// - 优先使用余额接口返回的 UnrealizedPnl（Bitget/Gate 等会提供，且通常更权威/更稳定）
+	// - 若余额接口未提供（如 OKX 这里返回 0），再从持仓汇总
+	account.UnrealizedPnl = cachedBal.UnrealizedPnl
+
 	// 从引擎缓存获取持仓
 	if cachedPositions != nil {
 		for _, pos := range cachedPositions {
@@ -555,7 +641,10 @@ func (s *monitorImpl) buildAccountInfo(ctx context.Context, exchangeInst exchang
 			if pos.Leverage > 0 {
 				account.UsedMargin += posValue / float64(pos.Leverage)
 			}
-			account.UnrealizedPnl += pos.UnrealizedPnl
+			// OKX 等余额接口不提供未实现盈亏时，才从持仓累加
+			if account.UnrealizedPnl == 0 {
+				account.UnrealizedPnl += pos.UnrealizedPnl
+			}
 		}
 	}
 
@@ -581,6 +670,13 @@ func (s *monitorImpl) buildConfigInfo(ctx context.Context, robot *entity.Trading
 	config := &trading.RobotConfigInfo{
 		AutoTradeEnabled: robot.AutoTradeEnabled == 1,
 		AutoCloseEnabled: robot.AutoCloseEnabled == 1,
+		ProfitLockEnabled: func() bool {
+			// 默认开启：老数据/未迁移时 DB 可能为 0 值，仍按开启处理，避免风险穿透
+			if robot.ProfitLockEnabled == 0 {
+				return true
+			}
+			return robot.ProfitLockEnabled == 1
+		}(),
 		DualSidePosition: robot.DualSidePosition == 1,
 		UseMonitorSignal: robot.UseMonitorSignal == 1,
 		MaxProfit:        robot.MaxProfitTarget,
@@ -592,7 +688,9 @@ func (s *monitorImpl) buildConfigInfo(ctx context.Context, robot *entity.Trading
 
 	// 计算运行时长
 	if robot.StartTime != nil {
-		config.StartTime = robot.StartTime.Format("2006-01-02 15:04:05")
+		// 注意：robot.StartTime 是 *gtime.Time（GF），格式化 layout 使用 "Y-m-d H:i:s"
+		// 若误用 Go 的 "2006-01-02 15:04:05" 会原样返回字符串，导致前端解析出“7000+天”
+		config.StartTime = robot.StartTime.Format("Y-m-d H:i:s")
 		config.RuntimeSeconds = int64(time.Since(robot.StartTime.Time).Seconds())
 	}
 
@@ -621,7 +719,9 @@ func (s *monitorImpl) buildConfigInfo(ctx context.Context, robot *entity.Trading
 	}
 
 	// 从全局市场分析器获取实时市场状态
-	globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(platform, robot.Symbol)
+	// 允许“执行所/分析所”解耦：机器人页面展示的市场状态应与多周期播报一致（均使用 analysisSource）。
+	analysisPlatform := market.ResolveAnalysisPlatform(ctx, platform)
+	globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(analysisPlatform, robot.Symbol)
 	marketState := ""
 	if globalAnalysis != nil {
 		marketState = string(globalAnalysis.MarketState)
@@ -631,10 +731,40 @@ func (s *monitorImpl) buildConfigInfo(ctx context.Context, robot *entity.Trading
 		}
 	}
 
-	// 如果全局市场分析器没有数据，返回错误
+	// 如果全局市场分析器没有数据：刚启动/刚订阅时非常常见，不应该直接断链。
+	// 兜底：从全局行情服务获取 ticker，使用轻量规则推断 marketState（保证链路可用性）。
 	if marketState == "" {
-		errMsg := "全局市场分析器未返回市场状态数据，请检查市场分析服务是否正常运行"
-		g.Log().Errorf(ctx, "[Monitor] robotId=%d %s", robot.Id, errMsg)
+		ticker := market.GetMarketServiceManager().GetTicker(platform, robot.Symbol)
+		if ticker != nil && ticker.LastPrice > 0 && ticker.High24h > 0 && ticker.Low24h > 0 {
+			// 轻量推断逻辑（与 monitor.analyzeMarket 的阈值一致）
+			priceRange := ticker.High24h - ticker.Low24h
+			volatilityPercent := (priceRange / ticker.LastPrice) * 100
+			switch {
+			case volatilityPercent >= 5:
+				marketState = "high_vol"
+			case volatilityPercent <= 1:
+				marketState = "low_vol"
+			case math.Abs(ticker.Change24h) >= 3:
+				marketState = "trend"
+			default:
+				marketState = "volatile"
+			}
+			marketState = normalizeMarketState(marketState)
+			config.MarketState = marketState
+			// 默认不打印：这是启动期常态；如需排查可开 debug 并且这里仍做 30s 节流避免刷屏
+			if shouldLogMonitorOnceEvery(robot.Id, &monitorMarketStateFallbackLogAt, 30*time.Second) {
+				g.Log().Debugf(ctx, "[Monitor] robotId=%d 全局市场分析器暂无数据，已使用ticker兜底推断市场状态=%s", robot.Id, marketState)
+			}
+		}
+	}
+
+	// 兜底仍无 marketState，才返回错误（但降级为 Warning，避免刷屏）
+	if marketState == "" {
+		errMsg := "全局市场分析器未返回市场状态数据（且ticker兜底失败）"
+		// 失败才算异常，但也要节流：避免每秒刷屏
+		if shouldLogMonitorOnceEvery(robot.Id, &monitorMarketStateMissingLogAt, 30*time.Second) {
+			g.Log().Warningf(ctx, "[Monitor] robotId=%d %s", robot.Id, errMsg)
+		}
 		config.ErrorMessage = errMsg
 		return config
 	}
@@ -642,19 +772,12 @@ func (s *monitorImpl) buildConfigInfo(ctx context.Context, robot *entity.Trading
 	// 【步骤2】根据创建机器人时提交的映射关系选择风险偏好
 	// 【重要】从 remark 字段解析映射关系（创建时保存的独立映射关系）
 	riskPref := ""
-	if robot.Remark != "" {
-		var mapping map[string]string
-		if err := json.Unmarshal([]byte(robot.Remark), &mapping); err == nil {
-			// 规范化市场状态键，确保与映射关系中的key一致
-			normalizedMarketState := normalizeMarketState(marketState)
-			if pref, ok := mapping[normalizedMarketState]; ok && pref != "" {
-				riskPref = pref
-				g.Log().Debugf(ctx, "[Monitor] robotId=%d 从 remark 字段映射关系获取风险偏好: 市场状态=%s → 风险偏好=%s",
-					robot.Id, normalizedMarketState, riskPref)
-			}
-		} else {
-			g.Log().Warningf(ctx, "[Monitor] robotId=%d remark 字段不是有效的JSON格式: %s，错误: %v", robot.Id, robot.Remark, err)
-		}
+	mapping := parseMarketRiskMappingFromRemark(robot.Remark)
+	normalizedMarketState := normalizeMarketState(marketState)
+	if pref, ok := mapping[normalizedMarketState]; ok && pref != "" {
+		riskPref = pref
+		g.Log().Debugf(ctx, "[Monitor] robotId=%d 从 remark 字段映射关系获取风险偏好: 市场状态=%s → 风险偏好=%s",
+			robot.Id, normalizedMarketState, riskPref)
 	}
 
 	// 如果映射关系中没有找到，返回错误
@@ -1101,7 +1224,8 @@ func (s *monitorImpl) buildWindowSignal(engine *toogo.RobotEngine) *trading.Robo
 
 	// 【优化】从全局市场分析器获取市场状态
 	if currentMarketState == "" {
-		globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(engine.Platform, engine.Robot.Symbol)
+		analysisPlatform := market.ResolveAnalysisPlatform(context.Background(), engine.Platform)
+		globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(analysisPlatform, engine.Robot.Symbol)
 		if globalAnalysis != nil {
 			currentMarketState = string(globalAnalysis.MarketState)
 		}
@@ -1113,14 +1237,10 @@ func (s *monitorImpl) buildWindowSignal(engine *toogo.RobotEngine) *trading.Robo
 		// 规范化市场状态
 		normalizedMarketState := normalizeMarketState(currentMarketState)
 
-		// 从 remark 字段解析映射关系（创建时保存的独立映射关系）
-		if engine.Robot.Remark != "" {
-			var mapping map[string]string
-			if err := json.Unmarshal([]byte(engine.Robot.Remark), &mapping); err == nil {
-				if pref, ok := mapping[normalizedMarketState]; ok && pref != "" {
-					currentRiskPref = pref
-				}
-			}
+		// 从 remark 字段解析映射关系（兼容 legacy map / new RiskConfig 包装结构）
+		mapping := parseMarketRiskMappingFromRemark(engine.Robot.Remark)
+		if pref, ok := mapping[normalizedMarketState]; ok && pref != "" {
+			currentRiskPref = pref
 		}
 	}
 

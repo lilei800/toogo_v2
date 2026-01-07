@@ -168,7 +168,7 @@
           if (newVal.options.join[i]?.alias) {
             handleSlaveAdd(
               '关联表[ ' + newVal.options.join[i].alias + ' ]',
-              newVal.options.join[i]
+              newVal.options.join[i],
             );
           }
         }
@@ -176,7 +176,7 @@
     },
     {
       deep: true, // 是否深度监听
-    }
+    },
   );
 
   function updateTabs(value: string | number) {

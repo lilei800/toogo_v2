@@ -117,6 +117,13 @@ type NoticeUnreadCountModel struct {
 	NotifyCount int `json:"notifyCount" dc:"未读通知数量"`
 	NoticeCount int `json:"noticeCount" dc:"未读公告数量"`
 	LetterCount int `json:"letterCount" dc:"未读私信数量"`
+
+	FinanceCount         int `json:"financeCount" dc:"未读财务消息数量"`
+	OrderCount           int `json:"orderCount" dc:"未读订单消息数量"`
+	CommissionCount      int `json:"commissionCount" dc:"未读佣金消息数量"`
+	PromotionCount       int `json:"promotionCount" dc:"未读推广消息数量"`
+	TicketCount          int `json:"ticketCount" dc:"未读工单消息数量"`
+	CustomerServiceCount int `json:"customerServiceCount" dc:"未读客服聊天数量"`
 }
 
 // NoticeMessageListInp 我的消息列表

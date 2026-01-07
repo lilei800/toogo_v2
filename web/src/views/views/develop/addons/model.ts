@@ -65,9 +65,9 @@ export const columns = [
                 },
                 {
                   default: () => h(getIconComponent(row.logo)),
-                }
+                },
               ),
-          }
+          },
         );
       }
     },
@@ -103,7 +103,7 @@ export const columns = [
         },
         {
           default: () => row.groupName,
-        }
+        },
       );
     },
     width: 120,

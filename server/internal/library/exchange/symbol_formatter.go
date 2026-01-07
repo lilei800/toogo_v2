@@ -73,11 +73,6 @@ func (f *SymbolFormatter) FormatForGate(symbol string) string {
 	return s
 }
 
-// FormatForBitget 格式化为Bitget格式: BTCUSDT (无后缀！)
-func (f *SymbolFormatter) FormatForBitget(symbol string) string {
-	return f.NormalizeSymbol(symbol)
-}
-
 // FormatForPlatform 根据平台名称格式化Symbol
 func (f *SymbolFormatter) FormatForPlatform(platform, symbol string) string {
 	switch strings.ToLower(platform) {
@@ -87,8 +82,6 @@ func (f *SymbolFormatter) FormatForPlatform(platform, symbol string) string {
 		return f.FormatForOKX(symbol)
 	case "gate":
 		return f.FormatForGate(symbol)
-	case "bitget":
-		return f.FormatForBitget(symbol)
 	default:
 		return f.NormalizeSymbol(symbol)
 	}

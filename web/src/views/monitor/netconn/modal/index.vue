@@ -326,7 +326,7 @@
             },
             {
               default: () => (option.isRPC ? 'RPC' : 'TCP'),
-            }
+            },
           ),
           h(
             'div',
@@ -337,10 +337,10 @@
                 alignSelf: 'center',
               },
             },
-            { default: () => option.label }
+            { default: () => option.label },
           ),
         ],
-      }
+      },
     );
   }
 

@@ -62,7 +62,7 @@ export default ({ command, mode }: ConfigEnv): UserConfig => {
       port: VITE_PORT,
       // 说明：
       // - 环境变量 VITE_PROXY 在某些机器上可能缺失/错误，导致 proxy ECONNREFUSED，页面空白。
-      // - hotgo_v2 后端默认监听 :8000（manifest/config/config.yaml），这里给本机开发加一个兜底：
+      // - toogo_v2 后端默认监听 :8000（manifest/config/config.yaml），这里给本机开发加一个兜底：
       //   强制把 /admin 与 /socket 代理到 http://127.0.0.1:8000。
       // - 注意：后端路由配置中 admin 的 prefix 是 /admin，所以代理时不能去掉 /admin 前缀
       proxy: (() => {

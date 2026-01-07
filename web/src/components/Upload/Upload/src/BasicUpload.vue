@@ -133,7 +133,7 @@
         {
           immediate: true,
           deep: true,
-        }
+        },
       );
 
       watch(
@@ -145,7 +145,7 @@
         {
           immediate: true,
           deep: true,
-        }
+        },
       );
 
       // 加载默认

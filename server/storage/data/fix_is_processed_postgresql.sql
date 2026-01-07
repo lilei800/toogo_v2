@@ -171,37 +171,51 @@ END $$;
 -- 步骤8: 创建 hg_trading_execution_log 表（如果不存在）
 CREATE TABLE IF NOT EXISTS hg_trading_execution_log (
     id BIGSERIAL PRIMARY KEY,
-    signal_log_id BIGINT NOT NULL DEFAULT 0 COMMENT '预警记录ID',
-    robot_id BIGINT NOT NULL DEFAULT 0 COMMENT '机器人ID',
-    order_id BIGINT NOT NULL DEFAULT 0 COMMENT '订单ID',
-    event_type VARCHAR(50) NOT NULL DEFAULT '' COMMENT '事件类型',
-    event_data TEXT COMMENT '事件数据JSON',
-    status VARCHAR(20) NOT NULL DEFAULT '' COMMENT '状态: success/failed',
-    message VARCHAR(500) NOT NULL DEFAULT '' COMMENT '消息',
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'
+    signal_log_id BIGINT NOT NULL DEFAULT 0,
+    robot_id BIGINT NOT NULL DEFAULT 0,
+    order_id BIGINT NOT NULL DEFAULT 0,
+    event_type VARCHAR(50) NOT NULL DEFAULT '',
+    event_data TEXT,
+    status VARCHAR(20) NOT NULL DEFAULT '',
+    message TEXT NOT NULL DEFAULT '',
+    -- 可选字段：新版代码会写入；旧库缺字段会自动降级写入
+    failure_category VARCHAR(50) NOT NULL DEFAULT '',
+    failure_reason TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW()
 );
+
+COMMENT ON COLUMN hg_trading_execution_log.signal_log_id IS '预警记录ID（可选）';
+COMMENT ON COLUMN hg_trading_execution_log.robot_id IS '机器人ID';
+COMMENT ON COLUMN hg_trading_execution_log.order_id IS '关联订单ID（可选）';
+COMMENT ON COLUMN hg_trading_execution_log.event_type IS '事件类型';
+COMMENT ON COLUMN hg_trading_execution_log.event_data IS '事件数据JSON';
+COMMENT ON COLUMN hg_trading_execution_log.status IS '状态：pending/success/failed';
+COMMENT ON COLUMN hg_trading_execution_log.message IS '消息（详细说明）';
+COMMENT ON COLUMN hg_trading_execution_log.failure_category IS '失败分类（用于前端展示）';
+COMMENT ON COLUMN hg_trading_execution_log.failure_reason IS '结构化失败原因（用于前端展示）';
+COMMENT ON COLUMN hg_trading_execution_log.created_at IS '创建时间';
 
 -- 为 execution_log 创建索引
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM pg_indexes 
-        WHERE tablename = 'hg_trading_execution_log' 
-          AND indexname = 'idx_signal_log_id'
+        SELECT 1 FROM pg_indexes
+        WHERE tablename = 'hg_trading_execution_log'
+          AND indexname = 'idx_trading_execution_log_signal_log_id'
     ) THEN
-        CREATE INDEX idx_signal_log_id 
+        CREATE INDEX idx_trading_execution_log_signal_log_id
         ON hg_trading_execution_log(signal_log_id);
-        RAISE NOTICE '✓ 已创建索引 idx_signal_log_id';
+        RAISE NOTICE '✓ 已创建索引 idx_trading_execution_log_signal_log_id';
     END IF;
-    
+
     IF NOT EXISTS (
-        SELECT 1 FROM pg_indexes 
-        WHERE tablename = 'hg_trading_execution_log' 
-          AND indexname = 'idx_robot_time'
+        SELECT 1 FROM pg_indexes
+        WHERE tablename = 'hg_trading_execution_log'
+          AND indexname = 'idx_trading_execution_log_robot_time'
     ) THEN
-        CREATE INDEX idx_robot_time 
+        CREATE INDEX idx_trading_execution_log_robot_time
         ON hg_trading_execution_log(robot_id, created_at);
-        RAISE NOTICE '✓ 已创建索引 idx_robot_time';
+        RAISE NOTICE '✓ 已创建索引 idx_trading_execution_log_robot_time';
     END IF;
 END $$;
 

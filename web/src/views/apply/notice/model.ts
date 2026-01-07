@@ -8,12 +8,12 @@ export class State {
   id: number;
   title: string;
   type: number;
-  tag: number = 1;
+  tag = 1;
   content: string;
   receiver: number[];
   remark: string;
   sort: number;
-  status: number = 1;
+  status = 1;
   createdBy: number;
   updatedBy: number;
   createdAt: string;

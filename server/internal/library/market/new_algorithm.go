@@ -7,8 +7,11 @@ import (
 	configlib "hotgo/internal/library/config"
 	"hotgo/internal/library/exchange"
 	"math"
+	"sync"
 	"time"
 )
+
+var marketAnalyzerInsufficientDataLogAt sync.Map // key: platform:symbol, value: time.Time
 
 // MarketStateThresholds 定义每个周期的状态阈值
 type MarketStateThresholds struct {
@@ -119,6 +122,8 @@ func (a *MarketAnalyzer) AnalyzeMarketWithNewAlgorithm(
 	klineCache *KlineCache,
 	previousAnalysis *MarketAnalysis,
 ) *MarketAnalysis {
+	platform = NormalizePlatform(platform)
+	symbol = NormalizeSymbol(symbol)
 	analysis := &MarketAnalysis{
 		Platform:          platform,
 		Symbol:            symbol,
@@ -312,7 +317,16 @@ func (a *MarketAnalyzer) AnalyzeMarketWithNewAlgorithm(
 	}
 
 	if len(O) == 0 {
-		g.Log().Warningf(ctx, "[MarketAnalyzer] 数据不足: symbol=%s", symbol)
+		// 启动期/刚订阅时很常见：K线缓存对象存在但尚无任何bar。这里做节流，避免每秒刷屏影响实时报价。
+		key := platform + ":" + symbol
+		now := time.Now()
+		if lastVal, ok := marketAnalyzerInsufficientDataLogAt.Load(key); ok {
+			if lastAt, ok2 := lastVal.(time.Time); ok2 && now.Sub(lastAt) < 30*time.Second {
+				return nil
+			}
+		}
+		marketAnalyzerInsufficientDataLogAt.Store(key, now)
+		g.Log().Warningf(ctx, "[MarketAnalyzer] 数据不足(跳过分析): platform=%s symbol=%s", platform, symbol)
 		return nil
 	}
 

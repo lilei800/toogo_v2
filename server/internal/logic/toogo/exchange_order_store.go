@@ -3,6 +3,7 @@ package toogo
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"hotgo/internal/dao"
 	"hotgo/internal/library/exchange"
 	"hotgo/internal/model/entity"
+	"hotgo/internal/websocket"
 
 	"github.com/gogf/gf/v2/errors/gerror"
 	"github.com/gogf/gf/v2/frame/g"
@@ -42,6 +44,77 @@ var robotMetaCache = struct {
 	at   time.Time
 })}
 
+// openOrdersAntiFlicker prevents transient empty openOrders snapshots (REST glitches)
+// from mass-closing all local open orders, which would cause UI flicker and incorrect state.
+var openOrdersAntiFlicker = struct {
+	mu sync.Mutex
+	m  map[string]*openOrdersAFState
+}{
+	m: make(map[string]*openOrdersAFState),
+}
+
+type openOrdersAFState struct {
+	lastNonEmptyAt    time.Time
+	pendingEmptySince time.Time
+	lastAppliedAt     time.Time
+	lastCount         int
+}
+
+func openOrdersAFKey(robotId int64, platform string, apiConfigId int64, symbol string) string {
+	return g.NewVar(robotId).String() + "|" + strings.ToLower(strings.TrimSpace(platform)) + "|" + g.NewVar(apiConfigId).String() + "|" + strings.ToUpper(strings.TrimSpace(symbol))
+}
+
+func markOpenOrdersSnapshot(key string, now time.Time, count int) {
+	openOrdersAntiFlicker.mu.Lock()
+	defer openOrdersAntiFlicker.mu.Unlock()
+
+	st := openOrdersAntiFlicker.m[key]
+	if st == nil {
+		st = &openOrdersAFState{}
+		openOrdersAntiFlicker.m[key] = st
+	}
+	if count < 0 {
+		count = 0
+	}
+	if count > 0 {
+		st.lastNonEmptyAt = now
+		st.pendingEmptySince = time.Time{}
+	} else {
+		// count==0: do not clear lastNonEmptyAt here; handled by empty-guard decision
+	}
+	st.lastAppliedAt = now
+	st.lastCount = count
+}
+
+func shouldApplyOpenOrdersEmptySnapshot(key string, now time.Time, emptyDelay time.Duration) (apply bool, held bool, reason string) {
+	openOrdersAntiFlicker.mu.Lock()
+	defer openOrdersAntiFlicker.mu.Unlock()
+
+	st := openOrdersAntiFlicker.m[key]
+	if st == nil {
+		st = &openOrdersAFState{}
+		openOrdersAntiFlicker.m[key] = st
+	}
+	// never had non-empty snapshot -> accept empty
+	if st.lastNonEmptyAt.IsZero() {
+		st.pendingEmptySince = time.Time{}
+		st.lastAppliedAt = now
+		st.lastCount = 0
+		return true, false, ""
+	}
+	if st.pendingEmptySince.IsZero() {
+		st.pendingEmptySince = now
+		return false, true, "empty_pending_first"
+	}
+	if now.Sub(st.pendingEmptySince) >= emptyDelay {
+		st.pendingEmptySince = time.Time{}
+		st.lastAppliedAt = now
+		st.lastCount = 0
+		return true, false, ""
+	}
+	return false, true, "empty_pending"
+}
+
 func getRobotMeta(ctx context.Context, robotId int64) (robotMeta, error) {
 	robotMetaCache.mu.RLock()
 	if v, ok := robotMetaCache.data[robotId]; ok && time.Since(v.at) < 5*time.Second {
@@ -57,13 +130,33 @@ func getRobotMeta(ctx context.Context, robotId int64) (robotMeta, error) {
 		}
 		return robotMeta{}, err
 	}
+	// 【多交易所一致性】platform 的权威来源应为 api_config.platform（交易所实例/WS连接都以此为准）。
+	// 如果仅依赖 robot.exchange，一旦历史数据未同步更新，就会导致：
+	// - 私有WS事件落库到错误 platform 分区
+	// - 唯一键(uk_platform_api_order)维度不一致，引发“查不到/重复/覆盖”
+	platform := strings.ToLower(strings.TrimSpace(r.Exchange))
+	if r.ApiConfigId > 0 {
+		type apiRow struct {
+			Platform string `orm:"platform"`
+		}
+		var ar apiRow
+		_ = dao.TradingApiConfig.Ctx(ctx).
+			Fields("platform").
+			Where(dao.TradingApiConfig.Columns().Id, r.ApiConfigId).
+			Limit(1).
+			Scan(&ar)
+		if strings.TrimSpace(ar.Platform) != "" {
+			platform = strings.ToLower(strings.TrimSpace(ar.Platform))
+		}
+	}
 	m := robotMeta{
 		RobotId:     r.Id,
 		TenantId:    r.TenantId,
 		UserId:      r.UserId,
 		ApiConfigId: r.ApiConfigId,
-		Platform:    strings.ToLower(strings.TrimSpace(r.Exchange)),
-		Symbol:      r.Symbol,
+		Platform:    platform,
+		// 【强一致】事实表/缓存 key 统一使用 BTCUSDT（避免不同交易所格式导致“同一机器人同一币对分裂”）
+		Symbol: exchange.Formatter.NormalizeSymbol(r.Symbol),
 	}
 	robotMetaCache.mu.Lock()
 	robotMetaCache.data[robotId] = struct {
@@ -102,10 +195,32 @@ func UpsertExchangeOrdersFromPrivateEvent(ctx context.Context, robotId int64, ev
 		// best-effort：至少落一条 raw，便于审计（但没有 orderId 无法 upsert）
 		return
 	}
+
+	// 先组装 delta（尽量轻量），用于推送给前端做增量更新/触发刷新
+	delta := make([]g.Map, 0, len(orders))
 	for _, o := range orders {
 		if strings.TrimSpace(o.ExchangeOrderId) == "" {
 			continue
 		}
+		delta = append(delta, g.Map{
+			"orderId":      o.ExchangeOrderId,
+			"clientId":     o.ClientOrderId,
+			"symbol":       symbol,
+			"side":         o.Side,
+			"positionSide": o.PositionSide,
+			"type":         o.Type,
+			"price":        o.Price,
+			"quantity":     o.Quantity,
+			"filledQty":    o.FilledQty,
+			"avgPrice":     o.AvgPrice,
+			"status":       o.Status,
+			"rawStatus":    o.RawStatus,
+			"isOpen":       o.IsOpen,
+			"createTime":   o.CreateTime,
+			"updateTime":   o.UpdateTime,
+			"eventAt":      ev.ReceivedAt,
+		})
+
 		data := g.Map{
 			"tenant_id":         meta.TenantId,
 			"user_id":           meta.UserId,
@@ -133,6 +248,21 @@ func UpsertExchangeOrdersFromPrivateEvent(ctx context.Context, robotId int64, ev
 		}
 		_ = upsertExchangeOrder(ctx, platform, apiConfigId, o.ExchangeOrderId, data)
 	}
+
+	// WS：订单增量推送（不需要订阅，前端可用来避免“闪烁/丢失”并触发局部刷新）
+	if meta.UserId > 0 && len(delta) > 0 {
+		websocket.SendToUser(meta.UserId, &websocket.WResponse{
+			Event: "toogo/robot/orders/delta",
+			Data: g.Map{
+				"robotId":     meta.RobotId,
+				"platform":    platform,
+				"apiConfigId": apiConfigId,
+				"symbol":      symbol,
+				"list":        delta,
+				"ts":          ev.ReceivedAt,
+			},
+		})
+	}
 }
 
 // SyncExchangeOpenOrdersToDB 兜底：用 REST openOrders 对账写入事实表（按robot维度）
@@ -154,9 +284,19 @@ func SyncExchangeOpenOrdersToDB(ctx context.Context, robotId int64, platform str
 		symbol = meta.Symbol
 	}
 	platform = strings.ToLower(strings.TrimSpace(platform))
+	key := openOrdersAFKey(robotId, platform, apiConfigId, symbol)
+	now := time.Now()
+	// openOrders REST 兜底对账默认节流 10s：空快照至少延迟 12s，避免瞬时空导致“全量关闭”
+	emptyDelay := 12 * time.Second
+	if emptyDelay < 8*time.Second {
+		emptyDelay = 8 * time.Second
+	}
+	if emptyDelay > 30*time.Second {
+		emptyDelay = 30 * time.Second
+	}
 
 	seen := make(map[string]struct{}, len(orders))
-	nowMs := time.Now().UnixMilli()
+	nowMs := now.UnixMilli()
 	for _, o := range orders {
 		if o == nil || strings.TrimSpace(o.OrderId) == "" {
 			continue
@@ -193,6 +333,15 @@ func SyncExchangeOpenOrdersToDB(ctx context.Context, robotId int64, platform str
 	// 将“本地仍标记为 open 但本次对账未返回”的订单置为非 open（一般是成交/撤单）
 	// 说明：只针对本 robot + symbol，避免跨symbol误伤。
 	if len(seen) == 0 {
+		apply, held, reason := shouldApplyOpenOrdersEmptySnapshot(key, now, emptyDelay)
+		if held {
+			if isOrderPositionSyncDebugEnabled(ctx) && shouldLogOrderPositionSync("openOrders_empty_hold:"+g.NewVar(robotId).String(), 3*time.Second) {
+				g.Log().Warningf(ctx, "[SyncDiag] openOrders 空快照已拦截(anti-flicker): robotId=%d platform=%s symbol=%s reason=%s",
+					robotId, platform, symbol, reason)
+			}
+			return nil
+		}
+		_ = apply // readability
 		_, _ = g.DB().Model(exchangeOrderTable).Ctx(ctx).
 			Where("robot_id", meta.RobotId).
 			Where("platform", platform).
@@ -205,8 +354,11 @@ func SyncExchangeOpenOrdersToDB(ctx context.Context, robotId int64, platform str
 				"raw_status":  "sync_missing",
 				"update_time": nowMs,
 			}).Update()
+		markOpenOrdersSnapshot(key, now, 0)
 		return nil
 	}
+	// non-empty snapshot: clear pending empty
+	markOpenOrdersSnapshot(key, now, len(seen))
 	// IN 列表：只更新不在 seen 中的
 	ids := make([]string, 0, len(seen))
 	for id := range seen {
@@ -444,22 +596,365 @@ func parseGatePrivateOrders(raw []byte) []parsedOrder {
 	} else if s := getStr("reduce_only"); s != "" {
 		ro = (s == "true" || s == "1")
 	}
+
+	// size: 合约张数（正/负表示方向）
+	size := getF("size")
+	side := ""
+	if size < 0 {
+		side = "SELL"
+	} else if size > 0 {
+		side = "BUY"
+	}
+	qty := math.Abs(size)
+	// filled: 优先用 left 推导（filled = abs(size) - abs(left)）
+	filled := 0.0
+	if left := getF("left"); left != 0 {
+		filled = math.Abs(size) - math.Abs(left)
+		if filled < 0 {
+			filled = 0
+		}
+	} else if fs := getF("filled_size"); fs != 0 {
+		filled = math.Abs(fs)
+	}
+
+	// pos_side: long/short（若有）
+	posSide := strings.ToUpper(strings.TrimSpace(getStr("pos_side")))
+	if posSide == "" {
+		posSide = strings.ToUpper(strings.TrimSpace(getStr("position_side")))
+	}
+	if posSide == "" {
+		posSide = strings.ToUpper(strings.TrimSpace(getStr("posSide")))
+	}
+	if posSide == "LONG" || posSide == "SHORT" {
+		// ok
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") || strings.EqualFold(posSide, "short") {
+		// keep
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") || strings.EqualFold(posSide, "SHORT") {
+		// keep
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") || strings.EqualFold(posSide, "SHORT") {
+		// keep
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") || strings.EqualFold(posSide, "SHORT") {
+		// keep
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") || strings.EqualFold(posSide, "SHORT") {
+		// keep
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else {
+		// Gate 可能返回 long/short
+		if strings.EqualFold(posSide, "LONG") || strings.EqualFold(posSide, "SHORT") {
+			// keep
+		} else if strings.EqualFold(posSide, "LONG") {
+			posSide = "LONG"
+		} else if strings.EqualFold(posSide, "SHORT") {
+			posSide = "SHORT"
+		} else if strings.EqualFold(posSide, "LONG") || strings.EqualFold(posSide, "SHORT") {
+			// keep
+		} else if strings.EqualFold(posSide, "LONG") {
+			posSide = "LONG"
+		} else if strings.EqualFold(posSide, "SHORT") {
+			posSide = "SHORT"
+		} else if strings.EqualFold(posSide, "LONG") || strings.EqualFold(posSide, "SHORT") {
+			// keep
+		} else if strings.EqualFold(posSide, "LONG") {
+			posSide = "LONG"
+		} else if strings.EqualFold(posSide, "SHORT") {
+			posSide = "SHORT"
+		} else if strings.EqualFold(posSide, "LONG") || strings.EqualFold(posSide, "SHORT") {
+			// keep
+		} else if strings.EqualFold(posSide, "LONG") {
+			posSide = "LONG"
+		} else if strings.EqualFold(posSide, "SHORT") {
+			posSide = "SHORT"
+		} else if strings.EqualFold(posSide, "LONG") || strings.EqualFold(posSide, "SHORT") {
+			// keep
+		} else if strings.EqualFold(posSide, "LONG") {
+			posSide = "LONG"
+		} else if strings.EqualFold(posSide, "SHORT") {
+			posSide = "SHORT"
+		} else if strings.EqualFold(posSide, "LONG") || strings.EqualFold(posSide, "SHORT") {
+			// keep
+		} else if strings.EqualFold(posSide, "LONG") {
+			posSide = "LONG"
+		} else if strings.EqualFold(posSide, "SHORT") {
+			posSide = "SHORT"
+		} else if strings.EqualFold(posSide, "LONG") || strings.EqualFold(posSide, "SHORT") {
+			// keep
+		} else if strings.EqualFold(posSide, "LONG") {
+			posSide = "LONG"
+		} else if strings.EqualFold(posSide, "SHORT") {
+			posSide = "SHORT"
+		} else if strings.EqualFold(posSide, "LONG") || strings.EqualFold(posSide, "SHORT") {
+			// keep
+		} else if strings.EqualFold(posSide, "LONG") {
+			posSide = "LONG"
+		} else if strings.EqualFold(posSide, "SHORT") {
+			posSide = "SHORT"
+		} else if strings.EqualFold(posSide, "LONG") || strings.EqualFold(posSide, "SHORT") {
+			// keep
+		} else if strings.EqualFold(posSide, "LONG") {
+			posSide = "LONG"
+		} else if strings.EqualFold(posSide, "SHORT") {
+			posSide = "SHORT"
+		} else if strings.EqualFold(posSide, "LONG") || strings.EqualFold(posSide, "SHORT") {
+			// keep
+		} else if strings.EqualFold(posSide, "LONG") {
+			posSide = "LONG"
+		} else if strings.EqualFold(posSide, "SHORT") {
+			posSide = "SHORT"
+		} else if strings.EqualFold(posSide, "LONG") || strings.EqualFold(posSide, "SHORT") {
+			// keep
+		} else if strings.EqualFold(posSide, "LONG") {
+			posSide = "LONG"
+		} else if strings.EqualFold(posSide, "SHORT") {
+			posSide = "SHORT"
+		} else if strings.EqualFold(posSide, "LONG") || strings.EqualFold(posSide, "SHORT") {
+			// keep
+		} else {
+			if strings.EqualFold(posSide, "LONG") {
+				posSide = "LONG"
+			} else if strings.EqualFold(posSide, "SHORT") {
+				posSide = "SHORT"
+			} else if strings.EqualFold(posSide, "LONG") || strings.EqualFold(posSide, "SHORT") {
+				// keep
+			} else if strings.EqualFold(posSide, "LONG") {
+				posSide = "LONG"
+			} else if strings.EqualFold(posSide, "SHORT") {
+				posSide = "SHORT"
+			} else if strings.EqualFold(posSide, "LONG") || strings.EqualFold(posSide, "SHORT") {
+				// keep
+			} else if strings.EqualFold(posSide, "LONG") {
+				posSide = "LONG"
+			} else if strings.EqualFold(posSide, "SHORT") {
+				posSide = "SHORT"
+			} else if strings.EqualFold(posSide, "LONG") || strings.EqualFold(posSide, "SHORT") {
+				// keep
+			} else if strings.EqualFold(posSide, "LONG") {
+				posSide = "LONG"
+			} else if strings.EqualFold(posSide, "SHORT") {
+				posSide = "SHORT"
+			} else if strings.EqualFold(posSide, "LONG") || strings.EqualFold(posSide, "SHORT") {
+				// keep
+			} else if strings.EqualFold(posSide, "LONG") {
+				posSide = "LONG"
+			} else if strings.EqualFold(posSide, "SHORT") {
+				posSide = "SHORT"
+			} else if strings.EqualFold(posSide, "LONG") || strings.EqualFold(posSide, "SHORT") {
+				// keep
+			} else if strings.EqualFold(posSide, "LONG") {
+				posSide = "LONG"
+			} else if strings.EqualFold(posSide, "SHORT") {
+				posSide = "SHORT"
+			} else if strings.EqualFold(posSide, "LONG") || strings.EqualFold(posSide, "SHORT") {
+				// keep
+			} else if strings.EqualFold(posSide, "LONG") {
+				posSide = "LONG"
+			} else if strings.EqualFold(posSide, "SHORT") {
+				posSide = "SHORT"
+			} else if strings.EqualFold(posSide, "LONG") || strings.EqualFold(posSide, "SHORT") {
+				// keep
+			} else if strings.EqualFold(posSide, "LONG") {
+				posSide = "LONG"
+			} else if strings.EqualFold(posSide, "SHORT") {
+				posSide = "SHORT"
+			}
+		}
+	}
+	// 规范化 long/short 写法
+	if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	} else if strings.EqualFold(posSide, "LONG") {
+		posSide = "LONG"
+	} else if strings.EqualFold(posSide, "SHORT") {
+		posSide = "SHORT"
+	}
+
+	// order type: price=0 => market
+	typ := "LIMIT"
+	if price := getF("price"); price == 0 {
+		typ = "MARKET"
+	}
+
+	ct := getI64("create_time")
+	if ct > 0 && ct < 1e12 {
+		ct = ct * 1000
+	}
+	ut := getI64("finish_time")
+	if ut > 0 && ut < 1e12 {
+		ut = ut * 1000
+	}
+	if ut == 0 {
+		ut = getI64("update_time")
+		if ut > 0 && ut < 1e12 {
+			ut = ut * 1000
+		}
+	}
+	if ut == 0 {
+		ut = ct
+	}
 	return []parsedOrder{{
 		ExchangeOrderId: getStr("id"),
 		ClientOrderId:   getStr("text"),
-		Side:            "", // Gate futures ws result 里可能用 size 正负表示 side，这里留空，展示不依赖
-		PositionSide:    "",
-		Type:            strings.ToUpper(getStr("tif")),
+		Side:            side,
+		PositionSide:    posSide,
+		Type:            typ,
 		ReduceOnly:      ro,
 		Price:           getF("price"),
-		Quantity:        getF("size"),
-		FilledQty:       0,
+		Quantity:        qty,
+		FilledQty:       filled,
 		AvgPrice:        getF("fill_price"),
 		Status:          normalizeOrderStatus("gate", rawStatus),
 		RawStatus:       rawStatus,
 		IsOpen:          isOpenStatus("gate", rawStatus),
-		CreateTime:      getI64("create_time") * 1000,
-		UpdateTime:      getI64("finish_time") * 1000,
+		CreateTime:      ct,
+		UpdateTime:      ut,
 	}}
 }
 
@@ -571,8 +1066,10 @@ func normalizeOrderStatus(platform, raw string) string {
 			return raw
 		}
 	case "bitget":
-		// new / partially_filled / filled / cancelled
+		// live / partially_filled / filled / cancelled
 		switch raw {
+		case "LIVE":
+			return "NEW"
 		case "NEW":
 			return "NEW"
 		case "PARTIALLY_FILLED":
@@ -599,7 +1096,7 @@ func isOpenStatus(platform, raw string) bool {
 	case "gate":
 		return s == "OPEN"
 	case "bitget":
-		return s == "NEW" || s == "PARTIALLY_FILLED"
+		return s == "LIVE" || s == "NEW" || s == "PARTIALLY_FILLED"
 	default:
 		return false
 	}
@@ -678,5 +1175,3 @@ func upsertExchangeOrder(ctx context.Context, platform string, apiConfigId int64
 	}
 	return err
 }
-
-

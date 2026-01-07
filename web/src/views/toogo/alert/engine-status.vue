@@ -7,7 +7,9 @@
           <n-statistic label="运行状态">
             <template #prefix>
               <n-icon :color="engineStatus.running ? '#18a058' : '#d03050'">
-                <div :class="engineStatus.running ? 'status-dot running' : 'status-dot stopped'" />
+                <div
+                  :class="engineStatus.running ? 'status-dot running' : 'status-dot stopped'"
+                ></div>
               </n-icon>
             </template>
             {{ engineStatus.running ? '运行中' : '已停止' }}
@@ -151,193 +153,191 @@
 </template>
 
 <script lang="ts" setup>
-import { ref, reactive, onMounted, computed } from 'vue';
-import { getEngineStatus, getMarketAnalysis, getDirectionSignal } from '@/api/trading/alert';
+  import { ref, reactive, onMounted, computed } from 'vue';
+  import { getEngineStatus, getMarketAnalysis, getDirectionSignal } from '@/api/trading/alert';
 
-const loading = ref(false);
-const analysisLoading = ref(false);
+  const loading = ref(false);
+  const analysisLoading = ref(false);
 
-const engineStatus = reactive({
-  running: false,
-  activeRobots: 0,
-  activeSubscriptions: 0,
-});
-
-const analysisForm = reactive({
-  platform: 'bitget',
-  symbol: 'BTCUSDT',
-});
-
-const marketAnalysis = ref<any>(null);
-const directionSignal = ref<any>(null);
-
-const platformOptions = [
-  { label: 'Bitget', value: 'bitget' },
-  { label: 'Binance', value: 'binance' },
-  { label: 'OKX', value: 'okx' },
-  { label: 'Gate', value: 'gate' },
-];
-
-const getStateType = (state: string) => {
-  const map: Record<string, 'success' | 'warning' | 'error' | 'info'> = {
-    trend: 'success',
-    volatile: 'warning',
-    high_vol: 'error',
-    low_vol: 'info',
-  };
-  return map[state] || 'default';
-};
-
-const getStateText = (state: string) => {
-  const map: Record<string, string> = {
-    trend: '趋势',
-    volatile: '震荡',
-    high_vol: '高波动',
-    low_vol: '低波动',
-  };
-  return map[state] || state;
-};
-
-const getDirectionType = (dir: string) => {
-  const map: Record<string, 'success' | 'error' | 'default'> = {
-    LONG: 'success',
-    SHORT: 'error',
-    NEUTRAL: 'default',
-  };
-  return map[dir] || 'default';
-};
-
-const getDirectionText = (dir: string) => {
-  const map: Record<string, string> = {
-    LONG: '📈 做多',
-    SHORT: '📉 做空',
-    NEUTRAL: '➖ 中性',
-  };
-  return map[dir] || dir;
-};
-
-const getActionType = (action: string) => {
-  const map: Record<string, 'success' | 'error' | 'warning' | 'info' | 'default'> = {
-    OPEN_LONG: 'success',
-    OPEN_SHORT: 'error',
-    CLOSE_LONG: 'warning',
-    CLOSE_SHORT: 'warning',
-    HOLD: 'info',
-    WAIT: 'default',
-  };
-  return map[action] || 'default';
-};
-
-const getActionText = (action: string) => {
-  const map: Record<string, string> = {
-    OPEN_LONG: '开多',
-    OPEN_SHORT: '开空',
-    CLOSE_LONG: '平多',
-    CLOSE_SHORT: '平空',
-    HOLD: '持有',
-    WAIT: '等待',
-  };
-  return map[action] || action;
-};
-
-const timeframeColumns = [
-  { title: '周期', key: 'interval', width: 80 },
-  { title: '趋势', key: 'trend', width: 80 },
-  { title: '强度', key: 'strength', width: 100 },
-  { title: 'MA5', key: 'ma5', width: 100 },
-  { title: 'MA10', key: 'ma10', width: 100 },
-  { title: 'MA20', key: 'ma20', width: 100 },
-  { title: 'MACD', key: 'macd', width: 100 },
-  { title: 'RSI', key: 'rsi', width: 80 },
-  { title: 'ATR', key: 'atr', width: 100 },
-  { title: '形态', key: 'pattern', width: 120 },
-];
-
-const timeframeTableData = computed(() => {
-  if (!marketAnalysis.value?.timeframeData) return [];
-  const intervals = ['1m', '5m', '15m', '30m', '1h'];
-  return intervals.map((interval) => {
-    const data = marketAnalysis.value.timeframeData[interval] || {};
-    return {
-      interval,
-      trend: data.trend || '-',
-      strength: data.strength?.toFixed(4) || '-',
-      ma5: data.ma5?.toFixed(2) || '-',
-      ma10: data.ma10?.toFixed(2) || '-',
-      ma20: data.ma20?.toFixed(2) || '-',
-      macd: data.macd?.toFixed(4) || '-',
-      rsi: data.rsi?.toFixed(2) || '-',
-      atr: data.atr?.toFixed(4) || '-',
-      pattern: data.pattern || '-',
-    };
+  const engineStatus = reactive({
+    running: false,
+    activeRobots: 0,
+    activeSubscriptions: 0,
   });
-});
 
-const refreshStatus = async () => {
-  loading.value = true;
-  try {
-    const res = await getEngineStatus();
-    Object.assign(engineStatus, res);
-  } catch (error) {
-    console.error(error);
-  } finally {
-    loading.value = false;
-  }
-};
+  const analysisForm = reactive({
+    platform: 'binance',
+    symbol: 'BTCUSDT',
+  });
 
-const fetchMarketAnalysis = async () => {
-  analysisLoading.value = true;
-  try {
-    const [analysisRes, signalRes] = await Promise.all([
-      getMarketAnalysis(analysisForm.platform, analysisForm.symbol),
-      getDirectionSignal(analysisForm.platform, analysisForm.symbol),
-    ]);
-    marketAnalysis.value = analysisRes;
-    directionSignal.value = signalRes;
-  } catch (error) {
-    console.error(error);
-  } finally {
-    analysisLoading.value = false;
-  }
-};
+  const marketAnalysis = ref<any>(null);
+  const directionSignal = ref<any>(null);
 
-onMounted(() => {
-  refreshStatus();
-});
+  const platformOptions = [
+    { label: 'Binance', value: 'binance' },
+    { label: 'OKX', value: 'okx' },
+    { label: 'Gate', value: 'gate' },
+  ];
+
+  const getStateType = (state: string) => {
+    const map: Record<string, 'success' | 'warning' | 'error' | 'info'> = {
+      trend: 'success',
+      volatile: 'warning',
+      high_vol: 'error',
+      low_vol: 'info',
+    };
+    return map[state] || 'default';
+  };
+
+  const getStateText = (state: string) => {
+    const map: Record<string, string> = {
+      trend: '趋势',
+      volatile: '震荡',
+      high_vol: '高波动',
+      low_vol: '低波动',
+    };
+    return map[state] || state;
+  };
+
+  const getDirectionType = (dir: string) => {
+    const map: Record<string, 'success' | 'error' | 'default'> = {
+      LONG: 'success',
+      SHORT: 'error',
+      NEUTRAL: 'default',
+    };
+    return map[dir] || 'default';
+  };
+
+  const getDirectionText = (dir: string) => {
+    const map: Record<string, string> = {
+      LONG: '📈 做多',
+      SHORT: '📉 做空',
+      NEUTRAL: '➖ 中性',
+    };
+    return map[dir] || dir;
+  };
+
+  const getActionType = (action: string) => {
+    const map: Record<string, 'success' | 'error' | 'warning' | 'info' | 'default'> = {
+      OPEN_LONG: 'success',
+      OPEN_SHORT: 'error',
+      CLOSE_LONG: 'warning',
+      CLOSE_SHORT: 'warning',
+      HOLD: 'info',
+      WAIT: 'default',
+    };
+    return map[action] || 'default';
+  };
+
+  const getActionText = (action: string) => {
+    const map: Record<string, string> = {
+      OPEN_LONG: '开多',
+      OPEN_SHORT: '开空',
+      CLOSE_LONG: '平多',
+      CLOSE_SHORT: '平空',
+      HOLD: '持有',
+      WAIT: '等待',
+    };
+    return map[action] || action;
+  };
+
+  const timeframeColumns = [
+    { title: '周期', key: 'interval', width: 80 },
+    { title: '趋势', key: 'trend', width: 80 },
+    { title: '强度', key: 'strength', width: 100 },
+    { title: 'MA5', key: 'ma5', width: 100 },
+    { title: 'MA10', key: 'ma10', width: 100 },
+    { title: 'MA20', key: 'ma20', width: 100 },
+    { title: 'MACD', key: 'macd', width: 100 },
+    { title: 'RSI', key: 'rsi', width: 80 },
+    { title: 'ATR', key: 'atr', width: 100 },
+    { title: '形态', key: 'pattern', width: 120 },
+  ];
+
+  const timeframeTableData = computed(() => {
+    if (!marketAnalysis.value?.timeframeData) return [];
+    const intervals = ['1m', '5m', '15m', '30m', '1h'];
+    return intervals.map((interval) => {
+      const data = marketAnalysis.value.timeframeData[interval] || {};
+      return {
+        interval,
+        trend: data.trend || '-',
+        strength: data.strength?.toFixed(4) || '-',
+        ma5: data.ma5?.toFixed(2) || '-',
+        ma10: data.ma10?.toFixed(2) || '-',
+        ma20: data.ma20?.toFixed(2) || '-',
+        macd: data.macd?.toFixed(4) || '-',
+        rsi: data.rsi?.toFixed(2) || '-',
+        atr: data.atr?.toFixed(4) || '-',
+        pattern: data.pattern || '-',
+      };
+    });
+  });
+
+  const refreshStatus = async () => {
+    loading.value = true;
+    try {
+      const res = await getEngineStatus();
+      Object.assign(engineStatus, res);
+    } catch (error) {
+      console.error(error);
+    } finally {
+      loading.value = false;
+    }
+  };
+
+  const fetchMarketAnalysis = async () => {
+    analysisLoading.value = true;
+    try {
+      const [analysisRes, signalRes] = await Promise.all([
+        getMarketAnalysis(analysisForm.platform, analysisForm.symbol),
+        getDirectionSignal(analysisForm.platform, analysisForm.symbol),
+      ]);
+      marketAnalysis.value = analysisRes;
+      directionSignal.value = signalRes;
+    } catch (error) {
+      console.error(error);
+    } finally {
+      analysisLoading.value = false;
+    }
+  };
+
+  onMounted(() => {
+    refreshStatus();
+  });
 </script>
 
 <style scoped>
-.engine-status-page {
-  padding: 16px;
-}
-
-.status-dot {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  display: inline-block;
-  margin-right: 8px;
-}
-
-.status-dot.running {
-  background-color: #18a058;
-  animation: pulse 1.5s ease-in-out infinite;
-}
-
-.status-dot.stopped {
-  background-color: #d03050;
-}
-
-@keyframes pulse {
-  0% {
-    box-shadow: 0 0 0 0 rgba(24, 160, 88, 0.4);
+  .engine-status-page {
+    padding: 16px;
   }
-  70% {
-    box-shadow: 0 0 0 10px rgba(24, 160, 88, 0);
+
+  .status-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 8px;
   }
-  100% {
-    box-shadow: 0 0 0 0 rgba(24, 160, 88, 0);
+
+  .status-dot.running {
+    background-color: #18a058;
+    animation: pulse 1.5s ease-in-out infinite;
   }
-}
+
+  .status-dot.stopped {
+    background-color: #d03050;
+  }
+
+  @keyframes pulse {
+    0% {
+      box-shadow: 0 0 0 0 rgba(24, 160, 88, 0.4);
+    }
+    70% {
+      box-shadow: 0 0 0 10px rgba(24, 160, 88, 0);
+    }
+    100% {
+      box-shadow: 0 0 0 0 rgba(24, 160, 88, 0);
+    }
+  }
 </style>
-

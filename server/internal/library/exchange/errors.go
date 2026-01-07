@@ -25,9 +25,6 @@ const (
 	ErrCodeBinanceTooManyRequests ErrorCode = -1015
 	ErrCodeBinanceIPBanned        ErrorCode = -1003
 	ErrCodeBinanceWAFLimit        ErrorCode = -1010 // WAF 限制
-
-	// Bitget 特定错误码
-	ErrCodeBitgetRateLimit ErrorCode = 40014
 )
 
 // APIError API错误
@@ -53,7 +50,7 @@ func (e *APIError) IsRateLimitError() bool {
 	// 检查常见限流错误码
 	// 注意：ErrCodeRateLimit 和 ErrCodeBinanceTooManyRequests 都是 -1015
 	switch e.Code {
-	case ErrCodeRateLimit, ErrCodeBitgetRateLimit:
+	case ErrCodeRateLimit:
 		return true
 	}
 
@@ -126,9 +123,11 @@ func ParseAPIError(platform string, statusCode int, body string) *APIError {
 
 	// 尝试解析错误码
 	// Binance 格式: {"code":-1015,"msg":"Too many requests..."}
-	// Bitget 格式: {"code":"40014","msg":"..."}
 	codePattern := regexp.MustCompile(`"code"\s*:\s*(-?\d+|"(\d+)")`)
 	msgPattern := regexp.MustCompile(`"msg"\s*:\s*"([^"]*)"`)
+	// Gate 常见格式: {"label":"USER_NOT_FOUND","message":"..."}
+	labelPattern := regexp.MustCompile(`"label"\s*:\s*"([^"]*)"`)
+	messagePattern := regexp.MustCompile(`"message"\s*:\s*"([^"]*)"`)
 
 	if matches := codePattern.FindStringSubmatch(body); len(matches) > 1 {
 		codeStr := matches[1]
@@ -141,6 +140,22 @@ func ParseAPIError(platform string, statusCode int, body string) *APIError {
 
 	if matches := msgPattern.FindStringSubmatch(body); len(matches) > 1 {
 		apiErr.Message = matches[1]
+	}
+	// 兼容 Gate 的 message 字段（只有当 msg 未命中时再尝试，避免覆盖 Binance/Bitget）
+	if apiErr.Message == body {
+		if matches := messagePattern.FindStringSubmatch(body); len(matches) > 1 {
+			apiErr.Message = matches[1]
+		}
+	}
+	// label 作为前缀，帮助定位错误类型
+	if matches := labelPattern.FindStringSubmatch(body); len(matches) > 1 {
+		lbl := strings.TrimSpace(matches[1])
+		if lbl != "" {
+			// 避免重复拼接
+			if !strings.Contains(strings.ToUpper(apiErr.Message), strings.ToUpper(lbl)) {
+				apiErr.Message = lbl + ": " + apiErr.Message
+			}
+		}
 	}
 
 	return apiErr

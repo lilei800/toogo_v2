@@ -21,7 +21,7 @@ system:
   serveLog:
     switch: true
     queue: true
-    levelFormat: [ "WARN", "ERRO", "FATA", "PANI" ]
+    levelFormat: [ "ERRO", "FATA", "PANI" ] # 生产环境仅输出错误及以上，减少日志量（排障时可临时加 WARN/DEBU/INFO）
   i18n:
     switch: true
     defaultLanguage: "zh-CN"
@@ -30,13 +30,13 @@ system:
 
 # 缁熶竴榛樿鏃ュ織閰嶇疆
 defaultLogger: &defaultLogger
-  level: "warning"  # 鐢熶骇鐜鍙褰曡鍛婁互涓?
+  level: "error"  # 生产环境仅输出错误及以上，大幅减少日志量（排障时可临时改为 warning）
   flags: 42
   file: "{Y-m-d}.log"
   stdoutColorDisabled: true
   writerColorEnable: false
-  rotateExpire: "30d"  # 鐢熶骇鐜淇濈暀30澶?
-  rotateBackupLimit: 10
+  rotateExpire: "7d"  # 生产环境仅保留7天日志，减少磁盘占用
+  rotateBackupLimit: 3  # 仅保留3个备份文件
   rotateBackupCompress: 9
 
 
@@ -51,7 +51,7 @@ server:
   ErrorStack: false  # 鐢熶骇鐜涓嶈緭鍑哄爢鏍?
   ErrorLogEnabled: true
   errorLogPattern: "error/{Y-m-d}.log"
-  accessLogEnabled: true
+  accessLogEnabled: false  # 生产环境关闭访问日志，减少IO压力（需要时可开启）
   accessLogPattern: "access/{Y-m-d}.log"
   maxHeaderBytes: "100KB"
   clientMaxBodySize: "200MB"
@@ -195,7 +195,9 @@ database:
   logger:
     path: "logs/database"
     <<: *defaultLogger
-    stdout: false  # 鐢熶骇鐜涓嶈緭鍑哄埌缁堢
+    stdout: false  # 生产环境不输出到终端
+    level: "error"  # 数据库日志仅记录错误，减少日志量
+    rotateExpire: "3d"  # 数据库日志仅保留3天
   default:
     # 鈿狅笍 鐢熶骇鐜浣跨敤鐜鍙橀噺锛岄潪root鐢ㄦ埛
     link: "${DATABASE_URL:pgsql:postgres:postgres@tcp(127.0.0.1:5432)/hotgo}"
@@ -284,6 +286,27 @@ toogo:
   inviteRewardPower: 30
   withdrawMinAmount: 10
   withdrawFeeRate: 0.02
+  # WebSocket行情开关
+  websocketEnabled: true   # 启用交易所WS获取实时报价/多周期K线；关闭后将退化为HTTP轮询
+  websocketOnly: false     # WS-only：行情/多周期K线仅使用交易所WS（不做REST兜底/轮询）。未就绪时会返回空。
+  # 分析数据源覆写（K线/MarketAnalyzer 的来源平台）
+  # 说明：执行所(下单/持仓/余额/风控)仍用机器人绑定交易所；这里只影响“市场状态/多周期K线”的来源。
+  # 示例：让 Gate 机器人使用 OKX 的市场状态与K线
+  analysisSourceOverrides:
+    gate: okx
+    bitget: okx
+  # 选择性调试开关（避免终端洪流）
+  debug:
+    # 仅打开订单/持仓同步链路的关键日志（带节流，输出为 WARN）
+    orderPositionSync: false
+  # 私有WS（订单/持仓/账户）开关：默认启用；可按平台关闭并退化为轮询对账（更稳但更耗API）
+  privateWs:
+    enabled: true
+    platform:
+      bitget: true
+    # 当某个平台关闭私有WS时，使用轮询对账的间隔（秒）
+    pollingIntervalSecondsByPlatform:
+      bitget: 10
   # 鏈哄櫒浜哄紩鎿庨厤缃?
   engine:
     maxRobotsPerUser: 10       # 姣忕敤鎴锋渶澶ф満鍣ㄤ汉鏁?

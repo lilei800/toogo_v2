@@ -31,6 +31,9 @@ type GatePrivateStream struct {
 
 	symbols map[string]int // contract: BTC_USDT
 	onEvent func(ev *PrivateEvent)
+
+	// Gate account channel is account-level (not per contract). Subscribe once per connection.
+	subscribedAccount bool
 }
 
 func NewGatePrivateStream(cfg *Config) *GatePrivateStream {
@@ -140,6 +143,7 @@ func (s *GatePrivateStream) Stop() {
 func (s *GatePrivateStream) onConnected() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.subscribedAccount = false
 	// 重连后恢复订阅
 	for contract := range s.symbols {
 		s.subscribeLocked(contract)
@@ -203,6 +207,19 @@ func (s *GatePrivateStream) subscribeLocked(contract string) {
 		"payload": []string{contract},
 		"auth":    s.auth("futures.positions", "subscribe", ts),
 	})
+
+	// account (once per connection)
+	if !s.subscribedAccount {
+		_ = s.conn.Send(map[string]any{
+			"time":    ts,
+			"channel": "futures.account",
+			"event":   "subscribe",
+			// Gate 的 account 通常不需要按 contract 过滤；这里发送空 payload（容错：部分网关会忽略 payload）
+			"payload": []string{},
+			"auth":    s.auth("futures.account", "subscribe", ts),
+		})
+		s.subscribedAccount = true
+	}
 }
 
 func (s *GatePrivateStream) unsubscribeLocked(contract string) {
@@ -224,6 +241,18 @@ func (s *GatePrivateStream) unsubscribeLocked(contract string) {
 		"payload": []string{contract},
 		"auth":    s.auth("futures.positions", "unsubscribe", ts),
 	})
+
+	// account: unsubscribe when no more symbols tracked
+	if len(s.symbols) == 0 && s.subscribedAccount {
+		_ = s.conn.Send(map[string]any{
+			"time":    ts,
+			"channel": "futures.account",
+			"event":   "unsubscribe",
+			"payload": []string{},
+			"auth":    s.auth("futures.account", "unsubscribe", ts),
+		})
+		s.subscribedAccount = false
+	}
 }
 
 func (s *GatePrivateStream) onMessage(msg []byte) {
@@ -261,5 +290,3 @@ func (s *GatePrivateStream) onMessage(msg []byte) {
 		s.emit(PrivateEventAccount, "", msg)
 	}
 }
-
-

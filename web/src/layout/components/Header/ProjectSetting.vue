@@ -268,7 +268,7 @@
         () => designStore.darkTheme,
         (to) => {
           settingStore.navTheme = to ? 'header-dark' : 'dark';
-        }
+        },
       );
 
       const directionsOptions = computed(() => {

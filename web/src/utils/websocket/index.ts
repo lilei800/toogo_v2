@@ -34,7 +34,7 @@ export default () => {
         socket.send(
           JSON.stringify({
             event: SocketEnum.EventPing,
-          })
+          }),
         );
         self.serverTimeoutObj = setTimeout(function () {
           console.log('[WebSocket] Log');
@@ -47,6 +47,7 @@ export default () => {
   const useUserStore = useUserStoreWidthOut();
   let lockReconnect = false;
   let timer: ReturnType<typeof setTimeout>;
+  let hasSubscribedToken = false;
 
   const getWsAddr = (): string => {
     const cfgAddr = useUserStore.config?.wsAddr;
@@ -74,9 +75,9 @@ export default () => {
 
   const createSocket = () => {
     console.log('[WebSocket] createSocket...');
-    if (useUserStore.token === '') {
-      console.error('[WebSocket] Error');
-      resetReconnect();
+    // 登录页/注册页 token 为空是正常状态：不要报错、不要重连；等 token 写入后再连接。
+    if (!useUserStore.token) {
+      isActive = false;
       return;
     }
     try {
@@ -107,7 +108,7 @@ export default () => {
   };
 
   const reconnect = () => {
-      console.log('[WebSocket] Closed');
+    console.log('[WebSocket] Closed');
     if (lockReconnect) return;
     lockReconnect = true;
     clearTimeout(timer);
@@ -128,7 +129,7 @@ export default () => {
       // console.log('WebSocket:鏀跺埌涓€鏉℃秷鎭?, event.data);
 
       if (!isJsonString(event.data)) {
-      console.log('[WebSocket] Closed');
+        console.log('[WebSocket] Closed');
         return;
       }
 
@@ -157,6 +158,33 @@ export default () => {
     };
   };
 
+  // 监听 token：token 写入后自动建立连接；token 清空时主动断开并停止重连。
+  if (!hasSubscribedToken) {
+    hasSubscribedToken = true;
+    useUserStore.$subscribe((_mutation, state) => {
+      const token = state.token;
+      if (!token) {
+        // token 被清空（登出/过期）
+        try {
+          if (socket) {
+            socket.close();
+          }
+        } catch (_) {}
+        isActive = false;
+        heartCheck.reset();
+        clearTimeout(timer);
+        lockReconnect = true; // 阻止重连循环
+        return;
+      }
+
+      // token 变为有效：尝试连接（若还没连接）
+      lockReconnect = false;
+      if (!socket || socket.readyState === WebSocket.CLOSED) {
+        createSocket();
+      }
+    });
+  }
+
   createSocket();
   registerGlobalMessage();
 };
@@ -171,7 +199,7 @@ function onMessage(message: WebSocketMessage) {
   });
 
   if (!handled) {
-      console.log('[WebSocket] Closed');
+    console.log('[WebSocket] Closed');
   }
 }
 
@@ -192,7 +220,7 @@ export function sendMsg(event: string, data: any = null, isRetry = true) {
   try {
     socket.send(JSON.stringify({ event, data }));
   } catch (err: any) {
-      console.log('[WebSocket] Closed');
+    console.log('[WebSocket] Closed');
     if (!isRetry) {
       return;
     }
@@ -218,5 +246,3 @@ export function removeOnMessage(key: string): boolean {
 export function getAllOnMessage(): Map<string, Function> {
   return messageHandler;
 }
-
-

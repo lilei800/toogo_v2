@@ -10,6 +10,7 @@ import (
 	"context"
 	"hotgo/internal/dao"
 	"hotgo/internal/library/contexts"
+	"hotgo/internal/library/market"
 	"hotgo/internal/model/do"
 	"hotgo/internal/model/entity"
 	"hotgo/internal/model/input"
@@ -165,8 +166,19 @@ func (s *orderImpl) View(ctx context.Context, in *input.TradingOrderViewInp) (ou
 
 	// 如果是持仓中的订单，计算实时数据
 	if order.Status == 1 {
-		// TODO: 获取当前实时价格
-		out.CurrentPrice = order.OpenPrice * 1.01 // 模拟数据
+		// 当前实时价格：优先使用行情服务的 MarkPrice（缺失则LastPrice），拿不到则回退开仓价
+		out.CurrentPrice = order.OpenPrice
+		if robot != nil {
+			symbol := order.Symbol
+			if symbol == "" {
+				symbol = robot.Symbol
+			}
+			if ticker := market.GetMarketServiceManager().GetTicker(robot.Exchange, symbol); ticker != nil {
+				if p := ticker.EffectiveMarkPrice(); p > 0 {
+					out.CurrentPrice = p
+				}
+			}
+		}
 
 		// 计算盈利百分比
 		if order.Margin > 0 {
@@ -224,8 +236,19 @@ func (s *orderImpl) GetPositions(ctx context.Context, in *input.TradingOrderPosi
 	// 转换为输出模型
 	list = make([]*input.TradingOrderPositionsModel, 0, len(orders))
 	for _, order := range orders {
-		// TODO: 获取当前实时价格
-		currentPrice := order.OpenPrice * 1.01 // 模拟数据
+		// 当前实时价格：优先使用行情服务的 MarkPrice（缺失则LastPrice），拿不到则回退开仓价
+		currentPrice := order.OpenPrice
+		if robot != nil {
+			symbol := order.Symbol
+			if symbol == "" {
+				symbol = robot.Symbol
+			}
+			if ticker := market.GetMarketServiceManager().GetTicker(robot.Exchange, symbol); ticker != nil {
+				if p := ticker.EffectiveMarkPrice(); p > 0 {
+					currentPrice = p
+				}
+			}
+		}
 
 		// 计算盈利百分比
 		profitPercent := 0.0

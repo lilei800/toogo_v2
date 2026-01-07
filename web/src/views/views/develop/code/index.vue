@@ -234,7 +234,7 @@
           },
           {
             default: () => getOptionLabel(selectList.value.status, row.status),
-          }
+          },
         );
       },
       width: 150,

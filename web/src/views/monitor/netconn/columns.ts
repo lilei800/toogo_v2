@@ -29,7 +29,7 @@ export const columns = [
         },
         {
           default: () => row.proto,
-        }
+        },
       );
     },
   },
@@ -65,9 +65,9 @@ export const columns = [
             text: true,
             iconPlacement: 'right',
           },
-          { default: () => '认证状态', icon: renderIcon(HelpCircleOutline) }
+          { default: () => '认证状态', icon: renderIcon(HelpCircleOutline) },
         ),
-        '成功连接到服务端口并通过登录许可认证的客户端连接会显示为 `已认证` 状态'
+        '成功连接到服务端口并通过登录许可认证的客户端连接会显示为 `已认证` 状态',
       );
     },
     key: 'isAuth',
@@ -84,7 +84,7 @@ export const columns = [
         },
         {
           default: () => (row.isAuth ? '已认证' : '未认证'),
-        }
+        },
       );
     },
   },

@@ -36,8 +36,12 @@ type IToogoWallet interface {
 	TradeHistoryList(ctx context.Context, in *toogoin.TradeHistoryListInp) ([]*toogoin.TradeFillModel, int, *toogoin.TradeFillSummary, error)
 	// RunSessionSummaryList 运行区间盈亏汇总列表
 	RunSessionSummaryList(ctx context.Context, in *toogoin.RunSessionSummaryListInp) ([]*toogoin.RunSessionSummaryModel, int, *toogoin.RunSessionTotalSummary, error)
-	// SyncRunSession 同步运行区间盈亏数据
-	SyncRunSession(ctx context.Context, sessionId int64) (totalPnl, totalFee float64, tradeCount int, err error)
+	// SyncRunSession 同步/重算运行区间盈亏数据
+	// - calcOnly=true: 仅按本地成交流水(trading_trade_fill)时间窗重算并写回 run_session（不调用交易所）
+	// - calcOnly=false: 先从交易所拉取成交落库，再按本地成交流水时间窗重算写回 run_session
+	SyncRunSession(ctx context.Context, sessionId int64, calcOnly bool) (totalPnl, totalFee float64, tradeCount int, err error)
+	// StartTradeFillSyncTask 启动成交流水后台同步任务
+	StartTradeFillSyncTask(ctx context.Context)
 }
 
 var localToogoWallet IToogoWallet

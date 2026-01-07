@@ -110,6 +110,8 @@ type ToogoRunSessionSummaryListRes struct {
 type ToogoSyncRunSessionReq struct {
 	g.Meta    `path:"/toogo/wallet/run-session/sync" method:"post" tags:"Toogo钱包" summary:"同步运行区间盈亏数据"`
 	SessionId int64 `json:"sessionId" v:"required" description:"区间ID"`
+	// CalcOnly=1：仅根据本地成交流水(trading_trade_fill)按时间窗重算并写回 run_session，不调用交易所接口
+	CalcOnly int `json:"calcOnly" description:"1=仅重算写回(不拉交易所)，0=先拉交易所再重算写回"`
 }
 
 type ToogoSyncRunSessionRes struct {

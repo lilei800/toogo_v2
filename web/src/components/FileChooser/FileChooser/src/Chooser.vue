@@ -172,11 +172,11 @@
   const pageSlot = computed(() => (settingStore.isMobile ? 3 : 10));
 
   const imageGridCols = computed(() =>
-    settingStore.isMobile ? '2 s:1 m:2 l:2 xl:2 2xl:3' : '5 s:3 m:4 l:5 xl:5 2xl:6'
+    settingStore.isMobile ? '2 s:1 m:2 l:2 xl:2 2xl:3' : '5 s:3 m:4 l:5 xl:5 2xl:6',
   );
 
   const pageGridCols = computed(() =>
-    settingStore.isMobile ? '1' : '10 s:1 m:1 l:10 xl:10 2xl:10'
+    settingStore.isMobile ? '1' : '10 s:1 m:1 l:10 xl:10 2xl:10',
   );
 
   const options = ref({
@@ -339,7 +339,7 @@
           });
         },
       },
-      { icon: renderIcon(ClearOutlined) }
+      { icon: renderIcon(ClearOutlined) },
     );
   }
 

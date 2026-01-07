@@ -1,65 +1,78 @@
 package toogoin
 
 import (
-	"hotgo/internal/model/entity"
+    "hotgo/internal/model/entity"
 )
 
-// StrategyGroupListInp 策略模板列表输入
+// StrategyGroupListInp strategy group list input
+// isOfficial: 0=my, 1=official, nil=default(all official + my)
+// nonPersonal: 1=only system/public groups (user_id=0 or NULL)
 type StrategyGroupListInp struct {
-	Page       int    `json:"page" dc:"页码"`
-	PageSize   int    `json:"pageSize" dc:"每页数量"`
-	Exchange   string `json:"exchange" dc:"交易平台"`
-	Symbol     string `json:"symbol" dc:"交易对"`
-	IsOfficial *int   `json:"isOfficial" dc:"是否官方 0-我的 1-官方 nil-全部"`
+    Page        int    `json:"page" dc:"page"`
+    PageSize    int    `json:"pageSize" dc:"page size"`
+    Exchange    string `json:"exchange" dc:"exchange"`
+    Symbol      string `json:"symbol" dc:"symbol"`
+    IsOfficial  *int   `json:"isOfficial" dc:"0=my,1=official,nil=default"`
+    NonPersonal *int   `json:"nonPersonal" dc:"1=only non-personal groups (user_id=0 or NULL)"`
+    IsActive    *int   `json:"isActive" dc:"0=disabled,1=enabled,nil=all"`
 }
 
-// StrategyGroupListModel 策略模板列表输出
+// StrategyGroupListModel list output
 type StrategyGroupListModel struct {
-	List  []*StrategyGroupItem `json:"list" dc:"列表"`
-	Page  int                  `json:"page" dc:"页码"`
-	Total int                  `json:"total" dc:"总数"`
+    List  []*StrategyGroupItem `json:"list" dc:"list"`
+    Page  int                  `json:"page" dc:"page"`
+    Total int                  `json:"total" dc:"total"`
 }
 
-// StrategyGroupItem 策略模板项
+// StrategyGroupItem list item
 type StrategyGroupItem struct {
-	entity.TradingStrategyGroup
-	StrategyCount int `json:"strategyCount" dc:"策略数量"`
+    entity.TradingStrategyGroup
+    StrategyCount int `json:"strategyCount" dc:"strategy count"`
 }
 
-// StrategyGroupCreateInp 创建策略模板输入
+// StrategyGroupCreateInp create input
 type StrategyGroupCreateInp struct {
-	GroupName   string `json:"groupName" v:"required#请输入模板名称" dc:"模板名称"`
-	GroupKey    string `json:"groupKey" v:"required#请输入模板标识" dc:"模板标识"`
-	Exchange    string `json:"exchange" v:"required#请选择交易平台" dc:"交易平台"`
-	Symbol      string `json:"symbol" v:"required#请选择交易对" dc:"交易对"`
-	OrderType   string `json:"orderType" dc:"订单类型"`
-	MarginMode  string `json:"marginMode" dc:"保证金模式"`
-	Description string `json:"description" dc:"描述"`
-	Sort        int    `json:"sort" dc:"排序"`
+    GroupName   string `json:"groupName" v:"required#groupName required" dc:"group name"`
+    GroupKey    string `json:"groupKey" v:"required#groupKey required" dc:"group key"`
+    Exchange    string `json:"exchange" v:"required#exchange required" dc:"exchange"`
+    Symbol      string `json:"symbol" v:"required#symbol required" dc:"symbol"`
+    OrderType   string `json:"orderType" dc:"order type: market=市价, limit_then_market=先限价再市价(default)"`
+    MarginMode  string `json:"marginMode" dc:"margin mode"`
+    Description string `json:"description" dc:"description"`
+    Sort        int    `json:"sort" dc:"sort"`
+
+    // admin-only optional fields
+    IsOfficial *int   `json:"isOfficial" dc:"0/1 (admin only)"`
+    UserId     *int64 `json:"userId" dc:"owner user id (admin only)"`
+    IsActive   *int   `json:"isActive" dc:"0/1 (admin only)"`
+    IsVisible  *int   `json:"isVisible" dc:"0/1 (admin only)"`
 }
 
-// StrategyGroupUpdateInp 更新策略模板输入
+// StrategyGroupUpdateInp update input
 type StrategyGroupUpdateInp struct {
-	Id          int64  `json:"id" v:"required#请指定模板ID" dc:"模板ID"`
-	GroupName   string `json:"groupName" dc:"模板名称"`
-	Exchange    string `json:"exchange" dc:"交易平台"`
-	Symbol      string `json:"symbol" dc:"交易对"`
-	OrderType   string `json:"orderType" dc:"订单类型"`
-	MarginMode  string `json:"marginMode" dc:"保证金模式"`
-	Description string `json:"description" dc:"描述"`
-	Sort        int    `json:"sort" dc:"排序"`
-	IsVisible   *int   `json:"isVisible" dc:"是否可见: 0=隐藏, 1=显示（仅官方策略模板管理使用）"`
-	Confirmed   bool   `json:"confirmed" dc:"已确认修改（当策略组被机器人绑定时需要确认）"`
+    Id          int64  `json:"id" v:"required#id required" dc:"id"`
+    GroupName   string `json:"groupName" dc:"group name"`
+    Exchange    string `json:"exchange" dc:"exchange"`
+    Symbol      string `json:"symbol" dc:"symbol"`
+    OrderType   string `json:"orderType" dc:"order type: market=市价, limit_then_market=先限价再市价(default)"`
+    MarginMode  string `json:"marginMode" dc:"margin mode"`
+    Description string `json:"description" dc:"description"`
+    Sort        int    `json:"sort" dc:"sort"`
+
+    IsVisible  *int `json:"isVisible" dc:"0/1 (admin only)"`
+    IsOfficial *int `json:"isOfficial" dc:"0/1 (admin only)"`
+    IsActive   *int `json:"isActive" dc:"0/1 (admin only)"`
+
+    Confirmed bool `json:"confirmed" dc:"confirmed if group is bound to robots"`
 }
 
-// StrategyGroupDeleteInp 删除策略模板输入
+// StrategyGroupDeleteInp delete input
 type StrategyGroupDeleteInp struct {
-	Id int64 `json:"id" v:"required#请指定模板ID" dc:"模板ID"`
+    Id int64 `json:"id" v:"required#id required" dc:"id"`
 }
 
-// StrategyGroupInitInp 初始化策略输入
+// StrategyGroupInitInp init input
 type StrategyGroupInitInp struct {
-	GroupId    int64 `json:"groupId" v:"required#请指定模板ID" dc:"模板ID"`
-	UseDefault bool  `json:"useDefault" dc:"使用默认参数"`
+    GroupId    int64 `json:"groupId" v:"required#groupId required" dc:"groupId"`
+    UseDefault bool  `json:"useDefault" dc:"use default params"`
 }
-

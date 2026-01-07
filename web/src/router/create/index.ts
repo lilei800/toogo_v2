@@ -25,7 +25,7 @@ export const routerGenerator = (routerMap, parent?): any[] => {
     if (!routePath.startsWith('/')) {
       routePath = `${(parent && parent.path) || ''}/${item.path}`;
     }
-    
+
     const currentRouter: any = {
       // 路由地址 动态拼接生成如 /dashboard/workplace
       path: routePath,
@@ -67,15 +67,15 @@ export const generatorDynamicRouter = (): Promise<RouteRecordRaw[]> => {
       .then((result: any) => {
         let menuList: any[] = [];
         if (Array.isArray(result)) {
-           menuList = result;
+          menuList = result;
         } else if (result && result.list && Array.isArray(result.list)) {
-           menuList = result.list;
+          menuList = result.list;
         } else if (result && result.children && Array.isArray(result.children)) {
-           // 如果返回的是根节点，可能我们要的是它的子菜单，或者它本身就是唯一的根菜单
-           // 根据 hotgo 结构，DynamicRes 似乎是根节点，包含 children
-           menuList = [result]; // 尝试把它作为根节点
+          // 如果返回的是根节点，可能我们要的是它的子菜单，或者它本身就是唯一的根菜单
+          // 根据 hotgo 结构，DynamicRes 似乎是根节点，包含 children
+          menuList = [result]; // 尝试把它作为根节点
         } else if (result) {
-           menuList = [result];
+          menuList = [result];
         }
 
         const routeList = routerGenerator(menuList);

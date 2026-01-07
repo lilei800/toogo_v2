@@ -19,7 +19,7 @@
               :modes="['hex']"
               style="width: 100%"
               v-model:value="compData.color"
-              :swatches="['#FFFFFF', '#18A058', '#2080F0', '#F0A020', '#D03050','#000000']"
+              :swatches="['#FFFFFF', '#18A058', '#2080F0', '#F0A020', '#D03050', '#000000']"
             >
               <template #label>
                 <div style="color: white">图标颜色 {{ compData.color }}</div>

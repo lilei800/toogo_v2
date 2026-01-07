@@ -93,7 +93,7 @@ export function createRouterGuards(router: Router) {
     }
 
     asyncRouteStore.setDynamicAddedRoute(true);
-    
+
     // 路由已添加，需要重新导航以确保路由生效
     // 使用 replace: true 避免在历史记录中产生重复，并保留查询参数
     next({ ...to, replace: true });

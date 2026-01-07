@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"math"
 	"net/url"
 	"sort"
 	"strconv"
@@ -28,6 +29,22 @@ type Binance struct {
 	mu                  sync.Mutex
 	hedgeModeEnsured    bool
 	isolatedEnsuredBySy map[string]bool // key: formatted symbol
+
+	// 交易对规则缓存：用于对齐价格/数量精度（tickSize/stepSize），避免 Binance -1111 精度错误
+	symbolRulesBySy map[string]*binanceSymbolRules // key: formatted symbol
+}
+
+type binanceSymbolRules struct {
+	TickSizeStr string
+	StepSizeStr string
+	MinQtyStr   string
+
+	TickSize float64
+	StepSize float64
+	MinQty   float64
+
+	PriceDecimals int
+	QtyDecimals   int
 }
 
 // NewBinance 创建Binance实例
@@ -40,6 +57,7 @@ func NewBinance(config *Config) *Binance {
 		config:              config,
 		endpoint:            endpoint,
 		isolatedEnsuredBySy: make(map[string]bool),
+		symbolRulesBySy:     make(map[string]*binanceSymbolRules),
 	}
 }
 
@@ -223,16 +241,44 @@ func (b *Binance) CreateOrder(ctx context.Context, req *OrderRequest) (*Order, e
 	b.ensureHedgeMode(ctx)
 	b.ensureIsolatedMargin(ctx, req.Symbol)
 
+	sym := b.formatSymbol(req.Symbol)
+	rules, err := b.getSymbolRules(ctx, sym)
+	if err == nil && rules != nil {
+		// 数量对齐 stepSize：开仓向上取整，平仓(reduceOnly)向下取整（尽量避免超出持仓）
+		if rules.StepSize > 0 {
+			if req.ReduceOnly {
+				req.Quantity = floorToStep(req.Quantity, rules.StepSize)
+			} else {
+				req.Quantity = ceilToStep(req.Quantity, rules.StepSize)
+				if rules.MinQty > 0 && req.Quantity < rules.MinQty {
+					req.Quantity = rules.MinQty
+				}
+			}
+			req.Quantity = roundToDecimals(req.Quantity, rules.QtyDecimals)
+		}
+
+		// 价格对齐 tickSize：仅 LIMIT 单需要。BUY 向下取整，SELL 向上取整。
+		if strings.ToUpper(req.Type) == "LIMIT" && req.Price > 0 && rules.TickSize > 0 {
+			if strings.ToUpper(req.Side) == "BUY" {
+				req.Price = floorToStep(req.Price, rules.TickSize)
+			} else {
+				req.Price = ceilToStep(req.Price, rules.TickSize)
+			}
+			req.Price = roundToDecimals(req.Price, rules.PriceDecimals)
+		}
+	}
+
 	params := map[string]string{
-		"symbol":       b.formatSymbol(req.Symbol),
+		"symbol":       sym,
 		"side":         req.Side,
 		"positionSide": req.PositionSide,
 		"type":         req.Type,
-		"quantity":     strconv.FormatFloat(req.Quantity, 'f', -1, 64),
+		"quantity":     b.formatNumber(req.Quantity, safeDecimals(rules, false)),
 	}
 
-	if req.Price > 0 {
-		params["price"] = strconv.FormatFloat(req.Price, 'f', -1, 64)
+	// 市价单不携带 price，避免误把 MARKET 订单变成 LIMIT
+	if strings.ToUpper(req.Type) == "LIMIT" && req.Price > 0 {
+		params["price"] = b.formatNumber(req.Price, safeDecimals(rules, true))
 		params["timeInForce"] = "GTC"
 	}
 
@@ -242,6 +288,12 @@ func (b *Binance) CreateOrder(ctx context.Context, req *OrderRequest) (*Order, e
 	}
 
 	resp, err := b.signedRequest(ctx, "POST", "/fapi/v1/order", params)
+	// 兼容：部分账户/模式下 Binance 会返回 -1106，提示 reduceOnly 不需要/不被接受。
+	// 对于“平仓按钮”场景，我们优先保证能平掉仓位，因此遇到该错误时自动去掉 reduceOnly 重试一次。
+	if err != nil && req.ReduceOnly && b.isReduceOnlyNotRequiredErr(err) {
+		delete(params, "reduceOnly")
+		resp, err = b.signedRequest(ctx, "POST", "/fapi/v1/order", params)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -261,6 +313,131 @@ func (b *Binance) CreateOrder(ctx context.Context, req *OrderRequest) (*Order, e
 		Status:       j.Get("status").String(),
 		CreateTime:   j.Get("updateTime").Int64(),
 	}, nil
+}
+
+func (b *Binance) isReduceOnlyNotRequiredErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	// WrapAsAPIError format: "[binance] API error (code=-1106): Parameter 'reduceonly' sent when not required."
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "code=-1106") && strings.Contains(msg, "reduceonly") && strings.Contains(msg, "not required")
+}
+
+func (b *Binance) getSymbolRules(ctx context.Context, formattedSymbol string) (*binanceSymbolRules, error) {
+	if strings.TrimSpace(formattedSymbol) == "" {
+		return nil, gerror.New("binance: empty symbol")
+	}
+
+	b.mu.Lock()
+	if v, ok := b.symbolRulesBySy[formattedSymbol]; ok && v != nil && v.StepSize > 0 && v.TickSize > 0 {
+		b.mu.Unlock()
+		return v, nil
+	}
+	b.mu.Unlock()
+
+	// 拉取 futures exchangeInfo，解析 filters
+	raw, err := b.publicRequest(ctx, "GET", "/fapi/v1/exchangeInfo", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var found *binanceSymbolRules
+	for _, item := range gjson.New(raw).Get("symbols").Array() {
+		j := gjson.New(item)
+		if j.Get("symbol").String() != formattedSymbol {
+			continue
+		}
+
+		r := &binanceSymbolRules{}
+		for _, f := range j.Get("filters").Array() {
+			fj := gjson.New(f)
+			switch fj.Get("filterType").String() {
+			case "PRICE_FILTER":
+				r.TickSizeStr = fj.Get("tickSize").String()
+			case "LOT_SIZE":
+				r.StepSizeStr = fj.Get("stepSize").String()
+				r.MinQtyStr = fj.Get("minQty").String()
+			}
+		}
+
+		r.TickSize, _ = strconv.ParseFloat(r.TickSizeStr, 64)
+		r.StepSize, _ = strconv.ParseFloat(r.StepSizeStr, 64)
+		r.MinQty, _ = strconv.ParseFloat(r.MinQtyStr, 64)
+
+		r.PriceDecimals = decimalsFromStepString(r.TickSizeStr)
+		r.QtyDecimals = decimalsFromStepString(r.StepSizeStr)
+
+		found = r
+		break
+	}
+
+	if found == nil || found.StepSize <= 0 || found.TickSize <= 0 {
+		return nil, gerror.Newf("binance: failed to get symbol rules for %s", formattedSymbol)
+	}
+
+	b.mu.Lock()
+	b.symbolRulesBySy[formattedSymbol] = found
+	b.mu.Unlock()
+
+	return found, nil
+}
+
+func (b *Binance) formatNumber(v float64, decimals int) string {
+	if decimals < 0 {
+		decimals = -1
+	}
+	return strconv.FormatFloat(v, 'f', decimals, 64)
+}
+
+func safeDecimals(rules *binanceSymbolRules, isPrice bool) int {
+	if rules == nil {
+		return -1
+	}
+	if isPrice {
+		if rules.PriceDecimals >= 0 {
+			return rules.PriceDecimals
+		}
+		return -1
+	}
+	if rules.QtyDecimals >= 0 {
+		return rules.QtyDecimals
+	}
+	return -1
+}
+
+func decimalsFromStepString(step string) int {
+	step = strings.TrimSpace(step)
+	if step == "" {
+		return -1
+	}
+	if i := strings.IndexByte(step, '.'); i >= 0 {
+		frac := strings.TrimRight(step[i+1:], "0")
+		return len(frac)
+	}
+	return 0
+}
+
+func roundToDecimals(v float64, decimals int) float64 {
+	if decimals <= 0 {
+		return math.Round(v)
+	}
+	factor := math.Pow(10, float64(decimals))
+	return math.Round(v*factor) / factor
+}
+
+func floorToStep(v, step float64) float64 {
+	if step <= 0 {
+		return v
+	}
+	return math.Floor(v/step) * step
+}
+
+func ceilToStep(v, step float64) float64 {
+	if step <= 0 {
+		return v
+	}
+	return math.Ceil(v/step) * step
 }
 
 // CancelOrder 取消订单

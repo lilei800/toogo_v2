@@ -42,6 +42,6 @@ export function UploadPart(params: UploadFileParams) {
       url: '/upload/uploadPart',
       method: 'post',
     },
-    params
+    params,
   );
 }

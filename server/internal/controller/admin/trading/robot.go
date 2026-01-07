@@ -90,6 +90,17 @@ func (c *cRobot) Start(ctx context.Context, req *trading.RobotStartReq) (res *tr
 	return
 }
 
+// Restart 重启机器人（仅停用状态可重启）
+func (c *cRobot) Restart(ctx context.Context, req *trading.RobotRestartReq) (res *trading.RobotRestartRes, err error) {
+	err = tradingLogic.Robot.Restart(ctx, &req.TradingRobotStartInp)
+	if err != nil {
+		return nil, err
+	}
+
+	res = &trading.RobotRestartRes{}
+	return
+}
+
 // Pause 暂停机器人
 func (c *cRobot) Pause(ctx context.Context, req *trading.RobotPauseReq) (res *trading.RobotPauseRes, err error) {
 	err = tradingLogic.Robot.Pause(ctx, &req.TradingRobotPauseInp)

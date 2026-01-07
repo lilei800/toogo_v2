@@ -164,7 +164,7 @@
       {
         type: option.listClass as 'success' | 'warning' | 'error' | 'info' | 'primary' | 'default',
       },
-      { default: () => option.label }
+      { default: () => option.label },
     );
   };
 

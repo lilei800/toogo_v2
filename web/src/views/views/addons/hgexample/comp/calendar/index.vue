@@ -26,7 +26,7 @@
         value: ref(addDays(Date.now(), 1).valueOf()),
         handleUpdateValue(
           _: number,
-          { year, month, date }: { year: number; month: number; date: number }
+          { year, month, date }: { year: number; month: number; date: number },
         ) {
           message.success(`${year}-${month}-${date}`);
         },

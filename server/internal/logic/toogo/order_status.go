@@ -149,7 +149,7 @@ func CompleteOrderFields(ctx context.Context, order *entity.TradingOrder, robot 
 	if order.Quantity <= 0 {
 		if exchangeOrder != nil && exchangeOrder.Quantity > 0 {
 			updateData["quantity"] = exchangeOrder.Quantity
-		} else if pos != nil && math.Abs(pos.PositionAmt) > 0.0001 {
+		} else if pos != nil && math.Abs(pos.PositionAmt) > positionAmtEpsilon {
 			updateData["quantity"] = math.Abs(pos.PositionAmt)
 		}
 	}
@@ -166,7 +166,11 @@ func CompleteOrderFields(ctx context.Context, order *entity.TradingOrder, robot 
 	// 补全市场状态和风险偏好（如果缺失）
 	if robot != nil {
 		// 从全局市场分析器获取市场状态
-		globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(robot.Exchange, robot.Symbol)
+		ap := market.ResolveAnalysisPlatform(ctx, robot.Exchange)
+		if ap == "" {
+			ap = robot.Exchange
+		}
+		globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(ap, robot.Symbol)
 		if globalAnalysis != nil {
 			marketState := normalizeMarketState(string(globalAnalysis.MarketState))
 			if marketState != "" {
@@ -223,11 +227,11 @@ func CompleteOrderFields(ctx context.Context, order *entity.TradingOrder, robot 
 
 // DataConsistencyCheck 数据一致性检查结果
 type DataConsistencyCheck struct {
-	IsConsistent     bool     // 是否一致
-	Inconsistencies  []string // 不一致项列表
-	MemoryStatus     string   // 内存状态：has_position/no_position/unknown
-	DatabaseStatus   string   // 数据库状态：has_order/no_order/unknown
-	ExchangeStatus   string   // 交易所状态：has_position/no_position/unknown
+	IsConsistent    bool     // 是否一致
+	Inconsistencies []string // 不一致项列表
+	MemoryStatus    string   // 内存状态：has_position/no_position/unknown
+	DatabaseStatus  string   // 数据库状态：has_order/no_order/unknown
+	ExchangeStatus  string   // 交易所状态：has_position/no_position/unknown
 }
 
 // CheckDataConsistency 检查三层数据一致性（内存 ↔ 数据库 ↔ 交易所）
@@ -242,7 +246,7 @@ func CheckDataConsistency(ctx context.Context, robotId int64, positionSide strin
 		hasMemoryPosition := false
 		if engine.CurrentPositions != nil {
 			for _, pos := range engine.CurrentPositions {
-				if pos.PositionSide == positionSide && math.Abs(pos.PositionAmt) > 0.0001 {
+				if pos.PositionSide == positionSide && math.Abs(pos.PositionAmt) > positionAmtEpsilon {
 					hasMemoryPosition = true
 					break
 				}
@@ -267,7 +271,7 @@ func CheckDataConsistency(ctx context.Context, robotId int64, positionSide strin
 	}
 
 	// 检查交易所状态
-	if exchangePos != nil && math.Abs(exchangePos.PositionAmt) > 0.0001 {
+	if exchangePos != nil && math.Abs(exchangePos.PositionAmt) > positionAmtEpsilon {
 		result.ExchangeStatus = "has_position"
 	} else {
 		result.ExchangeStatus = "no_position"
@@ -364,4 +368,3 @@ func FixDataInconsistency(ctx context.Context, robotId int64, positionSide strin
 
 	return nil
 }
-

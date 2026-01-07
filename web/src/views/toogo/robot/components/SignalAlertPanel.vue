@@ -65,279 +65,289 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
-import type { AnalysisData, TickerData } from '../composables/useRobotStatus';
-import {
-  formatPrice,
-  formatPriceUsdt,
-  formatPriceChange,
-  getPriceChangeClass
-} from '../composables/useRobotStatus';
+  import { computed } from 'vue';
+  import type { AnalysisData, TickerData } from '../composables/useRobotStatus';
+  import {
+    formatPrice,
+    formatPriceUsdt,
+    formatPriceChange,
+    getPriceChangeClass,
+  } from '../composables/useRobotStatus';
 
-const props = defineProps<{
-  data: AnalysisData | undefined;
-  ticker: TickerData | undefined;
-}>();
+  const props = defineProps<{
+    data: AnalysisData | undefined;
+    ticker: TickerData | undefined;
+  }>();
 
-// 计算属性
-const longTriggerPrice = computed(() => {
-  if (!props.data?.signal) return 0;
-  return props.data.signal.windowMinPrice + props.data.signal.signalThreshold;
-});
+  // 计算属性
+  const longTriggerPrice = computed(() => {
+    if (!props.data?.signal) return 0;
+    return props.data.signal.windowMinPrice + props.data.signal.signalThreshold;
+  });
 
-const shortTriggerPrice = computed(() => {
-  if (!props.data?.signal) return 0;
-  return props.data.signal.windowMaxPrice - props.data.signal.signalThreshold;
-});
+  const shortTriggerPrice = computed(() => {
+    if (!props.data?.signal) return 0;
+    return props.data.signal.windowMaxPrice - props.data.signal.signalThreshold;
+  });
 
-// 图表路径计算
-const chartLinePath = computed(() => {
-  if (!props.data?.priceWindow?.length) return '';
-  const points = props.data.priceWindow;
-  const minPrice = Math.min(...points.map(p => p.price));
-  const maxPrice = Math.max(...points.map(p => p.price));
-  const priceRange = maxPrice - minPrice || 1;
-  
-  const width = 640;
-  const height = 100;
-  const padding = 10;
-  
-  return points.map((p, i) => {
-    const x = (i / (points.length - 1)) * width;
-    const y = padding + ((maxPrice - p.price) / priceRange) * (height - padding * 2);
-    return `${i === 0 ? 'M' : 'L'} ${x} ${y}`;
-  }).join(' ');
-});
+  // 图表路径计算
+  const chartLinePath = computed(() => {
+    if (!props.data?.priceWindow?.length) return '';
+    const points = props.data.priceWindow;
+    const minPrice = Math.min(...points.map((p) => p.price));
+    const maxPrice = Math.max(...points.map((p) => p.price));
+    const priceRange = maxPrice - minPrice || 1;
 
-const chartFillPath = computed(() => {
-  if (!chartLinePath.value) return '';
-  return chartLinePath.value + ' L 640 110 L 0 110 Z';
-});
+    const width = 640;
+    const height = 100;
+    const padding = 10;
 
-const baselineY = computed(() => {
-  if (!props.data?.priceWindow?.length) return 60;
-  const points = props.data.priceWindow;
-  const minPrice = Math.min(...points.map(p => p.price));
-  const maxPrice = Math.max(...points.map(p => p.price));
-  const avgPrice = (minPrice + maxPrice) / 2;
-  const priceRange = maxPrice - minPrice || 1;
-  return 10 + ((maxPrice - avgPrice) / priceRange) * 80;
-});
+    return points
+      .map((p, i) => {
+        const x = (i / (points.length - 1)) * width;
+        const y = padding + ((maxPrice - p.price) / priceRange) * (height - padding * 2);
+        return `${i === 0 ? 'M' : 'L'} ${x} ${y}`;
+      })
+      .join(' ');
+  });
 
-// 信号相关函数
-function getSignalBadgeClass(direction: string | undefined): string {
-  switch (direction) {
-    case 'LONG': return 'long';
-    case 'SHORT': return 'short';
-    default: return 'neutral';
+  const chartFillPath = computed(() => {
+    if (!chartLinePath.value) return '';
+    return chartLinePath.value + ' L 640 110 L 0 110 Z';
+  });
+
+  const baselineY = computed(() => {
+    if (!props.data?.priceWindow?.length) return 60;
+    const points = props.data.priceWindow;
+    const minPrice = Math.min(...points.map((p) => p.price));
+    const maxPrice = Math.max(...points.map((p) => p.price));
+    const avgPrice = (minPrice + maxPrice) / 2;
+    const priceRange = maxPrice - minPrice || 1;
+    return 10 + ((maxPrice - avgPrice) / priceRange) * 80;
+  });
+
+  // 信号相关函数
+  function getSignalBadgeClass(direction: string | undefined): string {
+    switch (direction) {
+      case 'LONG':
+        return 'long';
+      case 'SHORT':
+        return 'short';
+      default:
+        return 'neutral';
+    }
   }
-}
 
-function getSignalIcon(direction: string | undefined): string {
-  switch (direction) {
-    case 'LONG': return '📈';
-    case 'SHORT': return '📉';
-    default: return '⏳';
+  function getSignalIcon(direction: string | undefined): string {
+    switch (direction) {
+      case 'LONG':
+        return '📈';
+      case 'SHORT':
+        return '📉';
+      default:
+        return '⏳';
+    }
   }
-}
 
-function getSignalDirectionText(direction: string | undefined): string {
-  switch (direction) {
-    case 'LONG': return '做多信号';
-    case 'SHORT': return '做空信号';
-    default: return '监控中';
+  function getSignalDirectionText(direction: string | undefined): string {
+    switch (direction) {
+      case 'LONG':
+        return '做多信号';
+      case 'SHORT':
+        return '做空信号';
+      default:
+        return '监控中';
+    }
   }
-}
 </script>
 
 <style scoped>
-.signal-alert-panel {
-  background: var(--n-color-embedded);
-  border-radius: 8px;
-  padding: 12px;
-  margin-bottom: 12px;
-}
+  .signal-alert-panel {
+    background: var(--n-color-embedded);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 12px;
+  }
 
-.signal-alert-header {
-  margin-bottom: 10px;
-}
+  .signal-alert-header {
+    margin-bottom: 10px;
+  }
 
-.signal-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  border-radius: 20px;
-  font-weight: 600;
-}
+  .signal-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-weight: 600;
+  }
 
-.signal-badge.long {
-  background: rgba(var(--success-color-rgb), 0.15);
-  color: var(--success-color);
-}
+  .signal-badge.long {
+    background: rgba(var(--success-color-rgb), 0.15);
+    color: var(--success-color);
+  }
 
-.signal-badge.short {
-  background: rgba(var(--error-color-rgb), 0.15);
-  color: var(--error-color);
-}
+  .signal-badge.short {
+    background: rgba(var(--error-color-rgb), 0.15);
+    color: var(--error-color);
+  }
 
-.signal-badge.neutral {
-  background: rgba(var(--warning-color-rgb), 0.15);
-  color: var(--warning-color);
-}
+  .signal-badge.neutral {
+    background: rgba(var(--warning-color-rgb), 0.15);
+    color: var(--warning-color);
+  }
 
-.badge-icon {
-  font-size: 16px;
-}
+  .badge-icon {
+    font-size: 16px;
+  }
 
-.badge-text {
-  font-size: 14px;
-}
+  .badge-text {
+    font-size: 14px;
+  }
 
-.badge-strength {
-  font-size: 12px;
-  opacity: 0.8;
-}
+  .badge-strength {
+    font-size: 12px;
+    opacity: 0.8;
+  }
 
-.signal-price-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 10px;
-}
+  .signal-price-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+  }
 
-.price-current {
-  display: flex;
-  flex-direction: column;
-}
+  .price-current {
+    display: flex;
+    flex-direction: column;
+  }
 
-.price-label {
-  font-size: 11px;
-  color: var(--n-text-color-3);
-}
+  .price-label {
+    font-size: 11px;
+    color: var(--n-text-color-3);
+  }
 
-.price-value {
-  font-size: 20px;
-  font-weight: bold;
-}
+  .price-value {
+    font-size: 20px;
+    font-weight: bold;
+  }
 
-.price-value.up {
-  color: var(--success-color);
-}
+  .price-value.up {
+    color: var(--success-color);
+  }
 
-.price-value.down {
-  color: var(--error-color);
-}
+  .price-value.down {
+    color: var(--error-color);
+  }
 
-.price-change {
-  font-size: 12px;
-}
+  .price-change {
+    font-size: 12px;
+  }
 
-.price-change.up {
-  color: var(--success-color);
-}
+  .price-change.up {
+    color: var(--success-color);
+  }
 
-.price-change.down {
-  color: var(--error-color);
-}
+  .price-change.down {
+    color: var(--error-color);
+  }
 
-.price-window {
-  display: flex;
-  gap: 16px;
-}
+  .price-window {
+    display: flex;
+    gap: 16px;
+  }
 
-.window-item {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
+  .window-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
 
-.window-item span {
-  font-size: 11px;
-  color: var(--n-text-color-3);
-}
+  .window-item span {
+    font-size: 11px;
+    color: var(--n-text-color-3);
+  }
 
-.window-item strong {
-  font-size: 14px;
-}
+  .window-item strong {
+    font-size: 14px;
+  }
 
-.window-item.low strong {
-  color: var(--success-color);
-}
+  .window-item.low strong {
+    color: var(--success-color);
+  }
 
-.window-item.high strong {
-  color: var(--error-color);
-}
+  .window-item.high strong {
+    color: var(--error-color);
+  }
 
-.signal-triggers {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 10px;
-}
+  .signal-triggers {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
 
-.trigger {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-radius: 6px;
-  font-size: 12px;
-}
+  .trigger {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+  }
 
-.trigger.long {
-  background: rgba(var(--success-color-rgb), 0.1);
-}
+  .trigger.long {
+    background: rgba(var(--success-color-rgb), 0.1);
+  }
 
-.trigger.short {
-  background: rgba(var(--error-color-rgb), 0.1);
-}
+  .trigger.short {
+    background: rgba(var(--error-color-rgb), 0.1);
+  }
 
-.trigger-name {
-  font-weight: 600;
-}
+  .trigger-name {
+    font-weight: 600;
+  }
 
-.trigger-price {
-  flex: 1;
-}
+  .trigger-price {
+    flex: 1;
+  }
 
-.trigger-dist {
-  color: var(--n-text-color-3);
-}
+  .trigger-dist {
+    color: var(--n-text-color-3);
+  }
 
-.signal-chart {
-  height: 120px;
-  margin-bottom: 8px;
-}
+  .signal-chart {
+    height: 120px;
+    margin-bottom: 8px;
+  }
 
-.chart-svg {
-  width: 100%;
-  height: 100%;
-}
+  .chart-svg {
+    width: 100%;
+    height: 100%;
+  }
 
-.chart-line {
-  fill: none;
-  stroke: var(--primary-color);
-  stroke-width: 2;
-}
+  .chart-line {
+    fill: none;
+    stroke: var(--primary-color);
+    stroke-width: 2;
+  }
 
-.chart-fill {
-  fill: rgba(var(--primary-color-rgb), 0.1);
-}
+  .chart-fill {
+    fill: rgba(var(--primary-color-rgb), 0.1);
+  }
 
-.chart-baseline {
-  stroke: var(--n-border-color);
-  stroke-width: 1;
-  stroke-dasharray: 4 4;
-}
+  .chart-baseline {
+    stroke: var(--n-border-color);
+    stroke-width: 1;
+    stroke-dasharray: 4 4;
+  }
 
-.signal-reason {
-  font-size: 12px;
-  color: var(--n-text-color-2);
-  padding: 8px;
-  background: var(--n-color);
-  border-radius: 4px;
-}
+  .signal-reason {
+    font-size: 12px;
+    color: var(--n-text-color-2);
+    padding: 8px;
+    background: var(--n-color);
+    border-radius: 4px;
+  }
 </style>
-

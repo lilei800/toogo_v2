@@ -10,7 +10,17 @@
           <div class="root-left-title">开箱即用，中后台前端/设计解决方案</div>
           <div class="root-left-desc">多生态支持、功能丰富、高颜值模板</div> -->
           <!-- <div class="coding-img"><img src="~@/assets/images/coding.png" alt="coding" /></div> -->
-          <div class="coding-img" style="width: 100%; margin: 0; display: flex; justify-content: center; align-items: center; height: 100%;">
+          <div
+            class="coding-img"
+            style="
+              width: 100%;
+              margin: 0;
+              display: flex;
+              justify-content: center;
+              align-items: center;
+              height: 100%;
+            "
+          >
             <ToogoRobot />
           </div>
         </div>
@@ -37,13 +47,8 @@
           <template v-if="type === 'login'">
             <!-- 登录方式切换 -->
             <div class="account-tabs">
-              <div
-                class="account-tabs-item on-item"
-                >账号密码登录</div
-              >
-              <div
-                class="account-tabs-item disabled-item"
-                @click="handleMobileLoginClick"
+              <div class="account-tabs-item on-item">账号密码登录</div>
+              <div class="account-tabs-item disabled-item" @click="handleMobileLoginClick"
                 >手机验证码登录(未开放)</div
               >
             </div>
@@ -51,14 +56,15 @@
             <transition name="fade-bottom" appear mode="out-in">
               <HotgoLoginForm mode="account" @updateActiveModule="handleUpdateActiveModule" />
             </transition>
-
           </template>
 
           <!-- 注册 -->
           <template v-else>
             <div class="account-tabs">
               <div class="account-tabs-item on-item">邮箱注册</div>
-              <div class="account-tabs-item disabled-item" @click="handleMobileRegisterClick">手机注册(未开放)</div>
+              <div class="account-tabs-item disabled-item" @click="handleMobileRegisterClick"
+                >手机注册(未开放)</div
+              >
             </div>
             <transition name="fade-bottom" appear mode="out-in">
               <RegisterForm @updateActiveModule="handleRegisterUpdateActiveModule" />

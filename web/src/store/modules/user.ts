@@ -69,7 +69,7 @@ export const useUserStore = defineStore({
       this.info = info;
     },
     setConfig(config) {
-        this.config = config;
+      this.config = config;
     },
     // 登录
     async login(userInfo) {

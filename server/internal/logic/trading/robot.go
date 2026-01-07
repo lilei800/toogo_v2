@@ -9,10 +9,15 @@ package trading
 import (
 	"context"
 	"encoding/json"
+	"math"
+	"strings"
+	"time"
 	tradingapi "hotgo/api/admin/trading"
 	"hotgo/internal/consts"
 	"hotgo/internal/dao"
 	"hotgo/internal/library/contexts"
+	"hotgo/internal/library/exchange"
+	"hotgo/internal/library/market"
 	"hotgo/internal/logic/toogo"
 	"hotgo/internal/model/entity"
 	"hotgo/internal/model/input"
@@ -24,6 +29,16 @@ import (
 )
 
 type robotImpl struct{}
+
+func canonicalPlatform(p string) string {
+	return strings.ToLower(strings.TrimSpace(p))
+}
+
+// canonicalSymbol is the ONLY symbol format stored in DB / used as cache keys.
+// It intentionally matches exchange.Formatter.NormalizeSymbol: "BTCUSDT".
+func canonicalSymbol(s string) string {
+	return exchange.Formatter.NormalizeSymbol(s)
+}
 
 // List 获取机器人列表
 func (s *robotImpl) List(ctx context.Context, in *input.TradingRobotListInp) (list []*input.TradingRobotListModel, totalCount int, err error) {
@@ -71,6 +86,45 @@ func (s *robotImpl) List(ctx context.Context, in *input.TradingRobotListInp) (li
 		return nil, 0, err
 	}
 
+	// ===== 列表实时市场状态（反推全局引擎是否正常产出）=====
+	// 说明：
+	// - DB 字段 trading_robot.market_state 在新架构下不会实时更新，容易“空/旧/被污染”
+	// - 列表页展示更应取全局 MarketAnalyzer 的实时结果（内存读缓存，成本很低）
+	// - 若分析未产出（nil/过期），则不返回 marketState（避免展示 DB 旧值误导）
+	if len(list) > 0 {
+		ma := market.GetMarketAnalyzer()
+		now := time.Now()
+		for _, item := range list {
+			if item == nil || item.Exchange == "" || item.Symbol == "" {
+				continue
+			}
+			// 不使用 DB 值（实时态不应依赖DB）；默认置空，只有实时分析可用时才填充
+			item.MarketState = ""
+			analysis := ma.GetAnalysis(item.Exchange, item.Symbol)
+			if analysis == nil {
+				continue
+			}
+			// 只使用较新的分析结果，避免展示过期状态
+			if now.Sub(analysis.UpdatedAt) > 10*time.Second {
+				continue
+			}
+			ms := string(analysis.MarketState)
+			// 统一输出格式：trend/volatile/high_vol/low_vol
+			if ms == "range" {
+				ms = "volatile"
+			}
+			if ms == "high-volatility" {
+				ms = "high_vol"
+			}
+			if ms == "low-volatility" {
+				ms = "low_vol"
+			}
+			if ms != "" {
+				item.MarketState = ms
+			}
+		}
+	}
+
 	// 解析当前策略JSON
 	for _, item := range list {
 		if item.CurrentStrategySnapshot != nil {
@@ -101,6 +155,35 @@ func (s *robotImpl) Create(ctx context.Context, in *input.TradingRobotCreateInp)
 	}
 	if apiConfig == nil {
 		return 0, gerror.New("API配置不存在或无权限")
+	}
+
+	platform := canonicalPlatform(apiConfig.Platform)
+	if platform == "" {
+		return 0, gerror.New("API配置平台为空，请检查API配置")
+	}
+
+	// 统一Symbol存储口径：DB 内只存 BTCUSDT（无分隔符）
+	symbol := canonicalSymbol(in.Symbol)
+	if symbol == "" {
+		return 0, gerror.New("交易对不能为空")
+	}
+
+	// 校验策略组：平台/币对必须与机器人一致（每机器人只绑定一个平台API账户）
+	var group *entity.TradingStrategyGroup
+	_ = g.DB().Model("hg_trading_strategy_group").Ctx(ctx).
+		Where("id", in.StrategyGroupId).
+		Scan(&group)
+	if group == nil || group.Id == 0 {
+		return 0, gerror.New("策略组不存在，请重新选择")
+	}
+	if canonicalPlatform(group.Exchange) != platform {
+		return 0, gerror.Newf("策略组平台(%s)与API平台(%s)不一致，无法创建机器人", group.Exchange, platform)
+	}
+	if canonicalSymbol(group.Symbol) != symbol {
+		return 0, gerror.Newf("策略组交易对(%s)与机器人交易对(%s)不一致，无法创建机器人", group.Symbol, symbol)
+	}
+	if group.IsActive == 0 {
+		return 0, gerror.New("该策略组已禁用，无法创建机器人")
 	}
 
 	// 【新增】校验：每个API配置只能绑定一个未删除的机器人
@@ -155,6 +238,8 @@ func (s *robotImpl) Create(ctx context.Context, in *input.TradingRobotCreateInp)
 	if in.AutoCloseEnabled != nil {
 		autoClose = *in.AutoCloseEnabled
 	}
+	// 锁定盈利开关默认开启（止盈启动后禁止自动开新仓）
+	profitLock := 1
 	dualSide := 1
 	if in.DualSidePosition != nil {
 		dualSide = *in.DualSidePosition
@@ -168,13 +253,16 @@ func (s *robotImpl) Create(ctx context.Context, in *input.TradingRobotCreateInp)
 		"max_loss_amount":    in.MaxLossAmount,
 		"max_runtime":        in.MaxRuntime,
 		"auto_market_state":  in.AutoMarketState,
-		"exchange":           in.Exchange,
-		"symbol":             in.Symbol,
+		// 【强一致】platform 以 api_config.platform 为准；robot.exchange 仅存平台标识（binance/okx/bitget/gate）
+		"exchange": platform,
+		// 【强一致】symbol 统一存 BTCUSDT
+		"symbol":             symbol,
 		"use_monitor_signal": in.UseMonitorSignal,
 		"current_strategy":   string(strategyJSON),
 		"strategy_group_id":  in.StrategyGroupId,
 		"auto_trade_enabled": autoTrade,
 		"auto_close_enabled": autoClose,
+		"profit_lock_enabled": profitLock,
 		"dual_side_position": dualSide,
 		"status":             1, // 未启动
 		"remark":             string(mappingJSON),
@@ -244,7 +332,7 @@ func (s *robotImpl) Update(ctx context.Context, in *input.TradingRobotUpdateInp)
 	}
 
 	// 允许运行中仅更新开关；其他字段变更需要先暂停
-	hasToggleUpdate := in.AutoTradeEnabled != nil || in.AutoCloseEnabled != nil || in.DualSidePosition != nil
+	hasToggleUpdate := in.AutoTradeEnabled != nil || in.AutoCloseEnabled != nil || in.ProfitLockEnabled != nil || in.DualSidePosition != nil
 	hasOtherUpdate := in.RobotName != "" ||
 		in.MaxProfitTarget != 0 || in.MaxLossAmount != 0 || in.MaxRuntime != 0 ||
 		in.RiskPreference != "" || in.MarketState != "" ||
@@ -305,6 +393,9 @@ func (s *robotImpl) Update(ctx context.Context, in *input.TradingRobotUpdateInp)
 	}
 	if in.AutoCloseEnabled != nil {
 		data["auto_close_enabled"] = *in.AutoCloseEnabled
+	}
+	if in.ProfitLockEnabled != nil {
+		data["profit_lock_enabled"] = *in.ProfitLockEnabled
 	}
 	if in.DualSidePosition != nil {
 		data["dual_side_position"] = *in.DualSidePosition
@@ -381,13 +472,45 @@ func (s *robotImpl) Delete(ctx context.Context, in *input.TradingRobotDeleteInp)
 		return gerror.Newf("该机器人有%d笔持仓订单，无法删除", count)
 	}
 
+	now := gtime.Now()
 	// 软删除
 	_, err = dao.TradingRobot.Ctx(ctx).
 		Where(dao.TradingRobot.Columns().Id, in.Id).
 		Data(g.Map{
-			dao.TradingRobot.Columns().DeletedAt: gtime.Now(),
+			dao.TradingRobot.Columns().DeletedAt: now,
 		}).
 		Update()
+
+	// 【重要】删除机器人时关闭 open run session，避免钱包页“运行中”残留（best effort）
+	{
+		type sess struct {
+			Id        int64       `orm:"id"`
+			StartTime *gtime.Time `orm:"start_time"`
+		}
+		var session *sess
+		_ = dao.TradingRobotRunSession.Ctx(ctx).
+			Fields("id", "start_time").
+			Where(dao.TradingRobotRunSession.Columns().UserId, memberId).
+			Where(dao.TradingRobotRunSession.Columns().RobotId, robot.Id).
+			WhereNull(dao.TradingRobotRunSession.Columns().EndTime).
+			OrderDesc(dao.TradingRobotRunSession.Columns().Id).
+			Scan(&session)
+		if session != nil && session.Id > 0 {
+			runtimeSeconds := 0
+			if session.StartTime != nil && !session.StartTime.IsZero() {
+				runtimeSeconds = int(now.Sub(session.StartTime).Seconds())
+			}
+			_, _ = dao.TradingRobotRunSession.Ctx(ctx).
+				Where(dao.TradingRobotRunSession.Columns().Id, session.Id).
+				WhereNull(dao.TradingRobotRunSession.Columns().EndTime).
+				Data(g.Map{
+					"end_time":        now,
+					"end_reason":      "delete",
+					"runtime_seconds": runtimeSeconds,
+					"updated_at":      now,
+				}).Update()
+		}
+	}
 
 	return err
 }
@@ -470,15 +593,44 @@ func (s *robotImpl) Start(ctx context.Context, in *input.TradingRobotStartInp) e
 		return gerror.New("API配置不可用")
 	}
 
-	// TODO: 实际启动机器人监控进程
-	// 这里需要启动goroutine进行行情监控和交易
+	// 【强一致修复】启动前强制对齐 robot.exchange/robot.symbol 到统一口径（避免平台/币对不一致导致全链路断）
+	platform := canonicalPlatform(apiConfig.Platform)
+	if platform == "" {
+		return gerror.New("API配置平台为空，请检查API配置")
+	}
+	symbol := canonicalSymbol(robot.Symbol)
+	if symbol == "" {
+		return gerror.New("机器人交易对为空，请检查机器人配置")
+	}
 
+	// 启动前校验策略组：平台/交易对必须一致
+	if robot.StrategyGroupId <= 0 {
+		return gerror.New("机器人未绑定策略组，无法启动")
+	}
+	var group *entity.TradingStrategyGroup
+	_ = g.DB().Model("hg_trading_strategy_group").Ctx(ctx).
+		Where("id", robot.StrategyGroupId).
+		Scan(&group)
+	if group == nil || group.Id == 0 {
+		return gerror.New("机器人绑定的策略组不存在，无法启动")
+	}
+	if canonicalPlatform(group.Exchange) != platform {
+		return gerror.Newf("启动失败：策略组平台(%s)与API平台(%s)不一致", group.Exchange, platform)
+	}
+	if canonicalSymbol(group.Symbol) != symbol {
+		return gerror.Newf("启动失败：策略组交易对(%s)与机器人交易对(%s)不一致", group.Symbol, symbol)
+	}
+
+	now := gtime.Now()
 	// 更新状态
 	_, err = dao.TradingRobot.Ctx(ctx).
 		Where(dao.TradingRobot.Columns().Id, in.Id).
 		Data(g.Map{
 			dao.TradingRobot.Columns().Status:    2, // 运行中
-			dao.TradingRobot.Columns().StartTime: gtime.Now(),
+			dao.TradingRobot.Columns().StartTime: now,
+			// 对齐口径（修复历史脏数据）
+			"exchange": platform,
+			"symbol":   symbol,
 		}).
 		Update()
 
@@ -486,8 +638,136 @@ func (s *robotImpl) Start(ctx context.Context, in *input.TradingRobotStartInp) e
 		return err
 	}
 
+	// 【重要】admin Start 也要维护 run_session，否则钱包页区间可能缺失/错乱
+	// 只在不存在 open session 时插入，避免重复
+	{
+		cnt, _ := dao.TradingRobotRunSession.Ctx(ctx).
+			Where(dao.TradingRobotRunSession.Columns().UserId, memberId).
+			Where(dao.TradingRobotRunSession.Columns().RobotId, robot.Id).
+			WhereNull(dao.TradingRobotRunSession.Columns().EndTime).
+			Count()
+		if cnt == 0 {
+			_, _ = dao.TradingRobotRunSession.Ctx(ctx).Data(g.Map{
+				"robot_id":   robot.Id,
+				"user_id":    memberId,
+				"exchange":   platform,
+				"symbol":     symbol,
+				"start_time": now,
+			}).Insert()
+		}
+	}
+
 	g.Log().Infof(ctx, "机器人启动成功: ID=%d, 名称=%s", robot.Id, robot.RobotName)
 
+	return nil
+}
+
+// Restart 重启机器人：将“停用(4)”的机器人重新启动为“运行中(2)”
+// 注意：Start 明确禁止停用机器人启动；Restart 是显式授权的操作入口。
+func (s *robotImpl) Restart(ctx context.Context, in *input.TradingRobotStartInp) error {
+	memberId := contexts.GetUserId(ctx)
+	if memberId <= 0 {
+		return gerror.New("用户未登录")
+	}
+
+	// 获取机器人信息
+	var robot *entity.TradingRobot
+	err := dao.TradingRobot.Ctx(ctx).
+		Where(dao.TradingRobot.Columns().Id, in.Id).
+		Where(dao.TradingRobot.Columns().UserId, memberId).
+		WhereNull(dao.TradingRobot.Columns().DeletedAt).
+		Scan(&robot)
+	if err != nil {
+		return err
+	}
+	if robot == nil {
+		return gerror.New("机器人不存在或无权限")
+	}
+
+	// 仅允许停用状态重启
+	if robot.Status == 2 {
+		return gerror.New("机器人已经在运行中")
+	}
+	if robot.Status != 4 {
+		return gerror.New("仅已停用的机器人可以重启")
+	}
+
+	// 验证API配置是否可用
+	var apiConfig *entity.TradingApiConfig
+	err = dao.TradingApiConfig.Ctx(ctx).
+		Where(dao.TradingApiConfig.Columns().Id, robot.ApiConfigId).
+		Where(dao.TradingApiConfig.Columns().Status, consts.StatusEnabled).
+		WhereNull(dao.TradingApiConfig.Columns().DeletedAt).
+		Scan(&apiConfig)
+	if err != nil {
+		return err
+	}
+	if apiConfig == nil {
+		return gerror.New("API配置不可用")
+	}
+
+	// 对齐口径（修复历史脏数据）
+	platform := canonicalPlatform(apiConfig.Platform)
+	if platform == "" {
+		return gerror.New("API配置平台为空，请检查API配置")
+	}
+	symbol := canonicalSymbol(robot.Symbol)
+	if symbol == "" {
+		return gerror.New("机器人交易对为空，请检查机器人配置")
+	}
+
+	// 启动前校验策略组：平台/交易对必须一致
+	if robot.StrategyGroupId <= 0 {
+		return gerror.New("机器人未绑定策略组，无法重启")
+	}
+	var group *entity.TradingStrategyGroup
+	_ = g.DB().Model("hg_trading_strategy_group").Ctx(ctx).
+		Where("id", robot.StrategyGroupId).
+		Scan(&group)
+	if group == nil || group.Id == 0 {
+		return gerror.New("机器人绑定的策略组不存在，无法重启")
+	}
+	if canonicalPlatform(group.Exchange) != platform {
+		return gerror.Newf("重启失败：策略组平台(%s)与API平台(%s)不一致", group.Exchange, platform)
+	}
+	if canonicalSymbol(group.Symbol) != symbol {
+		return gerror.Newf("重启失败：策略组交易对(%s)与机器人交易对(%s)不一致", group.Symbol, symbol)
+	}
+
+	now := gtime.Now()
+	// 更新状态为运行中
+	_, err = dao.TradingRobot.Ctx(ctx).
+		Where(dao.TradingRobot.Columns().Id, in.Id).
+		Data(g.Map{
+			dao.TradingRobot.Columns().Status:    2, // 运行中
+			dao.TradingRobot.Columns().StartTime: now,
+			"exchange":                          platform,
+			"symbol":                            symbol,
+		}).
+		Update()
+	if err != nil {
+		return err
+	}
+
+	// 维护 run_session（与 Start 对齐）
+	{
+		cnt, _ := dao.TradingRobotRunSession.Ctx(ctx).
+			Where(dao.TradingRobotRunSession.Columns().UserId, memberId).
+			Where(dao.TradingRobotRunSession.Columns().RobotId, robot.Id).
+			WhereNull(dao.TradingRobotRunSession.Columns().EndTime).
+			Count()
+		if cnt == 0 {
+			_, _ = dao.TradingRobotRunSession.Ctx(ctx).Data(g.Map{
+				"robot_id":   robot.Id,
+				"user_id":    memberId,
+				"exchange":   platform,
+				"symbol":     symbol,
+				"start_time": now,
+			}).Insert()
+		}
+	}
+
+	g.Log().Infof(ctx, "机器人重启成功: ID=%d, 名称=%s", robot.Id, robot.RobotName)
 	return nil
 }
 
@@ -520,17 +800,49 @@ func (s *robotImpl) Pause(ctx context.Context, in *input.TradingRobotPauseInp) e
 
 	// TODO: 停止机器人监控进程
 
+	now := gtime.Now()
 	// 更新状态
 	_, err = dao.TradingRobot.Ctx(ctx).
 		Where(dao.TradingRobot.Columns().Id, in.Id).
 		Data(g.Map{
 			dao.TradingRobot.Columns().Status:    3, // 暂停
-			dao.TradingRobot.Columns().PauseTime: gtime.Now(),
+			dao.TradingRobot.Columns().PauseTime: now,
 		}).
 		Update()
 
 	if err != nil {
 		return err
+	}
+
+	// close open run session (pause)
+	{
+		type sess struct {
+			Id        int64       `orm:"id"`
+			StartTime *gtime.Time `orm:"start_time"`
+		}
+		var session *sess
+		_ = dao.TradingRobotRunSession.Ctx(ctx).
+			Fields("id", "start_time").
+			Where(dao.TradingRobotRunSession.Columns().UserId, memberId).
+			Where(dao.TradingRobotRunSession.Columns().RobotId, robot.Id).
+			WhereNull(dao.TradingRobotRunSession.Columns().EndTime).
+			OrderDesc(dao.TradingRobotRunSession.Columns().Id).
+			Scan(&session)
+		if session != nil && session.Id > 0 {
+			runtimeSeconds := 0
+			if session.StartTime != nil && !session.StartTime.IsZero() {
+				runtimeSeconds = int(now.Sub(session.StartTime).Seconds())
+			}
+			_, _ = dao.TradingRobotRunSession.Ctx(ctx).
+				Where(dao.TradingRobotRunSession.Columns().Id, session.Id).
+				WhereNull(dao.TradingRobotRunSession.Columns().EndTime).
+				Data(g.Map{
+					"end_time":        now,
+					"end_reason":      "pause",
+					"runtime_seconds": runtimeSeconds,
+					"updated_at":      now,
+				}).Update()
+		}
 	}
 
 	g.Log().Infof(ctx, "机器人暂停成功: ID=%d, 名称=%s", robot.Id, robot.RobotName)
@@ -575,22 +887,113 @@ func (s *robotImpl) Stop(ctx context.Context, in *input.TradingRobotStopInp) err
 		return err
 	}
 	if count > 0 {
-		return gerror.Newf("该机器人有%d笔持仓订单，请先平仓", count)
+		// 【修复】停止前做一次“快速对账”，避免本地残留 OPEN(1) 订单误拦停用
+		// 典型现象：交易所已无真实持仓，但本地 hg_trading_order.status 仍为 1（多见于WS断连/重启/同步未运行）
+		var apiConfig *entity.TradingApiConfig
+		_ = dao.TradingApiConfig.Ctx(ctx).
+			Where(dao.TradingApiConfig.Columns().Id, robot.ApiConfigId).
+			WhereNull(dao.TradingApiConfig.Columns().DeletedAt).
+			Scan(&apiConfig)
+
+		if apiConfig != nil {
+			syncCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+			defer cancel()
+
+			ex, exErr := toogo.GetExchangeManager().GetExchangeFromConfig(syncCtx, apiConfig)
+			if exErr == nil && ex != nil {
+				if positions, pErr := ex.GetPositions(syncCtx, robot.Symbol); pErr == nil {
+					hasRealPos := false
+					for _, p := range positions {
+						if p == nil {
+							continue
+						}
+						// 使用更小的 epsilon，避免小仓位被误判为“无持仓”从而错误修复本地OPEN订单
+						if math.Abs(p.PositionAmt) > 1e-9 {
+							hasRealPos = true
+							break
+						}
+					}
+
+					if hasRealPos {
+						return gerror.New("该机器人在交易所仍有真实持仓，请先平仓后再停用")
+					}
+
+					// 交易所无真实持仓：修复本地残留 OPEN 订单为 CLOSED，允许停用
+					now := gtime.Now()
+					_, _ = dao.TradingOrder.Ctx(ctx).
+						Where(dao.TradingOrder.Columns().RobotId, in.Id).
+						Where(dao.TradingOrder.Columns().Status, toogo.OrderStatusOpen).
+						Data(g.Map{
+							"status":       toogo.OrderStatusClosed,
+							"close_reason": "停用前快速对账：交易所无持仓，本地残留OPEN已自动修复",
+							"close_time":   now,
+							"updated_at":   now,
+						}).
+						Update()
+
+					// 修复后重新计数（理论上应为0）
+					count, _ = dao.TradingOrder.Ctx(ctx).
+						Where(dao.TradingOrder.Columns().RobotId, in.Id).
+						Where(dao.TradingOrder.Columns().Status, toogo.OrderStatusOpen).
+						Count()
+					if count == 0 {
+						// 已修复为0，继续停用
+					} else {
+						return gerror.Newf("该机器人有%d笔持仓订单，请先平仓（已尝试快速对账修复，但本地仍存在OPEN订单）", count)
+					}
+				}
+			}
+		}
+
+		// 交易所查询失败/无法对账时：保持原拦截，避免误放行
+		return gerror.Newf("该机器人有%d笔持仓订单，请先平仓（如确认交易所无持仓，请先执行一次订单同步/对账修复）", count)
 	}
 
 	// TODO: 停止机器人监控进程
 
+	now := gtime.Now()
 	// 更新状态
 	_, err = dao.TradingRobot.Ctx(ctx).
 		Where(dao.TradingRobot.Columns().Id, in.Id).
 		Data(g.Map{
 			dao.TradingRobot.Columns().Status:   4, // 停用
-			dao.TradingRobot.Columns().StopTime: gtime.Now(),
+			dao.TradingRobot.Columns().StopTime: now,
 		}).
 		Update()
 
 	if err != nil {
 		return err
+	}
+
+	// close open run session (stop)
+	{
+		type sess struct {
+			Id        int64       `orm:"id"`
+			StartTime *gtime.Time `orm:"start_time"`
+		}
+		var session *sess
+		_ = dao.TradingRobotRunSession.Ctx(ctx).
+			Fields("id", "start_time").
+			Where(dao.TradingRobotRunSession.Columns().UserId, memberId).
+			Where(dao.TradingRobotRunSession.Columns().RobotId, robot.Id).
+			WhereNull(dao.TradingRobotRunSession.Columns().EndTime).
+			OrderDesc(dao.TradingRobotRunSession.Columns().Id).
+			Scan(&session)
+		if session != nil && session.Id > 0 {
+			runtimeSeconds := 0
+			if session.StartTime != nil && !session.StartTime.IsZero() {
+				runtimeSeconds = int(now.Sub(session.StartTime).Seconds())
+			}
+			_, _ = dao.TradingRobotRunSession.Ctx(ctx).
+				Where(dao.TradingRobotRunSession.Columns().Id, session.Id).
+				WhereNull(dao.TradingRobotRunSession.Columns().EndTime).
+				Data(g.Map{
+					"end_time":        now,
+					"end_reason":      "stop",
+					"runtime_seconds": runtimeSeconds,
+					"updated_at":      now,
+				}).Update()
+		}
 	}
 
 	g.Log().Infof(ctx, "机器人停用成功: ID=%d, 名称=%s", robot.Id, robot.RobotName)

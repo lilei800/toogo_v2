@@ -218,7 +218,32 @@ func (s *BinancePrivateStream) onMessage(msg []byte) {
 		s.emit(PrivateEventOrder, symbol, msg)
 	case "ACCOUNT_UPDATE":
 		// account update contains positions under a.P
+		// Binance 没有独立的 positions WS channel，这里把 ACCOUNT_UPDATE 解析为“按 symbol 的 Position 事件”，
+		// 以便上层触发 positions/delta（页面秒级刷新）与对账逻辑。
 		s.emit(PrivateEventAccount, "", msg)
+		// Best-effort: extract symbols from a.P and emit PrivateEventPosition per symbol.
+		// Payload 仍沿用原始 msg（上层只需要 symbol 做路由/触发同步）。
+		if a, ok := m["a"].(map[string]any); ok {
+			if ps, ok := a["P"].([]any); ok && len(ps) > 0 {
+				seen := make(map[string]struct{}, len(ps))
+				for _, it := range ps {
+					p, ok := it.(map[string]any)
+					if !ok {
+						continue
+					}
+					sym, _ := p["s"].(string)
+					sym = strings.ToUpper(strings.TrimSpace(sym))
+					if sym == "" {
+						continue
+					}
+					if _, dup := seen[sym]; dup {
+						continue
+					}
+					seen[sym] = struct{}{}
+					s.emit(PrivateEventPosition, sym, msg)
+				}
+			}
+		}
 	default:
 		// ignore
 	}

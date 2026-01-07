@@ -8,7 +8,8 @@ import { http } from '@/utils/http/axios';
  */
 export function getProxyConfig() {
   return http.request({
-    url: '/admin/trading/proxy-config/get',
+    // 由 axios 层自动拼接 /admin 前缀（urlPrefix），这里不要重复写 /admin
+    url: '/trading/proxyConfig/get',
     method: 'get',
   });
 }
@@ -18,7 +19,7 @@ export function getProxyConfig() {
  */
 export function saveProxyConfig(data: any) {
   return http.request({
-    url: '/admin/trading/proxy-config/save',
+    url: '/trading/proxyConfig/save',
     method: 'post',
     data,
   });
@@ -29,7 +30,7 @@ export function saveProxyConfig(data: any) {
  */
 export function testProxyConfig() {
   return http.request({
-    url: '/admin/trading/proxy-config/test',
+    url: '/trading/proxyConfig/test',
     method: 'post',
   });
 }
@@ -39,8 +40,7 @@ export function testProxyConfig() {
  */
 export function toggleProxyConfig() {
   return http.request({
-    url: '/admin/trading/proxy-config/toggle',
+    url: '/trading/proxyConfig/toggle',
     method: 'post',
   });
 }
-

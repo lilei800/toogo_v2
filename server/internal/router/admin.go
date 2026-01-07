@@ -58,6 +58,7 @@ func Admin(ctx context.Context, group *ghttp.RouterGroup) {
 			adminCtrl.Dept,       // 部门
 			adminCtrl.Menu,       // 菜单
 			adminCtrl.Notice,     // 公告
+			adminCtrl.SupportChat, // 客服聊天
 			adminCtrl.Post,       // 岗位
 			adminCtrl.Order,      // 充值订单
 			adminCtrl.CreditsLog, // 资金变动

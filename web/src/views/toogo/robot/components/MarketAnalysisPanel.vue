@@ -3,7 +3,11 @@
     <div class="market-analysis-header">
       <n-space align="center" :size="8">
         <span style="font-weight: 600; font-size: 13px">📊 市场状态分析</span>
-        <n-tag :type="getMarketStateType(data.signal?.currentMarketState)" size="small" :bordered="false">
+        <n-tag
+          :type="getMarketStateType(data.signal?.currentMarketState)"
+          size="small"
+          :bordered="false"
+        >
           {{ formatMarketState(data.signal?.currentMarketState) }}
         </n-tag>
         <n-tag type="info" size="small" :bordered="false">
@@ -16,7 +20,9 @@
     <div class="strategy-params-grid">
       <div class="param-item">
         <span class="param-label">平台</span>
-        <span class="param-value">{{ robot.exchange?.toUpperCase() || robot.platform?.toUpperCase() }}</span>
+        <span class="param-value">{{
+          robot.exchange?.toUpperCase() || robot.platform?.toUpperCase()
+        }}</span>
       </div>
       <div class="param-item">
         <span class="param-label">货币对</span>
@@ -52,15 +58,21 @@
       </div>
       <div class="param-item">
         <span class="param-label">止损比例</span>
-        <span class="param-value error">{{ data.config?.stopLossPercent?.toFixed(1) || '--' }}%</span>
+        <span class="param-value error"
+          >{{ data.config?.stopLossPercent?.toFixed(1) || '--' }}%</span
+        >
       </div>
       <div class="param-item">
         <span class="param-label">启动回撤</span>
-        <span class="param-value success">{{ robot.profitActivatePercent?.toFixed(1) || '--' }}%</span>
+        <span class="param-value success"
+          >{{ robot.profitActivatePercent?.toFixed(1) || '--' }}%</span
+        >
       </div>
       <div class="param-item">
         <span class="param-label">止盈回撤</span>
-        <span class="param-value success">{{ data.config?.takeProfitPercent?.toFixed(1) || '--' }}%</span>
+        <span class="param-value success"
+          >{{ data.config?.takeProfitPercent?.toFixed(1) || '--' }}%</span
+        >
       </div>
     </div>
 
@@ -73,76 +85,75 @@
 </template>
 
 <script setup lang="ts">
-import type { Robot } from '../composables/useRobotList';
-import type { AnalysisData } from '../composables/useRobotStatus';
-import {
-  formatMarketState,
-  formatRiskPref,
-  getMarketStateType,
-  formatWindowTime,
-  formatUpdateTime
-} from '../composables/useRobotStatus';
+  import type { Robot } from '../composables/useRobotList';
+  import type { AnalysisData } from '../composables/useRobotStatus';
+  import {
+    formatMarketState,
+    formatRiskPref,
+    getMarketStateType,
+    formatWindowTime,
+    formatUpdateTime,
+  } from '../composables/useRobotStatus';
 
-defineProps<{
-  robot: Robot;
-  data: AnalysisData | undefined;
-}>();
+  defineProps<{
+    robot: Robot;
+    data: AnalysisData | undefined;
+  }>();
 </script>
 
 <style scoped>
-.market-analysis-panel {
-  background: var(--n-color-embedded);
-  border-radius: 8px;
-  padding: 12px;
-  margin-bottom: 12px;
-}
+  .market-analysis-panel {
+    background: var(--n-color-embedded);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 12px;
+  }
 
-.market-analysis-header {
-  margin-bottom: 10px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--n-border-color);
-}
+  .market-analysis-header {
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--n-border-color);
+  }
 
-.strategy-params-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 8px;
-}
+  .strategy-params-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+  }
 
-.param-item {
-  display: flex;
-  flex-direction: column;
-  padding: 6px 8px;
-  background: var(--n-color);
-  border-radius: 4px;
-}
+  .param-item {
+    display: flex;
+    flex-direction: column;
+    padding: 6px 8px;
+    background: var(--n-color);
+    border-radius: 4px;
+  }
 
-.param-item.highlight {
-  background: rgba(var(--primary-color-rgb), 0.1);
-}
+  .param-item.highlight {
+    background: rgba(var(--primary-color-rgb), 0.1);
+  }
 
-.param-label {
-  font-size: 11px;
-  color: var(--n-text-color-3);
-  margin-bottom: 2px;
-}
+  .param-label {
+    font-size: 11px;
+    color: var(--n-text-color-3);
+    margin-bottom: 2px;
+  }
 
-.param-value {
-  font-size: 13px;
-  font-weight: 600;
-}
+  .param-value {
+    font-size: 13px;
+    font-weight: 600;
+  }
 
-.param-value.error {
-  color: var(--error-color);
-}
+  .param-value.error {
+    color: var(--error-color);
+  }
 
-.param-value.success {
-  color: var(--success-color);
-}
+  .param-value.success {
+    color: var(--success-color);
+  }
 
-.strategy-update-time {
-  margin-top: 8px;
-  text-align: right;
-}
+  .strategy-update-time {
+    margin-top: 8px;
+    text-align: right;
+  }
 </style>
-

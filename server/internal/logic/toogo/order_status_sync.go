@@ -141,6 +141,87 @@ func tryCloseInfoFromTradeHistory(
 	closeOrderId = targetOrderID
 	ts = maxTs
 
+	// Gate 兜底：my_trades 不稳定提供 pnl 时，从资金流水(account_book)补齐“盈亏/手续费”
+	// 目标：对“平台手动平仓/外部平仓”也能落库已实现盈亏，避免成交流水一直为0。
+	if math.Abs(realizedProfit) < 1e-8 && strings.TrimSpace(closeOrderId) != "" {
+		type accountBookProvider interface {
+			GetAccountBook(ctx context.Context, symbol string, fromMs, toMs int64, limit int) ([]*exchange.AccountBookItem, error)
+		}
+		if ab, okAB := ex.(accountBookProvider); okAB {
+			// 时间窗口：优先围绕 maxTs（平仓成交时间），否则用 now；窗口略大一点兼容平台账本延迟
+			center := ts
+			if center <= 0 {
+				center = gtime.Now().UnixMilli()
+			}
+			from := center - 10*60*1000
+			to := center + 10*60*1000
+			items, _ := ab.GetAccountBook(ctx, symbol, from, to, 200)
+			if len(items) > 0 {
+				var pnlSum float64
+				var feeSum float64
+				feeCoin2 := ""
+				matchedByOrder := false
+				for _, it := range items {
+					if it == nil {
+						continue
+					}
+					if strings.TrimSpace(it.OrderId) != "" && strings.TrimSpace(it.OrderId) != strings.TrimSpace(closeOrderId) {
+						continue
+					}
+					if strings.TrimSpace(it.OrderId) == strings.TrimSpace(closeOrderId) {
+						matchedByOrder = true
+					}
+					typ := strings.ToLower(strings.TrimSpace(it.Type))
+					// 盈亏
+					if strings.Contains(typ, "pnl") || strings.Contains(typ, "profit") || strings.Contains(typ, "loss") {
+						pnlSum += it.Change
+					}
+					// 手续费
+					if strings.Contains(typ, "fee") {
+						feeSum += math.Abs(it.Change)
+						if feeCoin2 == "" && strings.TrimSpace(it.Currency) != "" {
+							feeCoin2 = strings.TrimSpace(it.Currency)
+						}
+					}
+				}
+				// 如果账本里没有 order_id 字段（或为空），再用“时间+合约”弱匹配兜底（风险更高，需谨慎）
+				if !matchedByOrder {
+					pnlSum = 0
+					feeSum = 0
+					feeCoin2 = ""
+					for _, it := range items {
+						if it == nil || it.Time <= 0 {
+							continue
+						}
+						// 允许 2 秒误差
+						if math.Abs(float64(it.Time-center)) > 2000 {
+							continue
+						}
+						typ := strings.ToLower(strings.TrimSpace(it.Type))
+						if strings.Contains(typ, "pnl") || strings.Contains(typ, "profit") || strings.Contains(typ, "loss") {
+							pnlSum += it.Change
+						}
+						if strings.Contains(typ, "fee") {
+							feeSum += math.Abs(it.Change)
+							if feeCoin2 == "" && strings.TrimSpace(it.Currency) != "" {
+								feeCoin2 = strings.TrimSpace(it.Currency)
+							}
+						}
+					}
+				}
+				if math.Abs(pnlSum) >= 1e-8 {
+					realizedProfit = pnlSum
+				}
+				if closeFee == 0 && feeSum > 0 {
+					closeFee = feeSum
+					if closeFeeCoin == "" && feeCoin2 != "" {
+						closeFeeCoin = feeCoin2
+					}
+				}
+			}
+		}
+	}
+
 	// 基础有效性判断
 	if closePrice <= 0 || ts <= 0 {
 		return 0, 0, 0, "", "", 0, false
@@ -243,6 +324,93 @@ func tryAggFromTradeHistoryByOrderID(
 		return tradeAggByOrderId{}, false
 	}
 	agg.finalize()
+
+	// Gate 兜底：按 orderId 聚合成交时，若 realizedPnl 仍为 0（my_trades 不提供 pnl），
+	// 则从资金流水(account_book)按 order_id 精确补齐“盈亏/手续费”。
+	if math.Abs(agg.RealizedPnl) < 1e-8 {
+		type accountBookProvider interface {
+			GetAccountBook(ctx context.Context, symbol string, fromMs, toMs int64, limit int) ([]*exchange.AccountBookItem, error)
+		}
+		if ab, okAB := ex.(accountBookProvider); okAB {
+			center := agg.MaxTs
+			if center <= 0 {
+				center = gtime.Now().UnixMilli()
+			}
+			from := center - 10*60*1000
+			to := center + 10*60*1000
+			items, _ := ab.GetAccountBook(ctx, symbol, from, to, 200)
+			if len(items) > 0 {
+				var pnlSum float64
+				var feeSum float64
+				feeCoin := ""
+				matched := false
+				for _, it := range items {
+					if it == nil {
+						continue
+					}
+					if strings.TrimSpace(it.OrderId) == "" || strings.TrimSpace(it.OrderId) != orderID {
+						continue
+					}
+					matched = true // 精确命中 order_id
+					typ := strings.ToLower(strings.TrimSpace(it.Type))
+					if strings.Contains(typ, "pnl") || strings.Contains(typ, "profit") || strings.Contains(typ, "loss") {
+						pnlSum += it.Change
+					}
+					if strings.Contains(typ, "fee") {
+						feeSum += math.Abs(it.Change)
+						if feeCoin == "" && strings.TrimSpace(it.Currency) != "" {
+							feeCoin = strings.TrimSpace(it.Currency)
+						}
+					}
+				}
+				// 若账本不带 order_id（Gate 常见），则按“时间点 + 合约”做弱匹配兜底：
+				// - 仅在未命中 order_id 的情况下启用
+				// - 时间误差放宽到 3 秒（考虑接口时间精度/写入延迟）
+				// - 合约名优先匹配（BTC_USDT），缺失时退化为仅时间
+				if !matched {
+					// best-effort contract: BTCUSDT -> BTC_USDT
+					expectedContract := ""
+					symU := strings.ToUpper(strings.TrimSpace(symbol))
+					if strings.HasSuffix(symU, "USDT") && len(symU) > 4 {
+						expectedContract = symU[:len(symU)-4] + "_USDT"
+					}
+					for _, it := range items {
+						if it == nil || it.Time <= 0 {
+							continue
+						}
+						if math.Abs(float64(it.Time-center)) > 3000 {
+							continue
+						}
+						if expectedContract != "" && strings.TrimSpace(it.Contract) != "" && !strings.EqualFold(strings.TrimSpace(it.Contract), expectedContract) {
+							continue
+						}
+						typ := strings.ToLower(strings.TrimSpace(it.Type))
+						if strings.Contains(typ, "pnl") || strings.Contains(typ, "profit") || strings.Contains(typ, "loss") {
+							pnlSum += it.Change
+						}
+						if strings.Contains(typ, "fee") {
+							feeSum += math.Abs(it.Change)
+							if feeCoin == "" && strings.TrimSpace(it.Currency) != "" {
+								feeCoin = strings.TrimSpace(it.Currency)
+							}
+						}
+					}
+				}
+
+				if math.Abs(pnlSum) >= 1e-8 {
+					agg.RealizedPnl = pnlSum
+				}
+				// 手续费优先用成交记录（更贴近 fills），只有完全缺失才用账本兜底
+				if agg.Commission == 0 && feeSum > 0 {
+					agg.Commission = feeSum
+					if agg.FeeCoin == "" && feeCoin != "" {
+						agg.FeeCoin = feeCoin
+					}
+				}
+			}
+		}
+	}
+
 	return agg, true
 }
 
@@ -273,10 +441,10 @@ var (
 func GetOrderStatusSyncService() *OrderStatusSyncService {
 	orderStatusSyncServiceOnce.Do(func() {
 		orderStatusSyncService = &OrderStatusSyncService{
-			stopCh:        make(chan struct{}),
-			syncingRobots: make(map[int64]bool),
-			triggerCh:     make(chan int64, 1024),
-			lastTriggerAt: make(map[int64]time.Time),
+			stopCh:               make(chan struct{}),
+			syncingRobots:        make(map[int64]bool),
+			triggerCh:            make(chan int64, 1024),
+			lastTriggerAt:        make(map[int64]time.Time),
 			lastOpenOrdersSyncAt: make(map[int64]time.Time),
 		}
 	})
@@ -550,7 +718,7 @@ func (s *OrderStatusSyncService) syncExternalPositionsForRobot(ctx context.Conte
 	// 构建交易所持仓映射
 	exchangePositions := make(map[string]*exchange.Position)
 	for _, pos := range positions {
-		if math.Abs(pos.PositionAmt) > 0.0001 {
+		if math.Abs(pos.PositionAmt) > positionAmtEpsilon {
 			exchangePositions[pos.PositionSide] = pos
 		}
 	}
@@ -680,7 +848,18 @@ func (s *OrderStatusSyncService) syncRobotOrders(ctx context.Context, robot *ent
 	}
 
 	// 先拿缓存（用于后续持仓对账，避免重复 API）
+	// 优先使用“交易所真实快照”(raw snapshot)，避免 anti-flicker 导致对账逻辑误判。
 	cachedPositions, _ := engine.GetCachedPositions()
+	if raw, at := engine.GetPositionsSnapshot(); !at.IsZero() {
+		// snapshot freshness window: polling/WS 通常 10s 级别；这里给 45s 兜底容错
+		if time.Since(at) < 45*time.Second {
+			cachedPositions = raw
+			if isOrderPositionSyncDebugEnabled(ctx) && shouldLogOrderPositionSync("pos_snapshot_use:"+g.NewVar(robot.Id).String(), 3*time.Second) {
+				g.Log().Warningf(ctx, "[SyncDiag] positions 使用引擎raw快照: robotId=%d platform=%s symbol=%s snapshot=%d snapshotAt=%v",
+					robot.Id, engine.Exchange.GetName(), robot.Symbol, len(raw), at)
+			}
+		}
+	}
 	historyOrders, _ := engine.GetCachedOrderHistory()
 
 	// 检查距离上次订单历史同步是否超过60秒
@@ -742,10 +921,17 @@ func (s *OrderStatusSyncService) syncOpenOrdersToDBThrottled(ctx context.Context
 		}()
 		orders, err := ex.GetOpenOrders(ctx, robot.Symbol)
 		if err != nil {
-			g.Log().Debugf(ctx, "[OrderStatusSync] 获取 openOrders 失败(兜底对账): robotId=%d err=%v", robot.Id, err)
+			if isOrderPositionSyncDebugEnabled(ctx) && shouldLogOrderPositionSync("openOrders_err:"+g.NewVar(robot.Id).String(), 3*time.Second) {
+				g.Log().Warningf(ctx, "[SyncDiag] openOrders 兜底对账失败: robotId=%d platform=%s symbol=%s err=%v", robot.Id, ex.GetName(), robot.Symbol, err)
+			} else {
+				g.Log().Debugf(ctx, "[OrderStatusSync] 获取 openOrders 失败(兜底对账): robotId=%d err=%v", robot.Id, err)
+			}
 			return
 		}
-		_ = SyncExchangeOpenOrdersToDB(ctx, robot.Id, robot.Exchange, robot.ApiConfigId, robot.Symbol, orders)
+		if isOrderPositionSyncDebugEnabled(ctx) && shouldLogOrderPositionSync("openOrders_ok:"+g.NewVar(robot.Id).String(), 3*time.Second) {
+			g.Log().Warningf(ctx, "[SyncDiag] openOrders 兜底对账: robotId=%d platform=%s symbol=%s openOrders=%d", robot.Id, ex.GetName(), robot.Symbol, len(orders))
+		}
+		_ = SyncExchangeOpenOrdersToDB(ctx, robot.Id, ex.GetName(), robot.ApiConfigId, robot.Symbol, orders)
 	}()
 }
 
@@ -764,22 +950,36 @@ func (s *OrderStatusSyncService) syncPositionsWithCache(ctx context.Context, rob
 	// 优先使用缓存的持仓数据
 	if len(cachedPositions) > 0 {
 		positions = cachedPositions
-		g.Log().Debugf(ctx, "[OrderStatusSync] robotId=%d 使用缓存持仓数据，避免API调用", robot.Id)
+		if isOrderPositionSyncDebugEnabled(ctx) && shouldLogOrderPositionSync("pos_cache:"+g.NewVar(robot.Id).String(), 2*time.Second) {
+			g.Log().Warningf(ctx, "[SyncDiag] positions 使用引擎缓存: robotId=%d platform=%s symbol=%s cached=%d", robot.Id, ex.GetName(), robot.Symbol, len(cachedPositions))
+		} else {
+			g.Log().Debugf(ctx, "[OrderStatusSync] robotId=%d 使用缓存持仓数据，避免API调用", robot.Id)
+		}
 	} else {
 		// 缓存为空时才调用 API
 		var err error
 		positions, err = ex.GetPositions(ctx, robot.Symbol)
 		if err != nil {
-			g.Log().Debugf(ctx, "[OrderStatusSync] 获取持仓失败: robotId=%d, err=%v", robot.Id, err)
+			if isOrderPositionSyncDebugEnabled(ctx) && shouldLogOrderPositionSync("pos_api_err:"+g.NewVar(robot.Id).String(), 2*time.Second) {
+				g.Log().Warningf(ctx, "[SyncDiag] positions 直连交易所失败: robotId=%d platform=%s symbol=%s err=%v", robot.Id, ex.GetName(), robot.Symbol, err)
+			} else {
+				g.Log().Debugf(ctx, "[OrderStatusSync] 获取持仓失败: robotId=%d, err=%v", robot.Id, err)
+			}
 			return
+		}
+		if isOrderPositionSyncDebugEnabled(ctx) && shouldLogOrderPositionSync("pos_api_ok:"+g.NewVar(robot.Id).String(), 2*time.Second) {
+			g.Log().Warningf(ctx, "[SyncDiag] positions 直连交易所: robotId=%d platform=%s symbol=%s positions=%d", robot.Id, ex.GetName(), robot.Symbol, len(positions))
 		}
 	}
 
 	// 构建持仓映射 (交易所实际持仓)
 	exchangePositions := make(map[string]*exchange.Position)
 	for _, pos := range positions {
-		if math.Abs(pos.PositionAmt) > 0.0001 {
-			exchangePositions[pos.PositionSide] = pos
+		// 交易所是否“有持仓”的判断必须尽量保守：只要 qty>0 就认为有仓，避免误把真实仓位当成“已平仓”。
+		// 注意：保证金/杠杆回填仍由后续 updateOrderEntryMetricsFromPosition 以更严格口径(qty+margin)处理。
+		qtyAbs, _, _ := calcRiskQtyAndMargin(pos, robot)
+		if qtyAbs > positionAmtEpsilon {
+			exchangePositions[pos.PositionSide] = clonePositionWithQty(pos, qtyAbs)
 		}
 	}
 
@@ -793,8 +993,123 @@ func (s *OrderStatusSyncService) syncPositionsWithCache(ctx context.Context, rob
 		return
 	}
 
+	// ===================== Gate 回写兜底：处理“PENDING 长期占用导致拒单” =====================
+	// 背景：
+	// - 自动下单前会做 DB 防线：同方向存在 PENDING/OPEN 都会拒绝新开仓（禁止加仓）
+	// - Gate 在网络/WS丢包/回写失败时更容易出现：交易所已无仓，但本地订单仍停在 PENDING
+	// - 现有对账主要修 OPEN（无仓→结算关闭），但 PENDING 可能不会被清理，导致机器人长期“被占用”
+	//
+	// 策略（仅 Gate 启用，避免影响其它平台行为）：
+	// 1) 若交易所该方向已有真实持仓：PENDING → OPEN（并回填数量/保证金等关键指标）
+	// 2) 若交易所该方向无持仓且 PENDING 超时：PENDING → CANCELLED（释放占用，并记录告警）
+	if strings.EqualFold(strings.TrimSpace(robot.Exchange), "gate") {
+		var pendingOrders []*entity.TradingOrder
+		_ = dao.TradingOrder.Ctx(ctx).
+			Where("robot_id", robot.Id).
+			Where("status", OrderStatusPending).
+			Scan(&pendingOrders)
+		if len(pendingOrders) > 0 {
+			// timeout window: market open orders should not stay pending for long; give some room for eventual consistency
+			pendingTimeout := 90 * time.Second
+			now := time.Now()
+
+			for _, po := range pendingOrders {
+				if po == nil {
+					continue
+				}
+				positionSide := "LONG"
+				if strings.EqualFold(strings.TrimSpace(po.Direction), "short") {
+					positionSide = "SHORT"
+				}
+
+				// if exchange has a real position on this side, promote to OPEN (truth wins)
+				if ep, ok := exchangePositions[positionSide]; ok && ep != nil {
+					update := g.Map{
+						"status":     OrderStatusOpen,
+						"updated_at": gtime.Now(),
+					}
+					// best-effort: backfill open_price if missing
+					if po.OpenPrice <= 0 && ep.EntryPrice > 0 {
+						update["open_price"] = ep.EntryPrice
+						update["avg_price"] = ep.EntryPrice
+					}
+					_, _ = dao.TradingOrder.Ctx(ctx).
+						Where("id", po.Id).
+						Where("status", OrderStatusPending).
+						Update(update)
+					// backfill qty/margin/leverage using position fact (important for SL/TP denominator)
+					s.updateOrderEntryMetricsFromPosition(ctx, robot, po, ep)
+					if isOrderPositionSyncDebugEnabled(ctx) && shouldLogOrderPositionSync("pending_promote:"+g.NewVar(robot.Id).String()+":"+g.NewVar(po.Id).String(), 3*time.Second) {
+						g.Log().Warningf(ctx, "[SyncDiag] pending->open promoted by position fact: robotId=%d orderId=%d positionSide=%s qty=%.10f",
+							robot.Id, po.Id, positionSide, math.Abs(ep.PositionAmt))
+					}
+					continue
+				}
+
+				// no exchange position: if pending is too old, cancel it to release DB occupancy
+				t0 := time.Time{}
+				if po.OpenTime != nil && !po.OpenTime.IsZero() {
+					t0 = po.OpenTime.Time
+				} else if po.CreatedAt != nil && !po.CreatedAt.IsZero() {
+					t0 = po.CreatedAt.Time
+				}
+				if !t0.IsZero() && now.Sub(t0) >= pendingTimeout {
+					_, _ = dao.TradingOrder.Ctx(ctx).
+						Where("id", po.Id).
+						Where("status", OrderStatusPending).
+						Update(g.Map{
+							"status":     OrderStatusCancelled,
+							"updated_at": gtime.Now(),
+						})
+					g.Log().Warningf(ctx, "[OrderStatusSync] Gate pending订单超时且交易所无持仓，已自动取消以释放占用: robotId=%d orderId=%d direction=%s exchangeOrderId=%s age=%s",
+						robot.Id, po.Id, strings.TrimSpace(po.Direction), strings.TrimSpace(po.ExchangeOrderId), now.Sub(t0).String())
+				}
+			}
+		}
+	}
+
 	// 检查本地订单是否在交易所仍有持仓
+	// 【优化】批量修复数据不一致：先收集需要修复的订单，然后批量更新，避免日志刷屏
+	var inconsistentOrders []*entity.TradingOrder
+	var validOrders []*entity.TradingOrder
 	for _, order := range localOrders {
+		// 【修复】数据不一致检测：如果订单 close_time 已设置（且不是占位值），但状态仍为 OPEN，说明数据不一致，需要修复
+		hasValidCloseTime := order.CloseTime != nil && !order.CloseTime.IsZero() && order.CloseTime.Year() != 2006
+		if hasValidCloseTime && order.Status != OrderStatusClosed {
+			inconsistentOrders = append(inconsistentOrders, order)
+		} else {
+			validOrders = append(validOrders, order)
+		}
+	}
+
+	// 批量修复数据不一致的订单
+	if len(inconsistentOrders) > 0 {
+		orderIds := make([]int64, 0, len(inconsistentOrders))
+		for _, order := range inconsistentOrders {
+			orderIds = append(orderIds, order.Id)
+		}
+		// 批量更新所有不一致订单的状态
+		updateCount, err := dao.TradingOrder.Ctx(ctx).
+			Where("robot_id", robot.Id).
+			Where("id IN (?)", orderIds).
+			Where("status IN (?)", []int{OrderStatusPending, OrderStatusOpen}).
+			Update(g.Map{
+				"status":     OrderStatusClosed,
+				"updated_at": gtime.Now(),
+			})
+		if err != nil {
+			g.Log().Errorf(ctx, "[OrderStatusSync] 批量修复数据不一致订单失败: robotId=%d orderIds=%v err=%v",
+				robot.Id, orderIds, err)
+		} else {
+			// 只记录一次汇总日志，避免刷屏
+			g.Log().Warningf(ctx, "[OrderStatusSync] 批量修复数据不一致：robotId=%d 共修复%d个订单(close_time已设置但状态仍为OPEN/PENDING)，订单IDs=%v",
+				robot.Id, updateCount, orderIds)
+		}
+	}
+
+	// 继续处理正常的订单
+	for _, order := range validOrders {
+
 		positionSide := ""
 		if order.Direction == "long" {
 			positionSide = "LONG"
@@ -819,7 +1134,7 @@ func (s *OrderStatusSyncService) syncPositionsWithCache(ctx context.Context, rob
 			// Prefer exchange trade history for close info (realized PnL / price / time) to keep reconciliation consistent.
 			// 【新增】同步时批量落库成交流水（幂等去重），用于后续交易明细/手续费/已实现盈亏展示
 			// 说明：这里属于“订单状态同步/外部手动平仓检测”链路，尽量先把成交落库，页面查询只读DB。
-			if saved, matched, ferr := fetchAndStoreTradeHistory(ctx, ex, robot.ApiConfigId, robot.Exchange, robot.Symbol, 800); ferr != nil {
+			if saved, matched, ferr := fetchAndStoreTradeHistory(ctx, ex, robot.ApiConfigId, ex.GetName(), robot.Symbol, 800); ferr != nil {
 				g.Log().Warningf(ctx, "[OrderStatusSync] 外部手动平仓检测落库成交流水失败(继续结算): robotId=%d, symbol=%s, err=%v",
 					robot.Id, robot.Symbol, ferr)
 			} else {
@@ -853,6 +1168,7 @@ func (s *OrderStatusSyncService) syncPositionsWithCache(ctx context.Context, rob
 			s.CloseOrder(ctx, order, closePrice, realizedProfit, "手动平仓(同步检测)", closeOrder, nil)
 		} else {
 			// 交易所仍有持仓，更新未实现盈亏
+			s.updateOrderEntryMetricsFromPosition(ctx, robot, order, exchangePos)
 			s.updateOrderUnrealizedPnl(ctx, order, exchangePos)
 		}
 	}
@@ -954,6 +1270,56 @@ func (s *OrderStatusSyncService) syncPositionsWithCache(ctx context.Context, rob
 	}
 }
 
+// updateOrderEntryMetricsFromPosition 下单成功后，使用“交易所持仓事实数据”回填本地 OPEN 订单的数量/杠杆/保证金
+// 要求：后续止损/止盈/血条计算必须读订单表的保证金/杠杆（不可随行情/WS抖动变化）。
+func (s *OrderStatusSyncService) updateOrderEntryMetricsFromPosition(ctx context.Context, robot *entity.TradingRobot, order *entity.TradingOrder, pos *exchange.Position) {
+	if robot == nil || order == nil || pos == nil {
+		return
+	}
+	qtyAbs, margin, _ := calcRiskQtyAndMargin(pos, robot)
+	if qtyAbs <= positionAmtEpsilon || margin <= 0 {
+		return
+	}
+	lev := pos.Leverage
+	if lev <= 0 && robot.Leverage > 0 {
+		lev = robot.Leverage
+	}
+	if lev <= 0 {
+		return
+	}
+
+	update := g.Map{"updated_at": gtime.Now()}
+	changed := false
+
+	// 数量：只在缺失/明显不一致时回填
+	if order.Quantity <= 0 || math.Abs(order.Quantity-qtyAbs) > 1e-9 {
+		update["quantity"] = qtyAbs
+		changed = true
+	}
+	// 杠杆：只在缺失/不一致时回填
+	if order.Leverage <= 0 || order.Leverage != lev {
+		update["leverage"] = lev
+		changed = true
+	}
+	// 保证金：只在缺失/不一致时回填（这是后续止损/止盈/血条的分母）
+	if order.Margin <= 0 || math.Abs(order.Margin-margin) > 1e-6 {
+		update["margin"] = margin
+		changed = true
+	}
+	if !changed {
+		return
+	}
+
+	_, err := dao.TradingOrder.Ctx(ctx).
+		Where("id", order.Id).
+		Where("status", OrderStatusOpen).
+		Update(update)
+	if err != nil {
+		g.Log().Warningf(ctx, "[OrderStatusSync] 回填订单开仓信息失败: orderId=%d, qty=%.10f, margin=%.6f, leverage=%d, err=%v",
+			order.Id, qtyAbs, margin, lev, err)
+	}
+}
+
 // createOrderFromPosition 从交易所持仓创建本地订单记录（兜底对账单）
 // 目标：保证当交易所确实有持仓时，本地一定存在对应的 status=持仓中 订单，避免自动止盈/止损被“无订单”挡住。
 func (s *OrderStatusSyncService) createOrderFromPosition(ctx context.Context, robot *entity.TradingRobot, positionSide string, pos *exchange.Position) {
@@ -967,7 +1333,7 @@ func (s *OrderStatusSyncService) createOrderFromPosition(ctx context.Context, ro
 	if robot == nil || pos == nil {
 		return
 	}
-	if math.Abs(pos.PositionAmt) <= 0.0001 {
+	if math.Abs(pos.PositionAmt) <= positionAmtEpsilon {
 		return
 	}
 
@@ -980,7 +1346,11 @@ func (s *OrderStatusSyncService) createOrderFromPosition(ctx context.Context, ro
 
 	// 市场状态
 	var marketState string
-	globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(robot.Exchange, robot.Symbol)
+	ap := market.ResolveAnalysisPlatform(ctx, robot.Exchange)
+	if ap == "" {
+		ap = robot.Exchange
+	}
+	globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(ap, robot.Symbol)
 	if globalAnalysis != nil {
 		marketState = normalizeMarketState(string(globalAnalysis.MarketState))
 	}
@@ -1174,7 +1544,11 @@ func (s *OrderStatusSyncService) syncLocalOrders(ctx context.Context, robot *ent
 			// 补全市场状态和风险偏好（如果缺失）
 			// 注意：这些字段可能不在实体中，但数据库中存在，直接使用数据库字段名更新
 			// 从全局市场分析器获取市场状态
-			globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(robot.Exchange, robot.Symbol)
+			ap := market.ResolveAnalysisPlatform(ctx, robot.Exchange)
+			if ap == "" {
+				ap = robot.Exchange
+			}
+			globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(ap, robot.Symbol)
 			if globalAnalysis != nil {
 				marketState := normalizeMarketState(string(globalAnalysis.MarketState))
 				if marketState != "" {
@@ -1458,6 +1832,12 @@ func (s *OrderStatusSyncService) updateOrderUnrealizedPnl(ctx context.Context, o
 // 【公开方法】用于手动平仓和自动平仓统一补全订单信息
 // 【优化】只补全缺失字段，不覆盖已有数据；检查算力是否已扣除，避免重复扣除
 func (s *OrderStatusSyncService) CloseOrder(ctx context.Context, order *entity.TradingOrder, closePrice, realizedProfit float64, reason string, closeOrder *exchange.Order, pos *exchange.Position) {
+	// 说明：
+	// - 之前为了避免“极小浮点噪声”污染统计，realized_profit 只在 abs>=0.01 时才写入
+	// - 但 Gate 等小仓位场景下，真实盈亏可能 <0.01 USDT，导致页面/成交流水永远显示 0
+	// - 这里改为极小阈值，保证真实盈亏能落库；如需过滤展示可在前端/报表层处理
+	const pnlEps = 1e-8
+
 	// 【优化】先查询当前订单状态，只补全缺失字段
 	var currentOrder *entity.TradingOrder
 	err := dao.TradingOrder.Ctx(ctx).Where(dao.TradingOrder.Columns().Id, order.Id).Scan(&currentOrder)
@@ -1489,8 +1869,23 @@ func (s *OrderStatusSyncService) CloseOrder(ctx context.Context, order *entity.T
 	}
 
 	// 【必须】更新订单状态为已平仓（如果还不是已平仓状态）
+	// 【修复】如果 close_time 已设置（且不是占位值），说明订单已平仓，必须强制更新状态
+	hasValidCloseTime := currentOrder.CloseTime != nil && !currentOrder.CloseTime.IsZero() && currentOrder.CloseTime.Year() != 2006
 	if currentOrder.Status != OrderStatusClosed {
 		closeData["status"] = OrderStatusClosed
+		// 【修复】数据不一致检测：如果 close_time 已设置但状态仍为 OPEN/PENDING，记录警告
+		if hasValidCloseTime {
+			g.Log().Warningf(ctx, "[OrderStatusSync] 检测到数据不一致：订单 close_time 已设置但状态仍为 %d，正在修复: orderId=%d",
+				currentOrder.Status, order.Id)
+		}
+	}
+
+	// 【同步对账清理】如果是“同步/对账/检测”链路判定交易所已无该仓位（例如外部手动平仓、缺单对账），
+	// 需要把 DB 的启动止盈开关/血条基准清零，避免页面/重启恢复误继承旧状态。
+	// 注：真实止盈平仓/止损平仓等“正常闭环”场景保留历史字段，便于审计与复盘。
+	if reason != "" && (strings.Contains(reason, "同步") || strings.Contains(reason, "对账") || strings.Contains(reason, "检测")) {
+		closeData["profit_retreat_started"] = 0
+		closeData["highest_profit"] = 0
 	}
 
 	// 【补全】平仓价格（如果缺失）
@@ -1505,7 +1900,7 @@ func (s *OrderStatusSyncService) CloseOrder(ctx context.Context, order *entity.T
 	}
 
 	// 【补全】已实现盈亏（如果缺失或为0，且新计算的盈亏不为0）
-	if (currentOrder.RealizedProfit == 0 || math.Abs(currentOrder.RealizedProfit) < 0.01) && math.Abs(realizedProfit) >= 0.01 {
+	if math.Abs(currentOrder.RealizedProfit) < pnlEps && math.Abs(realizedProfit) >= pnlEps {
 		closeData["realized_profit"] = realizedProfit
 	}
 
@@ -1601,7 +1996,11 @@ func (s *OrderStatusSyncService) CloseOrder(ctx context.Context, order *entity.T
 		var robot *entity.TradingRobot
 		_ = dao.TradingRobot.Ctx(ctx).Where(dao.TradingRobot.Columns().Id, order.RobotId).Scan(&robot)
 		if robot != nil {
-			globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(robot.Exchange, robot.Symbol)
+			ap := market.ResolveAnalysisPlatform(ctx, robot.Exchange)
+			if ap == "" {
+				ap = robot.Exchange
+			}
+			globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(ap, robot.Symbol)
 			if globalAnalysis != nil {
 				closeMarketState := normalizeMarketState(string(globalAnalysis.MarketState))
 				if closeMarketState != "" && currentCloseMarketState == "" {
@@ -1621,7 +2020,7 @@ func (s *OrderStatusSyncService) CloseOrder(ctx context.Context, order *entity.T
 		}
 
 		// 【补全】平仓数量（如果缺失）
-		if math.Abs(pos.PositionAmt) > 0.0001 && currentCloseQuantity == 0 {
+		if math.Abs(pos.PositionAmt) > positionAmtEpsilon && currentCloseQuantity == 0 {
 			closeData["close_quantity"] = math.Abs(pos.PositionAmt)
 		}
 	}
@@ -1662,7 +2061,7 @@ func (s *OrderStatusSyncService) CloseOrder(ctx context.Context, order *entity.T
 	}
 
 	// 【优化】更新机器人总盈亏（如果已实现盈亏有变化）
-	if math.Abs(realizedProfit) >= 0.01 && math.Abs(realizedProfit-currentOrder.RealizedProfit) >= 0.01 {
+	if math.Abs(realizedProfit-currentOrder.RealizedProfit) >= pnlEps {
 		profitDiff := realizedProfit - currentOrder.RealizedProfit
 		_, _ = dao.TradingRobot.Ctx(ctx).
 			Where("id", order.RobotId).
@@ -1698,6 +2097,30 @@ func (s *OrderStatusSyncService) CloseOrder(ctx context.Context, order *entity.T
 		closeEventData["close_fee"] = closeOrder.Fee
 	}
 	RecordOrderClosed(ctx, order.Id, order.ExchangeOrderId, closeEventData)
+
+	// ===================== 关键清理：平仓后清除“不可关闭状态”的残留 =====================
+	// 背景：
+	// - 启动止盈/血条采用“不可关闭原则”，并会把状态写入 DB（profit_retreat_started/highest_profit）用于重启恢复
+	// - 但若平仓是由“同步对账/手动平仓检测”等链路触发，可能不会走到 RobotEngine 的 ClearPositionTracker/缓存清理
+	// - 结果：下一次持仓/页面展示会误继承旧状态（看起来像“新订单默认开启启动止盈”或“平仓后血条/按钮不消失”）
+	//
+	// 策略：
+	// - 这里作为所有平仓的汇聚点，统一清理：引擎内存持仓/Tracker + positions 的 UI 缓存（1s TTL）
+	robotId := currentOrder.RobotId
+	if robotId <= 0 {
+		robotId = order.RobotId
+	}
+	if robotId > 0 {
+		invalidateRobotPositionsCache(robotId)
+		if eng := GetRobotTaskManager().GetEngine(robotId); eng != nil {
+			// 用订单方向推导持仓方向（pos 可能为 nil）
+			positionSide := "LONG"
+			if strings.EqualFold(strings.TrimSpace(currentOrder.Direction), "short") {
+				positionSide = "SHORT"
+			}
+			eng.ClearPosition(ctx, positionSide)
+		}
+	}
 }
 
 // createOrderFromExchange 从交易所订单创建本地订单记录
@@ -1717,7 +2140,11 @@ func (s *OrderStatusSyncService) createOrderFromExchange(ctx context.Context, ro
 
 	// 【优化】从全局市场分析器获取实时市场状态（而不是从 RobotEngine）
 	var marketState, riskPref string
-	globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(robot.Exchange, robot.Symbol)
+	ap := market.ResolveAnalysisPlatform(ctx, robot.Exchange)
+	if ap == "" {
+		ap = robot.Exchange
+	}
+	globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(ap, robot.Symbol)
 	if globalAnalysis != nil {
 		// 从全局市场分析结果获取市场状态
 		marketState = normalizeMarketState(string(globalAnalysis.MarketState))

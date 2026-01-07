@@ -65,12 +65,47 @@
       <CutDark />
     </div>
 
-    <!--消息-->
-    <n-button strong circle secondary type="tertiary" class="right-item-trigger">
-      <template #icon>
-        <NotifierProPlus />
+    <!--消息：通知/公告/私信（hover 即展开）-->
+    <n-popover placement="bottom-end" trigger="hover" :width="420">
+      <template #trigger>
+        <n-button strong circle secondary type="tertiary" class="right-item-trigger">
+          <template #icon>
+            <n-tooltip placement="bottom">
+              <template #trigger>
+                <n-badge :value="bellUnread" :max="99" processing>
+                  <n-icon size="18">
+                    <BellOutlined />
+                  </n-icon>
+                </n-badge>
+              </template>
+              <span>消息</span>
+            </n-tooltip>
+          </template>
+        </n-button>
       </template>
-    </n-button>
+      <SystemMessage :excludeKeys="[9]" />
+    </n-popover>
+
+    <!--客服：专门用于客服聊天（hover 即展开）-->
+    <n-popover placement="bottom-end" trigger="hover" :width="420">
+      <template #trigger>
+        <n-button strong circle secondary type="tertiary" class="right-item-trigger">
+          <template #icon>
+            <n-tooltip placement="bottom">
+              <template #trigger>
+                <n-badge :value="notificationStore.customerServiceUnread" :max="99" processing>
+                  <n-icon size="18" @click.stop="goSupportChat">
+                    <CustomerServiceOutlined />
+                  </n-icon>
+                </n-badge>
+              </template>
+              <span>客服</span>
+            </n-tooltip>
+          </template>
+        </n-button>
+      </template>
+      <SystemMessage :onlyKeys="[9]" />
+    </n-popover>
 
     <!--黑暗模式-->
     <!-- <n-button
@@ -137,7 +172,7 @@
 </template>
 
 <script lang="ts" setup>
-  import { ref, watch } from 'vue';
+  import { computed, onMounted, ref, watch } from 'vue';
   import { useRoute, useRouter } from 'vue-router';
   import { useDialog, useMessage } from 'naive-ui';
   import { TABS_ROUTES } from '@/enums/common';
@@ -146,7 +181,7 @@
   import { AppSearch } from '@/components/Application/index';
   import { renderIcon } from '@/utils';
   import ProjectSetting from '../ProjectSetting/index.vue';
-  import NotifierProPlus from './NotifierProPlus.vue';
+  import SystemMessage from './SystemMessage.vue';
   import AmendPwd from './AmendPwd.vue';
   import CutDark from '../CutDark/index.vue';
   import {
@@ -155,6 +190,8 @@
     UserSwitchOutlined,
     FullscreenExitOutlined,
     FullscreenOutlined,
+    BellOutlined,
+    CustomerServiceOutlined,
   } from '@vicons/antd';
   import { LockClosedOutline, LanguageOutline } from '@vicons/ionicons5';
   import { PageEnum } from '@/enums/pageEnum';
@@ -169,11 +206,23 @@
   import { useProjectSetting } from '@/hooks/setting/useProjectSetting';
   import { resetStore } from '@/store/index';
   import { resetRouter } from '@/router';
+  import { notificationStoreWidthOut } from '@/store/modules/notification';
 
   const { t } = useI18n();
   const { changeLocale } = useLocale();
   const { getIsI18n } = useProjectSetting();
   const settingStore = useProjectSettingStore();
+  const notificationStore = notificationStoreWidthOut();
+  const bellUnread = computed(
+    () =>
+      notificationStore.notifyUnread +
+      notificationStore.noticeUnread +
+      notificationStore.letterUnread,
+  );
+
+  function goSupportChat() {
+    router.push({ name: 'SupportChatClient' });
+  }
 
   defineEmits(['update:collapsed']);
 
@@ -250,6 +299,11 @@
       },
     },
   ];
+
+  onMounted(() => {
+    // 初始化拉一次未读与消息列表，后续由 WS notice 增量更新
+    notificationStore.pullMessages();
+  });
 
   const avatarOptions = [
     {

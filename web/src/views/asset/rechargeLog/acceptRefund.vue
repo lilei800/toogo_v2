@@ -145,7 +145,7 @@
     () => props.formParams,
     (value) => {
       loadForm(value);
-    }
+    },
   );
 </script>
 

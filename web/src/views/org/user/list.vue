@@ -1,11 +1,6 @@
 <template>
   <div>
-    <BasicForm
-      @register="register"
-      @submit="handleSubmit"
-      @reset="handleReset"
-      ref="searchFormRef"
-    >
+    <BasicForm @register="register" @submit="handleSubmit" @reset="handleReset" ref="searchFormRef">
       <template #statusSlot="{ model, field }">
         <n-input v-model:value="model[field]" />
       </template>

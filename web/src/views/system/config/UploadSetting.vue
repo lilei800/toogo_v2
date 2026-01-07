@@ -399,7 +399,7 @@
     () => formValue.value.uploadDrive,
     (uploadDrive: string) => {
       tabName.value = uploadDrive;
-    }
+    },
   );
 
   onMounted(async () => {

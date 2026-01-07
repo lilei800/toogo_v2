@@ -25,7 +25,7 @@ export const columns = [
         },
         {
           default: () => row.label,
-        }
+        },
       );
     },
   },
@@ -48,7 +48,7 @@ export const columns = [
         },
         {
           default: () => row.valueType,
-        }
+        },
       );
     },
   },
@@ -67,7 +67,7 @@ export const columns = [
         },
         {
           default: () => (row.status == 1 ? '正常' : '隐藏'),
-        }
+        },
       );
     },
   },

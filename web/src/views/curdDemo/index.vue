@@ -6,14 +6,36 @@
       </n-card>
     </div>
     <n-card :bordered="false" class="proCard">
-      <BasicForm  ref="searchFormRef" @register="register" @submit="reloadTable" @reset="reloadTable" @keyup.enter="reloadTable">
+      <BasicForm
+        ref="searchFormRef"
+        @register="register"
+        @submit="reloadTable"
+        @reset="reloadTable"
+        @keyup.enter="reloadTable"
+      >
         <template #statusSlot="{ model, field }">
           <n-input v-model:value="model[field]" />
         </template>
       </BasicForm>
-      <BasicTable  ref="actionRef" openChecked :columns="columns" :request="loadDataTable" :row-key="(row) => row.id" :actionColumn="actionColumn" :scroll-x="scrollX" :resizeHeightOffset="-10000"  :checked-row-keys="checkedIds" @update:checked-row-keys="handleOnCheckedRow">
+      <BasicTable
+        ref="actionRef"
+        openChecked
+        :columns="columns"
+        :request="loadDataTable"
+        :row-key="(row) => row.id"
+        :actionColumn="actionColumn"
+        :scroll-x="scrollX"
+        :resizeHeightOffset="-10000"
+        :checked-row-keys="checkedIds"
+        @update:checked-row-keys="handleOnCheckedRow"
+      >
         <template #tableTitle>
-          <n-button type="primary"  @click="addTable" class="min-left-space" v-if="hasPermission(['/curdDemo/edit'])">
+          <n-button
+            type="primary"
+            @click="addTable"
+            class="min-left-space"
+            v-if="hasPermission(['/curdDemo/edit'])"
+          >
             <template #icon>
               <n-icon>
                 <PlusOutlined />
@@ -21,7 +43,12 @@
             </template>
             添加
           </n-button>
-          <n-button type="error" @click="handleBatchDelete" class="min-left-space" v-if="hasPermission(['/curdDemo/delete'])">
+          <n-button
+            type="error"
+            @click="handleBatchDelete"
+            class="min-left-space"
+            v-if="hasPermission(['/curdDemo/delete'])"
+          >
             <template #icon>
               <n-icon>
                 <DeleteOutlined />
@@ -29,7 +56,12 @@
             </template>
             批量删除
           </n-button>
-          <n-button type="primary" @click="handleExport" class="min-left-space" v-if="hasPermission(['/curdDemo/export'])">
+          <n-button
+            type="primary"
+            @click="handleExport"
+            class="min-left-space"
+            v-if="hasPermission(['/curdDemo/export'])"
+          >
             <template #icon>
               <n-icon>
                 <ExportOutlined />
@@ -104,7 +136,6 @@
             auth: ['/curdDemo/delete'],
           },
         ],
-
       });
     },
   });
@@ -162,7 +193,7 @@
 
   // 批量删除
   function handleBatchDelete() {
-    if (checkedIds.value.length < 1){
+    if (checkedIds.value.length < 1) {
       message.error('请至少选择一项要删除的数据');
       return;
     }
@@ -200,7 +231,6 @@
 
   onMounted(() => {
     loadOptions();
-
   });
 </script>
 

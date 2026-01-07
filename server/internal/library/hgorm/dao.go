@@ -147,11 +147,20 @@ func GetPkField(ctx context.Context, dao daoInstance) (string, error) {
 	}
 
 	for _, field := range fields {
-		if strings.ToUpper(field.Key) == "PRI" {
+		// MySQL: PRI / pgsql: pri
+		if strings.EqualFold(field.Key, "PRI") {
 			return field.Name, nil
 		}
 	}
-	return "", gerror.New("no primary key")
+
+	// Fallback: some historical/migrated schemas might not mark PK correctly, but still have "id" column.
+	for name, field := range fields {
+		if strings.EqualFold(name, "id") || strings.EqualFold(field.Name, "id") {
+			return field.Name, nil
+		}
+	}
+
+	return "", gerror.New(fmt.Sprintf("no primary key for table: %s", dao.Table()))
 }
 
 // GetFieldsToSlice 获取dao实例中的所有字段

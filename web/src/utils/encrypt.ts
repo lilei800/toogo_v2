@@ -19,7 +19,7 @@ export const aesEcb = {
     const key = CryptoJS.enc.Utf8.parse(keyStr);
     // 将Base64字符串转换为CipherParams对象
     const cipherParams = CryptoJS.lib.CipherParams.create({
-      ciphertext: CryptoJS.enc.Base64.parse(word)
+      ciphertext: CryptoJS.enc.Base64.parse(word),
     });
     const decrypt = CryptoJS.AES.decrypt(cipherParams, key, {
       mode: CryptoJS.mode.ECB,

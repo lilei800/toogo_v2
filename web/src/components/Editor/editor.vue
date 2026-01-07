@@ -54,7 +54,7 @@
     {
       immediate: true,
       deep: true,
-    }
+    },
   );
 
   function onEditorFocus(val) {

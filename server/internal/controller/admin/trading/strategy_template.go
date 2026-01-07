@@ -8,6 +8,8 @@ import (
 	"hotgo/api/admin/trading"
 	"hotgo/internal/dao"
 	"hotgo/internal/logic/toogo"
+	"hotgo/internal/library/contexts"
+	"hotgo/internal/consts"
 	"hotgo/internal/model/entity"
 
 	"github.com/gogf/gf/v2/errors/gerror"
@@ -25,6 +27,23 @@ func (c *cStrategyTemplate) List(ctx context.Context, req *trading.StrategyTempl
 	m := g.DB().Model("hg_trading_strategy_template").Safe()
 
 	if req.GroupId > 0 {
+		// 组被禁用时：用户侧不展示（与“官方标识”无关，只看 is_active）
+		// 超级管理员仍允许查看/维护。
+		roleKey := contexts.GetRoleKey(ctx)
+		if roleKey != consts.SuperRoleKey {
+			var group *entity.TradingStrategyGroup
+			_ = g.DB().Model("hg_trading_strategy_group").Ctx(ctx).
+				Where("id", req.GroupId).
+				Scan(&group)
+			if group != nil && group.Id > 0 && group.IsActive == 0 {
+				res = &trading.StrategyTemplateListRes{
+					List:  []*entity.TradingStrategyTemplate{},
+					Total: 0,
+					Page:  req.Page,
+				}
+				return
+			}
+		}
 		m = m.Where("group_id", req.GroupId)
 	}
 	if req.RiskPreference != "" {

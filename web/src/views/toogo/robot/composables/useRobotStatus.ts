@@ -108,7 +108,7 @@ export function useRobotStatus(robotList: { value: Robot[] }) {
   const tickerData = ref<Record<number, TickerData>>({});
   const positionData = ref<Record<number, PositionData[]>>({});
   const signalLogs = ref<Record<number, SignalLog[]>>({});
-  
+
   let refreshTimer: ReturnType<typeof setInterval> | null = null;
 
   // 获取机器人引擎状态
@@ -117,7 +117,7 @@ export function useRobotStatus(robotList: { value: Robot[] }) {
       const res = await getRobotEngineStatus({ robotId });
       if (res.code === 0 && res.data) {
         const status: EngineStatus = res.data;
-        
+
         // 更新分析数据
         analysisData.value[robotId] = {
           signal: {
@@ -155,24 +155,26 @@ export function useRobotStatus(robotList: { value: Robot[] }) {
           priceWindow: status.priceWindowData || [],
           lastUpdate: Date.now(),
         };
-        
+
         // 更新行情数据
         tickerData.value[robotId] = {
           lastPrice: status.lastPrice,
           change24h: 0,
         };
-        
+
         // 更新持仓数据
         if (status.hasPosition) {
-          positionData.value[robotId] = [{
-            symbol: status.symbol,
-            positionSide: status.positionSide,
-            positionAmt: status.positionAmt,
-            entryPrice: status.entryPrice,
-            markPrice: status.lastPrice,
-            unrealizedPnl: status.unrealizedPnl,
-            leverage: 10,
-          }];
+          positionData.value[robotId] = [
+            {
+              symbol: status.symbol,
+              positionSide: status.positionSide,
+              positionAmt: status.positionAmt,
+              entryPrice: status.entryPrice,
+              markPrice: status.lastPrice,
+              unrealizedPnl: status.unrealizedPnl,
+              leverage: 10,
+            },
+          ];
         } else {
           positionData.value[robotId] = [];
         }
@@ -196,11 +198,13 @@ export function useRobotStatus(robotList: { value: Robot[] }) {
 
   // 刷新运行中机器人的状态
   const refreshRunningRobots = async () => {
-    const runningRobots = robotList.value.filter(r => r.status === 2);
-    await Promise.all(runningRobots.map(async (robot) => {
-      await fetchEngineStatus(robot.id);
-      await fetchSignalLogs(robot.id);
-    }));
+    const runningRobots = robotList.value.filter((r) => r.status === 2);
+    await Promise.all(
+      runningRobots.map(async (robot) => {
+        await fetchEngineStatus(robot.id);
+        await fetchSignalLogs(robot.id);
+      }),
+    );
   };
 
   // 启动定时刷新
@@ -233,14 +237,18 @@ export function useRobotStatus(robotList: { value: Robot[] }) {
   };
 
   // 监听机器人列表变化
-  watch(() => robotList.value, () => {
-    if (robotList.value.some(r => r.status === 2)) {
-      startRefresh();
-    }
-  }, { immediate: true });
+  watch(
+    () => robotList.value,
+    () => {
+      if (robotList.value.some((r) => r.status === 2)) {
+        startRefresh();
+      }
+    },
+    { immediate: true },
+  );
 
   onMounted(() => {
-    if (robotList.value.some(r => r.status === 2)) {
+    if (robotList.value.some((r) => r.status === 2)) {
       startRefresh();
     }
   });
@@ -255,7 +263,7 @@ export function useRobotStatus(robotList: { value: Robot[] }) {
     tickerData,
     positionData,
     signalLogs,
-    
+
     // 方法
     fetchEngineStatus,
     fetchSignalLogs,
@@ -269,32 +277,40 @@ export function useRobotStatus(robotList: { value: Robot[] }) {
 // 格式化相关函数
 export function formatMarketState(state: string): string {
   const map: Record<string, string> = {
-    'trend': '趋势市场',
-    'range': '震荡市场',    // 添加 range 映射
-    'volatile': '震荡市场',
-    'high_vol': '高波动',
-    'low_vol': '低波动',
+    trend: '趋势市场',
+    range: '震荡市场', // 添加 range 映射
+    volatile: '震荡市场',
+    high_vol: '高波动',
+    low_vol: '低波动',
   };
   return map[state] || state || '--';
 }
 
 export function formatRiskPref(pref: string): string {
   const map: Record<string, string> = {
-    'conservative': '保守型',
-    'balanced': '平衡型',
-    'aggressive': '激进型',
+    conservative: '保守型',
+    balanced: '平衡型',
+    aggressive: '激进型',
   };
   return map[pref] || pref || '--';
 }
 
-export function getMarketStateType(state: string): 'success' | 'warning' | 'error' | 'info' | 'default' {
+export function getMarketStateType(
+  state: string,
+): 'success' | 'warning' | 'error' | 'info' | 'default' {
   switch (state) {
-    case 'trend': return 'success';
-    case 'range': return 'warning';      // 添加 range 类型映射（震荡-警告色）
-    case 'volatile': return 'warning';
-    case 'high_vol': return 'error';
-    case 'low_vol': return 'info';
-    default: return 'default';
+    case 'trend':
+      return 'success';
+    case 'range':
+      return 'warning'; // 添加 range 类型映射（震荡-警告色）
+    case 'volatile':
+      return 'warning';
+    case 'high_vol':
+      return 'error';
+    case 'low_vol':
+      return 'info';
+    default:
+      return 'default';
   }
 }
 
@@ -332,13 +348,19 @@ export function formatRuntime(seconds: number | undefined): string {
 export function formatLogTime(time: string): string {
   if (!time) return '--';
   const date = new Date(time);
-  return `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`;
+  return `${date.getHours().toString().padStart(2, '0')}:${date
+    .getMinutes()
+    .toString()
+    .padStart(2, '0')}`;
 }
 
 export function formatUpdateTime(timestamp: number | undefined): string {
   if (!timestamp) return '--';
   const date = new Date(timestamp);
-  return `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}:${date.getSeconds().toString().padStart(2, '0')}`;
+  return `${date.getHours().toString().padStart(2, '0')}:${date
+    .getMinutes()
+    .toString()
+    .padStart(2, '0')}:${date.getSeconds().toString().padStart(2, '0')}`;
 }
 
 export function formatPriceChange(change: number | undefined): string {
@@ -351,4 +373,3 @@ export function getPriceChangeClass(change: number | undefined): string {
   if (change === undefined || change === null) return '';
   return change >= 0 ? 'up' : 'down';
 }
-

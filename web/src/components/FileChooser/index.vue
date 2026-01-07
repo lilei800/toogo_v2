@@ -217,7 +217,7 @@
       if (value !== '') {
         if (!isString(value)) {
           console.warn(
-            'When the file picker is currently in single-file mode, but the passed value is not of type string, there may be potential issues.'
+            'When the file picker is currently in single-file mode, but the passed value is not of type string, there may be potential issues.',
           );
         }
         fileList.value.push(value as string);
@@ -225,7 +225,7 @@
     } else {
       if (!isArrayString(value)) {
         console.warn(
-          'When the file picker is currently in multiple-file mode, but the passed value is not of type string array, there may be potential issues.'
+          'When the file picker is currently in multiple-file mode, but the passed value is not of type string array, there may be potential issues.',
         );
       }
       if (!value) {
@@ -244,7 +244,7 @@
     {
       immediate: true,
       deep: true,
-    }
+    },
   );
 
   onMounted(async () => {

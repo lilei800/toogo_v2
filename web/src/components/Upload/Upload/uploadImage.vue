@@ -65,7 +65,7 @@
     {
       immediate: true,
       deep: true,
-    }
+    },
   );
 
   onMounted(async () => {

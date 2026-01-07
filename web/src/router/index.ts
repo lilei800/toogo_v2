@@ -3,6 +3,7 @@ import { createRouter, createWebHistory, RouteRecordRaw } from 'vue-router';
 import { RedirectRoute } from '@/router/base';
 import { PageEnum } from '@/enums/pageEnum';
 import { createRouterGuards } from './guard/index';
+import { Layout } from '@/router/constant';
 
 const modules: any = import.meta.glob('./modules/**/*.ts', { eager: true });
 
@@ -46,6 +47,30 @@ export const PasswordResetRoute: RouteRecordRaw = {
     title: '重置密码',
     ignoreAuth: true,
   },
+};
+
+// 客服聊天（常驻路由兜底：避免 BACK 动态菜单未包含/路由生成异常导致跳转 404）
+export const SupportChatClientRoute: RouteRecordRaw = {
+  path: '/supportChat',
+  name: 'SupportChatRoot',
+  component: Layout,
+  redirect: '/supportChat/client',
+  meta: {
+    title: '客服',
+    hidden: true,
+  },
+  children: [
+    {
+      path: 'client',
+      name: 'SupportChatClient',
+      component: () => import('@/views/supportChat/client.vue'),
+      meta: {
+        title: '联系客服',
+        hidden: true,
+        keepAlive: true,
+      },
+    },
+  ],
 };
 
 export const LoginV1Route: RouteRecordRaw = {
@@ -95,6 +120,7 @@ export const constantRouter: any[] = [
   LoginV2Route,
   LoginV3Route,
   LoginV4Route,
+  SupportChatClientRoute,
   RootRoute,
   RedirectRoute,
 ];

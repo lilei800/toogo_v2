@@ -10,8 +10,14 @@ import (
 	"hotgo/internal/library/response"
 	"hotgo/internal/service"
 	"hotgo/utility/simple"
+	"sync"
 	"strings"
+	"time"
 )
+
+// adminAuthHitLogLimiter 用于限制 AdminAuth hit 日志频率，避免终端洪流影响行情WS/实时报价。
+// key: stripped path -> time.Time(last log)
+var adminAuthHitLogLimiter sync.Map
 
 // AdminAuth admin auth middleware
 func (s *sMiddleware) AdminAuth(r *ghttp.Request) {
@@ -22,7 +28,19 @@ func (s *sMiddleware) AdminAuth(r *ghttp.Request) {
 	// Extra fallback: in case prefix config is missing/mismatched.
 	path = gstr.Replace(path, "/"+consts.AppAdmin, "", 1)
 
-	g.Log().Warningf(ctx, "AdminAuth hit raw=%s stripped=%s", r.URL.Path, path)
+	// 注意：这里是“每个请求都会经过”的中间件，打 WARN 会造成终端洪流，影响 WS 行情回调和 UI 实时报价。
+	// 默认改为 debug + 30s 节流（需要排查路由问题时再开 debug 即可）。
+	if last, ok := adminAuthHitLogLimiter.Load(path); ok {
+		if t, ok2 := last.(time.Time); ok2 && time.Since(t) < 30*time.Second {
+			// skip
+		} else {
+			adminAuthHitLogLimiter.Store(path, time.Now())
+			g.Log().Debugf(ctx, "AdminAuth hit raw=%s stripped=%s", r.URL.Path, path)
+		}
+	} else {
+		adminAuthHitLogLimiter.Store(path, time.Now())
+		g.Log().Debugf(ctx, "AdminAuth hit raw=%s stripped=%s", r.URL.Path, path)
+	}
 
 	// Except login
 	if s.IsExceptLogin(ctx, consts.AppAdmin, path) {

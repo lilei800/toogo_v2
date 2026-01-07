@@ -176,7 +176,7 @@
 
   function treeDataToCompressed(source) {
     if (!source || !Array.isArray(source)) return options.value.roleTabs;
-    
+
     for (const i in source) {
       options.value.roleTabs.push(source[i]);
       source[i].children && source[i].children.length > 0

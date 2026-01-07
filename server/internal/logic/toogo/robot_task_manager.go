@@ -34,6 +34,10 @@ type RobotTaskManager struct {
 	// 杩愯鐘舵€?
 	running bool
 	stopCh  chan struct{}
+
+	// autoTradeTriggerCh: event-driven trigger for processing pending signal logs immediately after a signal is saved.
+	// This complements the 5s polling loop (fallback) and improves "real-time" auto-trade responsiveness.
+	autoTradeTriggerCh chan int64 // robotId
 }
 
 var (
@@ -60,6 +64,10 @@ func (m *RobotTaskManager) Start(ctx context.Context) error {
 		return nil
 	}
 	m.running = true
+	if m.autoTradeTriggerCh == nil {
+		// buffered to avoid blocking the signal writer path
+		m.autoTradeTriggerCh = make(chan int64, 1024)
+	}
 	m.mu.Unlock()
 
 	g.Log().Info(ctx, "[RobotTaskManager] 鏈哄櫒浜轰换鍔＄鐞嗗櫒鍚姩")
@@ -92,6 +100,8 @@ func (m *RobotTaskManager) Start(ctx context.Context) error {
 
 	// 鍚姩鍚屾浠诲姟
 	go m.runSyncTask(ctx)
+	// AutoTrade realtime trigger loop
+	go m.runAutoTradeTriggerLoop(ctx)
 
 	return nil
 }
@@ -120,6 +130,53 @@ func (m *RobotTaskManager) Stop() {
 	GetOrderStatusSyncService().Stop()
 
 	g.Log().Info(context.Background(), "[RobotTaskManager] RobotTaskManager 已停止")
+}
+
+// TriggerAutoTradeScan triggers an immediate scan for pending signal logs for the given robot.
+// It is best-effort and non-blocking. The actual trading logic remains in TryAutoTradeAndUpdate.
+func (m *RobotTaskManager) TriggerAutoTradeScan(robotId int64) {
+	if robotId <= 0 {
+		return
+	}
+	m.mu.RLock()
+	ch := m.autoTradeTriggerCh
+	running := m.running
+	m.mu.RUnlock()
+	if !running || ch == nil {
+		return
+	}
+	select {
+	case ch <- robotId:
+	default:
+		// drop when channel is full to avoid blocking hot paths
+	}
+}
+
+func (m *RobotTaskManager) runAutoTradeTriggerLoop(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			g.Log().Errorf(ctx, "[RobotTaskManager] runAutoTradeTriggerLoop panic recovered: err=%v", r)
+		}
+	}()
+	m.mu.RLock()
+	ch := m.autoTradeTriggerCh
+	m.mu.RUnlock()
+	if ch == nil {
+		return
+	}
+	for {
+		select {
+		case <-m.stopCh:
+			return
+		case rid := <-ch:
+			if rid <= 0 {
+				continue
+			}
+			// Best-effort: process just this robot's latest pending signal log.
+			// Use a minimal robot struct (only Id is needed by processPendingAutoTradeSignals).
+			m.processPendingAutoTradeSignals(ctx, []*entity.TradingRobot{{Id: rid}})
+		}
+	}
 }
 
 // IsRunning 妫€鏌ユ槸鍚﹁繍琛屼腑
@@ -368,14 +425,25 @@ func (m *RobotTaskManager) processPendingAutoTradeSignals(ctx context.Context, r
 			continue
 		}
 
-		direction := strings.ToUpper(strings.TrimSpace(rec.SignalType))
-		if direction == "???" {
-			direction = "LONG"
-		} else if direction == "???" {
-			direction = "SHORT"
-		}
+		rawDir := strings.TrimSpace(rec.SignalType)
+		direction := strings.ToUpper(rawDir)
+		// 兼容不同格式（历史/脏数据/多语言）
 		if direction != "LONG" && direction != "SHORT" {
-			continue
+			// long/short
+			if strings.EqualFold(rawDir, "long") {
+				direction = "LONG"
+			} else if strings.EqualFold(rawDir, "short") {
+				direction = "SHORT"
+			} else {
+				// 中文：包含“多”/“空”
+				if strings.Contains(rawDir, "多") {
+					direction = "LONG"
+				} else if strings.Contains(rawDir, "空") {
+					direction = "SHORT"
+				} else {
+					continue
+				}
+			}
 		}
 
 		action := "OPEN_LONG"
@@ -417,6 +485,24 @@ func (m *RobotTaskManager) initRobotEngine(ctx context.Context, robot *entity.Tr
 	err := dao.TradingApiConfig.Ctx(ctx).Where(dao.TradingApiConfig.Columns().Id, robot.ApiConfigId).Scan(&apiConfig)
 	if err != nil || apiConfig == nil {
 		return nil, gerror.Newf("API閰嶇疆涓嶅瓨鍦? apiConfigId=%d", robot.ApiConfigId)
+	}
+
+	// 【强一致修复】每个机器人只绑定一个 API 账户：以 api_config.platform 为唯一平台口径
+	// 同时把 symbol 统一规范化为 BTCUSDT，避免 WS/REST/DB/缓存 key 失配导致链路“看起来全都不工作”。
+	platform := strings.ToLower(strings.TrimSpace(apiConfig.Platform))
+	symbol := exchange.Formatter.NormalizeSymbol(robot.Symbol)
+	if platform != "" && (robot.Exchange != platform || robot.Symbol != symbol) {
+		// best-effort 修复 DB（不阻断引擎启动）
+		_, _ = dao.TradingRobot.Ctx(ctx).
+			Where(dao.TradingRobot.Columns().Id, robot.Id).
+			WhereNull(dao.TradingRobot.Columns().DeletedAt).
+			Data(g.Map{
+				"exchange": platform,
+				"symbol":   symbol,
+			}).Update()
+		// 修复内存对象，确保本次引擎启动口径正确
+		robot.Exchange = platform
+		robot.Symbol = symbol
 	}
 
 	// 鑾峰彇浜ゆ槗鎵€瀹炰緥
@@ -591,7 +677,11 @@ func (m *RobotTaskManager) ReloadRobotStrategy(ctx context.Context, robotId int6
 	// 瑙﹀彂甯傚満鐘舵€侀噸鏂拌瘎浼帮紝寮哄埗鍔犺浇鏈€鏂扮殑绛栫暐鍙傛暟
 	if engine.LastAnalysis != nil {
 		// 銆愪紭鍖栥€戜粠鍏ㄥ眬甯傚満鍒嗘瀽鍣ㄨ幏鍙栧競鍦虹姸鎬侊紝瑙﹀彂绛栫暐鏇存柊
-		globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(engine.Platform, robot.Symbol)
+		ap := market.ResolveAnalysisPlatform(ctx, engine.Platform)
+		if ap == "" {
+			ap = engine.Platform
+		}
+		globalAnalysis := market.GetMarketAnalyzer().GetAnalysis(ap, robot.Symbol)
 		if globalAnalysis != nil {
 			marketState := normalizeMarketState(string(globalAnalysis.MarketState))
 			if marketState != "" {
@@ -665,13 +755,57 @@ func (m *RobotTaskManager) StartRobot(ctx context.Context, robotId int64) error 
 
 // StopRobot 鎵嬪姩鍋滄鏈哄櫒浜?
 func (m *RobotTaskManager) StopRobot(ctx context.Context, robotId int64, reason string) error {
+	// 查询机器人信息
+	var robot *entity.TradingRobot
+	err := dao.TradingRobot.Ctx(ctx).Where(dao.TradingRobot.Columns().Id, robotId).Scan(&robot)
+	if err != nil || robot == nil {
+		return gerror.Newf("查询机器人失败: robotId=%d", robotId)
+	}
+
 	// 更新数据库状态（hg_trading_robot 无 stop_reason/stopped_at 字段，避免写入不存在列导致 PG 报错）
-	_, err := dao.TradingRobot.Ctx(ctx).Where(dao.TradingRobot.Columns().Id, robotId).Data(g.Map{
+	_, err = dao.TradingRobot.Ctx(ctx).Where(dao.TradingRobot.Columns().Id, robotId).Data(g.Map{
 		"status":     3,          // 暂停
 		"pause_time": time.Now(), // 暂停时间
 	}).Update()
 	if err != nil {
 		return err
+	}
+
+	// 【核心修复】更新运行区间的结束时间和运行时长
+	// 查询当前运行中的区间（end_time 为 NULL）
+	var session *entity.TradingRobotRunSession
+	err = dao.TradingRobotRunSession.Ctx(ctx).
+		Where(dao.TradingRobotRunSession.Columns().RobotId, robotId).
+		Where(dao.TradingRobotRunSession.Columns().UserId, robot.UserId).
+		WhereNull(dao.TradingRobotRunSession.Columns().EndTime).
+		OrderDesc(dao.TradingRobotRunSession.Columns().Id).
+		Scan(&session)
+
+	if err == nil && session != nil && session.StartTime != nil {
+		// 计算运行时长（秒）
+		now := gtime.Now()
+		runtimeSeconds := int(now.Sub(session.StartTime).Seconds())
+
+		// 确定结束原因
+		endReason := "stop"
+		if reason != "" {
+			endReason = reason
+		}
+
+		// 更新运行区间
+		_, updateErr := dao.TradingRobotRunSession.Ctx(ctx).
+			Where(dao.TradingRobotRunSession.Columns().Id, session.Id).
+			Data(g.Map{
+				"end_time":        now,
+				"end_reason":      endReason,
+				"runtime_seconds": runtimeSeconds,
+			}).Update()
+
+		if updateErr != nil {
+			g.Log().Warningf(ctx, "更新运行区间失败: robotId=%d, sessionId=%d, err=%v", robotId, session.Id, updateErr)
+		} else {
+			g.Log().Infof(ctx, "运行区间已结束: robotId=%d, sessionId=%d, runtime=%ds, reason=%s", robotId, session.Id, runtimeSeconds, endReason)
+		}
 	}
 
 	// 鍋滄寮曟搸

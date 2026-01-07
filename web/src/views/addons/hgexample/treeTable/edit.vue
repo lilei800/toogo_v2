@@ -249,7 +249,7 @@
           params.value.sort = res.sort;
         });
       }
-    }
+    },
   );
 </script>
 

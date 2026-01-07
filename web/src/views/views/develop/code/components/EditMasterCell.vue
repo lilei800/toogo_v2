@@ -197,9 +197,9 @@
                   text: true,
                   iconPlacement: 'right',
                 },
-                { default: () => '字段', icon: renderIcon(HelpCircleOutline) }
+                { default: () => '字段', icon: renderIcon(HelpCircleOutline) },
               ),
-              'Go类型和属性定义取决于你在/hack/config.yaml中的配置参数'
+              'Go类型和属性定义取决于你在/hack/config.yaml中的配置参数',
             ),
             h(
               NButton,
@@ -211,7 +211,7 @@
                 style: { 'margin-left': '20px' },
                 onClick: () => (columnCollapse.value = !columnCollapse.value),
               },
-              { default: () => (columnCollapse.value ? '展开 >>' : '折叠 <<') }
+              { default: () => (columnCollapse.value ? '展开 >>' : '折叠 <<') },
             ),
           ]);
         },
@@ -232,9 +232,9 @@
                 text: true,
                 iconPlacement: 'right',
               },
-              { default: () => '新增/编辑表单', icon: renderIcon(HelpCircleOutline) }
+              { default: () => '新增/编辑表单', icon: renderIcon(HelpCircleOutline) },
             ),
-            '勾选编辑以后会在新增、编辑表单中显示该字段;当同时勾选列表查询时，会优先使用配置的表单组件'
+            '勾选编辑以后会在新增、编辑表单中显示该字段;当同时勾选列表查询时，会优先使用配置的表单组件',
           );
         },
         key: 'edit',
@@ -356,9 +356,9 @@
                       text: true,
                       iconPlacement: 'right',
                     },
-                    { default: () => '栅格', icon: renderIcon(HelpCircleOutline) }
+                    { default: () => '栅格', icon: renderIcon(HelpCircleOutline) },
                   ),
-                  '表单每行摆放组件的个数。响应式栅格，小屏幕自动转为每行摆放一个组件。参考文档：https://www.naiveui.com/zh-CN/os-theme/components/grid#responsive-item.vue'
+                  '表单每行摆放组件的个数。响应式栅格，小屏幕自动转为每行摆放一个组件。参考文档：https://www.naiveui.com/zh-CN/os-theme/components/grid#responsive-item.vue',
                 ),
                 h(NSelect, {
                   style: { width: '100px' },
@@ -478,9 +478,9 @@
                     text: true,
                     iconPlacement: 'right',
                   },
-                  { default: () => '列宽', icon: renderIcon(HelpCircleOutline) }
+                  { default: () => '列宽', icon: renderIcon(HelpCircleOutline) },
                 ),
-                '选填。设定固定值时表格生成自动计算scroll-x，未设定默认每列按100计算'
+                '选填。设定固定值时表格生成自动计算scroll-x，未设定默认每列按100计算',
               );
             },
             key: 'width',
@@ -519,7 +519,7 @@
         for (let i = 0; i < columns.length; i++) {
           // 相同字段名称和类型，保留原字段属性
           const index = formValue.value.masterColumns.findIndex(
-            (item) => item.name == columns[i].name && item.dataType == columns[i].dataType
+            (item) => item.name == columns[i].name && item.dataType == columns[i].dataType,
           );
           if (index !== -1) {
             columns[i] = formValue.value.masterColumns[index];

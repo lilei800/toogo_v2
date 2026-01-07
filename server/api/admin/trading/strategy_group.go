@@ -14,6 +14,8 @@ type StrategyGroupListReq struct {
 	Exchange   string `json:"exchange"`
 	Symbol     string `json:"symbol"`
 	IsOfficial *int   `json:"isOfficial"` // 0-我的策略 1-官方策略 nil-全部
+	NonPersonal *int  `json:"nonPersonal"` // 1=only non-personal (user_id=0/NULL)
+	IsActive   *int   `json:"isActive"`   // 0=禁用 1=启用 nil=全部
 }
 
 type StrategyGroupListRes struct {
@@ -28,10 +30,15 @@ type StrategyGroupCreateReq struct {
 	GroupKey    string `json:"groupKey" v:"required#请输入模板标识"`
 	Exchange    string `json:"exchange" v:"required#请选择交易平台"`
 	Symbol      string `json:"symbol" v:"required#请选择交易对"`
-	OrderType   string `json:"orderType"`
+	OrderType   string `json:"orderType" dc:"订单类型: market=市价, limit_then_market=先限价再市价（默认）"`
 	MarginMode  string `json:"marginMode"`
 	Description string `json:"description"`
 	Sort        int    `json:"sort"`
+	// admin-only optional fields
+	IsOfficial *int   `json:"isOfficial"`
+	UserId     *int64 `json:"userId"`
+	IsVisible  *int   `json:"isVisible"`
+	IsActive    *int   `json:"isActive"`
 }
 
 type StrategyGroupCreateRes struct{}
@@ -42,11 +49,13 @@ type StrategyGroupUpdateReq struct {
 	GroupName   string `json:"groupName"`
 	Exchange    string `json:"exchange"`
 	Symbol      string `json:"symbol"`
-	OrderType   string `json:"orderType"`
+	OrderType   string `json:"orderType" dc:"订单类型: market=市价, limit_then_market=先限价再市价（默认）"`
 	MarginMode  string `json:"marginMode"`
 	Description string `json:"description"`
 	Sort        int    `json:"sort"`
 	IsVisible   *int   `json:"isVisible" dc:"是否可见: 0=隐藏, 1=显示（仅官方策略模板管理使用）"`
+	IsOfficial  *int   `json:"isOfficial"`
+	IsActive    *int   `json:"isActive"`
 	Confirmed   bool   `json:"confirmed" dc:"已确认修改（当策略组被机器人绑定时需要确认）"`
 }
 
@@ -73,6 +82,15 @@ type StrategyGroupCopyReq struct {
 }
 
 type StrategyGroupCopyRes struct {
+	Id int64 `json:"id" dc:"复制后的策略组ID"`
+}
+
+type StrategyGroupCloneReq struct {
+	g.Meta `path:"/strategy/group/clone" method:"post" tags:"策略模板" summary:"复制策略组（含策略模板）"`
+	Id     int64 `json:"id" v:"required#请指定模板ID"`
+}
+
+type StrategyGroupCloneRes struct {
 	Id int64 `json:"id" dc:"复制后的策略组ID"`
 }
 

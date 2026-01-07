@@ -79,5 +79,3 @@ func (e *RobotEngine) CloseAllPositionsAndCancelOrders(ctx context.Context, reas
 
 	return gerror.New("全部平仓超时，仍检测到持仓未归零")
 }
-
-

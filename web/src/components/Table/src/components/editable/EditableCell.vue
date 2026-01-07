@@ -324,108 +324,112 @@
 
       function initCbs(cbs: 'submitCbs' | 'validCbs' | 'cancelCbs', handle) {
         if (props.record) {
-        /* eslint-disable  */
-        isArray(props.record[cbs])
-          ? props.record[cbs]?.push(handle)
-          : (props.record[cbs] = [handle]);
-      }
-    }
-
-    watch(() => props.record, () => {
-      if (props.record) {
-        initCbs('submitCbs', handleSubmit);
-        initCbs('validCbs', handleSubmiRule);
-        initCbs('cancelCbs', handleCancel);
-
-        if (props.column.key) {
-          if (!props.record.editValueRefs) props.record.editValueRefs = {};
-          props.record.editValueRefs[props.column.key] = currentValueRef;
+          /* eslint-disable  */
+          isArray(props.record[cbs])
+            ? props.record[cbs]?.push(handle)
+            : (props.record[cbs] = [handle]);
         }
-        /* eslint-disable  */
-        props.record.onCancelEdit = () => {
-          isArray(props.record?.cancelCbs) && props.record?.cancelCbs.forEach((fn) => fn());
-        };
-        /* eslint-disable */
-        props.record.onSubmitEdit = async () => {
-          if (isArray(props.record?.submitCbs)) {
-            const validFns = (props.record?.validCbs || []).map((fn) => fn());
-
-            const res = await Promise.all(validFns);
-
-            const pass = res.every((item) => !!item);
-
-            if (!pass) return;
-            const submitFns = props.record?.submitCbs || [];
-            submitFns.forEach((fn) => fn(false, false));
-            table.emit?.('edit-row-end');
-            return true;
-          }
-        };
       }
-    },{
-      immediate: true
-    })
 
-    return {
-      isEdit,
-      handleEdit,
-      currentValueRef,
-      handleSubmit,
-      handleChange,
-      handleCancel,
-      elRef,
-      getComponent,
-      getRule,
-      onClickOutside,
-      ruleMessage,
-      getRuleVisible,
-      getComponentProps,
-      handleOptionsChange,
-      getWrapperClass,
-      getRowEditable,
-      getValues,
-      handleEnter,
-      // getSize,
-    };
-  },
-});
+      watch(
+        () => props.record,
+        () => {
+          if (props.record) {
+            initCbs('submitCbs', handleSubmit);
+            initCbs('validCbs', handleSubmiRule);
+            initCbs('cancelCbs', handleCancel);
+
+            if (props.column.key) {
+              if (!props.record.editValueRefs) props.record.editValueRefs = {};
+              props.record.editValueRefs[props.column.key] = currentValueRef;
+            }
+            /* eslint-disable  */
+            props.record.onCancelEdit = () => {
+              isArray(props.record?.cancelCbs) && props.record?.cancelCbs.forEach((fn) => fn());
+            };
+            /* eslint-disable */
+            props.record.onSubmitEdit = async () => {
+              if (isArray(props.record?.submitCbs)) {
+                const validFns = (props.record?.validCbs || []).map((fn) => fn());
+
+                const res = await Promise.all(validFns);
+
+                const pass = res.every((item) => !!item);
+
+                if (!pass) return;
+                const submitFns = props.record?.submitCbs || [];
+                submitFns.forEach((fn) => fn(false, false));
+                table.emit?.('edit-row-end');
+                return true;
+              }
+            };
+          }
+        },
+        {
+          immediate: true,
+        },
+      );
+
+      return {
+        isEdit,
+        handleEdit,
+        currentValueRef,
+        handleSubmit,
+        handleChange,
+        handleCancel,
+        elRef,
+        getComponent,
+        getRule,
+        onClickOutside,
+        ruleMessage,
+        getRuleVisible,
+        getComponentProps,
+        handleOptionsChange,
+        getWrapperClass,
+        getRowEditable,
+        getValues,
+        handleEnter,
+        // getSize,
+      };
+    },
+  });
 </script>
 
 <style lang="less">
-.editable-cell {
-  &-content {
-    display: flex;
-    position: relative;
-    overflow-wrap: break-word;
-    word-break: break-word;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-    align-items: center;
+  .editable-cell {
+    &-content {
+      display: flex;
+      position: relative;
+      overflow-wrap: break-word;
+      word-break: break-word;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      align-items: center;
 
-    &-comp {
-      flex: 1;
-    }
+      &-comp {
+        flex: 1;
+      }
 
-    .edit-icon {
-      font-size: 14px;
-      display: none;
-      width: 20px;
-      cursor: pointer;
-      margin-left: 5px;
-    }
-
-    &:hover {
       .edit-icon {
-        display: inline-block;
+        font-size: 14px;
+        display: none;
+        width: 20px;
+        cursor: pointer;
+        margin-left: 5px;
+      }
+
+      &:hover {
+        .edit-icon {
+          display: inline-block;
+        }
       }
     }
-  }
 
-  &-action {
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    &-action {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
   }
-}
 </style>

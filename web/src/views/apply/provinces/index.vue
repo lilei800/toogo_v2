@@ -200,7 +200,7 @@
     const treeMenuList = await getProvincesTree();
     Object.assign(
       formParams,
-      treeMenuList.list.map((item) => item.key)
+      treeMenuList.list.map((item) => item.key),
     );
     treeData.value = [];
     optionTreeData.value = [

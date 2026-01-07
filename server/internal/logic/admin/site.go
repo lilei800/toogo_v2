@@ -14,6 +14,7 @@ import (
 	"hotgo/internal/model"
 	"hotgo/internal/model/entity"
 	"hotgo/internal/model/input/adminin"
+	"hotgo/internal/model/input/toogoin"
 	"hotgo/internal/model/input/sysin"
 	"hotgo/internal/service"
 	"hotgo/utility/simple"
@@ -23,6 +24,7 @@ import (
 	"github.com/gogf/gf/v2/errors/gerror"
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/os/gtime"
+	"github.com/gogf/gf/v2/text/gstr"
 	"github.com/gogf/gf/v2/util/grand"
 )
 
@@ -34,6 +36,42 @@ func NewAdminSite() *sAdminSite {
 
 func init() {
 	service.RegisterAdminSite(NewAdminSite())
+}
+
+// resolveInviterIdByCode 统一邀请码入口：
+// - 先按基础邀请码 admin_member.invite_code 查
+// - 再按 Toogo 动态邀请码 toogo_user.invite_code 查（需 status=1 且未过期）
+func (s *sAdminSite) resolveInviterIdByCode(ctx context.Context, code string) (inviterId int64, err error) {
+	code = gstr.Trim(code)
+	if code == "" {
+		return 0, nil
+	}
+
+	// 1) 基础邀请码
+	pmb, err := service.AdminMember().GetIdByCode(ctx, &adminin.GetIdByCodeInp{Code: code})
+	if err != nil {
+		return 0, err
+	}
+	if pmb != nil && pmb.Id > 0 {
+		return pmb.Id, nil
+	}
+
+	// 2) Toogo 动态邀请码
+	var tu *entity.ToogoUser
+	err = dao.ToogoUser.Ctx(ctx).
+		Where(dao.ToogoUser.Columns().InviteCode, code).
+		Where(dao.ToogoUser.Columns().Status, 1).
+		Scan(&tu)
+	if err != nil {
+		return 0, gerror.Wrap(err, "查询邀请码失败")
+	}
+	if tu == nil || tu.MemberId <= 0 {
+		return 0, nil
+	}
+	if tu.InviteCodeExpire != nil && tu.InviteCodeExpire.Before(gtime.Now()) {
+		return 0, nil
+	}
+	return tu.MemberId, nil
 }
 
 // Register 账号注册
@@ -55,17 +93,17 @@ func (s *sAdminSite) Register(ctx context.Context, in *adminin.RegisterInp) (err
 
 	// 存在邀请人
 	if in.InviteCode != "" {
-		pmb, err := service.AdminMember().GetIdByCode(ctx, &adminin.GetIdByCodeInp{Code: in.InviteCode})
+		inviterId, err := s.resolveInviterIdByCode(ctx, in.InviteCode)
 		if err != nil {
 			return err
 		}
 
-		if pmb == nil {
+		if inviterId <= 0 {
 			err = gerror.New("邀请人信息不存在")
 			return err
 		}
 
-		data.Pid = pmb.Id
+		data.Pid = inviterId
 	}
 
 	if config.RegisterSwitch != 1 {
@@ -115,19 +153,46 @@ func (s *sAdminSite) Register(ctx context.Context, in *adminin.RegisterInp) (err
 	}
 
 	// 提交注册信息
-	return g.DB().Transaction(ctx, func(ctx context.Context, tx gdb.TX) (err error) {
-		id, err := dao.AdminMember.Ctx(ctx).Data(data).OmitEmptyData().InsertAndGetId()
+	var newMemberId int64
+	err = g.DB().Transaction(ctx, func(ctx context.Context, tx gdb.TX) (err error) {
+		// PostgreSQL 兼容：部分驱动不支持 LastInsertId，InsertAndGetId 可能失败
+		// 采用事务内 Insert + LASTVAL() 获取自增ID（同项目 trading/api_config/robot 的做法）
+		_, err = tx.Model(dao.AdminMember.Table()).Ctx(ctx).Data(data).OmitEmptyData().Insert()
 		if err != nil {
 			err = gerror.Wrap(err, consts.ErrorORM)
 			return
 		}
+		val, e := tx.GetValue("SELECT LASTVAL()")
+		if e != nil {
+			err = gerror.Wrap(e, "获取用户ID失败")
+			return
+		}
+		newMemberId = val.Int64()
+		if newMemberId <= 0 {
+			err = gerror.New("获取用户ID失败")
+			return
+		}
 
 		// 更新岗位
-		if err = service.AdminMemberPost().UpdatePostIds(ctx, id, config.PostIds); err != nil {
+		if err = service.AdminMemberPost().UpdatePostIds(ctx, newMemberId, config.PostIds); err != nil {
 			err = gerror.Wrap(err, consts.ErrorORM)
 		}
 		return
 	})
+	if err != nil {
+		return err
+	}
+
+	// 绑定 Toogo 邀请关系（不影响基础注册成功）
+	if in.InviteCode != "" && newMemberId > 0 {
+		if bindErr := service.ToogoUser().RegisterWithInvite(ctx, &toogoin.RegisterWithInviteInp{
+			MemberId:    newMemberId,
+			InviteCode:  in.InviteCode,
+		}); bindErr != nil {
+			g.Log().Warningf(ctx, "绑定Toogo邀请关系失败: %v", bindErr)
+		}
+	}
+	return nil
 }
 
 // AccountLogin 账号登录

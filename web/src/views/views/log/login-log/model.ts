@@ -80,7 +80,7 @@ export const columns = [
         },
         {
           default: () => row.username,
-        }
+        },
       );
     },
   },

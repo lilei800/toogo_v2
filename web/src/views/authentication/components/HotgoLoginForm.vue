@@ -52,7 +52,13 @@
 
           <img
             class="cursor-pointer"
-            style="width: 120px; height: 40px; border-radius: 0 4px 4px 0; background-color: #F2F3F5; border-left: 1px solid #e5e7eb;"
+            style="
+              width: 120px;
+              height: 40px;
+              border-radius: 0 4px 4px 0;
+              background-color: #f2f3f5;
+              border-left: 1px solid #e5e7eb;
+            "
             :src="codeBase64"
             @click="refreshCode"
             loading="lazy"
@@ -116,7 +122,7 @@
 
   <!-- 忘记密码弹窗 -->
   <n-modal v-model:show="resetModalVisible" preset="dialog" title="忘记密码" :mask-closable="true">
-    <div style="margin-bottom: 12px; color: rgba(0,0,0,0.65)">
+    <div style="margin-bottom: 12px; color: rgba(0, 0, 0, 0.65)">
       输入绑定邮箱，我们将发送一封包含“重置密码链接”的邮件。
     </div>
     <n-input

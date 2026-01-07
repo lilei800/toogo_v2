@@ -65,18 +65,12 @@ func (p *Pusher) PushTicker(ctx context.Context, symbols []string) {
 
 			// 优先用全局行情缓存（WS优先，降级HTTP缓存），避免每秒REST拉行情导致限流
 			// 对于被订阅的频道，这里顺带订阅一次，让缓存能持续更新（引用计数在 market 内部管理）
-			market.GetMarketServiceManager().Subscribe(ctx, platform, symbol, ex)
+			// 推送只需要 ticker，不需要K线（避免无意义订阅/日志噪声）
+			market.GetMarketServiceManager().SubscribeQuoteOnly(ctx, platform, symbol, ex)
 			ticker := market.GetMarketServiceManager().GetTicker(platform, symbol)
 			if ticker == nil {
-				// 缓存缺失时，才做低频REST兜底（platform:symbol 维度限流）
-				if !p.allowTickerRESTFallback(platform, symbol, 10*time.Second) {
-					continue
-				}
-				apiTicker, err := ex.GetTicker(ctx, symbol)
-			if err != nil {
+				// 只走“全局行情引擎”（WS优先）。缓存未就绪时直接跳过，避免绕过全局链路去REST打交易所。
 				continue
-				}
-				ticker = apiTicker
 			}
 
 			// 推送到对应频道
@@ -172,15 +166,8 @@ func (p *Pusher) pushSubscribedTickers(ctx context.Context) int {
 
 		ticker := market.GetMarketServiceManager().GetTicker(k.platform, k.symbol)
 		if ticker == nil {
-			// 缓存缺失，低频REST兜底
-			if !p.allowTickerRESTFallback(k.platform, k.symbol, 10*time.Second) {
-				continue
-			}
-			apiTicker, err := ex.GetTicker(ctx, k.symbol)
-			if err != nil {
-				continue
-			}
-			ticker = apiTicker
+			// 只走“全局行情引擎”（WS优先）。缓存未就绪时直接跳过，避免绕过全局链路去REST打交易所。
+			continue
 		}
 
 		for _, ch := range channels {

@@ -119,7 +119,7 @@ export default function BrowserType(lang: 'zh-cn' | 'en' = 'en') {
         : {
             外壳: shell, // 外壳: wechat qq uc 360 2345 sougou liebao maxthon
             外壳版本: shellVs, // 外壳版本
-          }
+          },
     ),
     en: Object.assign(
       {
@@ -136,7 +136,7 @@ export default function BrowserType(lang: 'zh-cn' | 'en' = 'en') {
         : {
             shell, // 外壳: wechat qq uc 360 2345 sougou liebao maxthon
             shellVs, // 外壳版本
-          }
+          },
     ),
   }[lang];
 }

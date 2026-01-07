@@ -19,7 +19,7 @@ export const columns = [
         },
         {
           default: () => row.name,
-        }
+        },
       );
     },
   },
@@ -44,7 +44,7 @@ export const columns = [
         },
         {
           default: () => (row.status == 1 ? '正常' : '已禁用'),
-        }
+        },
       );
     },
   },

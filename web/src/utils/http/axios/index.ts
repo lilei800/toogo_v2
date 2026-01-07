@@ -200,16 +200,16 @@ const transform: AxiosTransform = {
   responseInterceptorsCatch: (_, error: any) => {
     const $dialog = useDialog();
     const $message = useMessage();
-    
+
     // 安全获取错误信息
     const response = error?.response;
     const code = error?.code;
     const message = error?.message;
-    
+
     // TODO 此处要根据后端接口返回格式修改
     const msg: string = response?.data?.message || message || '请求失败';
     const err: string = error?.toString?.() || '';
-    
+
     try {
       if (code === 'ECONNABORTED' && message?.indexOf?.('timeout') !== -1) {
         $message.error('接口请求超时，请刷新页面重试!');
@@ -230,7 +230,7 @@ const transform: AxiosTransform = {
     } catch (e) {
       console.error('错误处理异常:', e);
     }
-    
+
     // 请求是否被取消
     const isCancel = axios.isCancel(error);
     if (!isCancel && response?.status) {
@@ -241,7 +241,7 @@ const transform: AxiosTransform = {
     } else {
       console.warn(error, '请求被取消！');
     }
-    
+
     // 返回格式化的错误对象
     return Promise.reject({
       message: msg,

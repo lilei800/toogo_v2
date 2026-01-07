@@ -140,7 +140,7 @@
       if (isShowModal.value) {
         loadForm(value);
       }
-    }
+    },
   );
 </script>
 

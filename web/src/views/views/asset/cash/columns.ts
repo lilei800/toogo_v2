@@ -76,7 +76,7 @@ export const columns = [
         },
         {
           default: () => (row.msg == '' ? msgMap[row.status] : row.msg),
-        }
+        },
       );
     },
     width: 200,

@@ -34,10 +34,10 @@
 
 **检查项**:
 - ✅ **条件1**: 自动交易是否开启 (`AutoTradeEnabled == 1`)
-- ✅ **条件2**: 双重验证机制（内存 + 数据库）
-  - 快速检查内存：`hasPositionInMemory(positionSide)`
-  - 准确检查数据库：`checkOpenPositionInDB(direction)`
-  - 如果数据库有持仓但内存没有，同步内存：`syncPositionFromDB()`
+- ✅ **条件2**: 同方向持仓限制（以内存缓存为准）
+  - 读取引擎内存持仓：`RobotEngine.CurrentPositions`
+  - 单向：任意方向已有持仓 → 拒绝新开仓
+  - 双向：同方向已有持仓 → 拒绝新开仓（禁止加仓）
 - ✅ **条件3**: 算力是否充足 (`checkPower()`)
 - ✅ **条件4**: 信号是否已处理（去重机制：`LastProcessedSignalTime`）
 

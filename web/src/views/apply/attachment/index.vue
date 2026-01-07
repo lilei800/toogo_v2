@@ -114,7 +114,7 @@
   const imageUploadRef = ref();
   const docUploadRef = ref();
   const multipartUploadRef = ref();
-  const urlModalRef =ref();
+  const urlModalRef = ref();
 
   const actionColumn = reactive({
     width: 132,

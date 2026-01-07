@@ -18,9 +18,9 @@ export const columns = [
             text: true,
             iconPlacement: 'right',
           },
-          { default: () => '角色', icon: renderIcon(HelpCircleOutline) }
+          { default: () => '角色', icon: renderIcon(HelpCircleOutline) },
         ),
-        '支持上下级角色，点击列表中左侧 > 按钮可展开下级角色列表'
+        '支持上下级角色，点击列表中左侧 > 按钮可展开下级角色列表',
       );
     },
     key: 'name',
@@ -32,7 +32,7 @@ export const columns = [
         },
         {
           default: () => row.name,
-        }
+        },
       );
     },
     width: 200,
@@ -88,7 +88,7 @@ export const columns = [
         },
         {
           default: () => (row.status == 1 ? '正常' : '已禁用'),
-        }
+        },
       );
     },
   },

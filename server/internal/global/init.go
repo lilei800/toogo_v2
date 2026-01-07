@@ -60,6 +60,9 @@ func Init(ctx context.Context) {
 
 	// 订阅集群同步
 	SubscribeClusterSync(ctx)
+
+	// 启动成交流水后台同步任务（优化交易明细页面性能）
+	service.ToogoWallet().StartTradeFillSyncTask(ctx)
 }
 
 // LoggingServeLogHandler 服务日志处理

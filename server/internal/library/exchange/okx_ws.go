@@ -459,6 +459,16 @@ func (o *OKXWebSocket) handleTicker(instId string, payload interface{}) {
 	t.High24h = parseFloatAny(item["high24h"])
 	t.Low24h = parseFloatAny(item["low24h"])
 	t.Volume24h = parseFloatAny(item["vol24h"])
+	// 24h涨跌幅（%）：OKX tickers 通常包含 open24h / sodUtc0
+	open24h := parseFloatAny(item["open24h"])
+	if open24h <= 0 {
+		open24h = parseFloatAny(item["sodUtc0"])
+	}
+	if open24h > 0 && t.LastPrice > 0 {
+		changePercent := (t.LastPrice-open24h)/open24h*100.0
+		t.Change24h = changePercent
+		t.PriceChangePercent = changePercent
+	}
 	t.Timestamp = parseIntAny(item["ts"])
 
 	cbs := append([]func(*Ticker){}, o.tickerCallbacks[symbol]...)

@@ -11,7 +11,6 @@ import (
 	"context"
 	"math"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -88,8 +87,16 @@ func GetActiveSymbols(ctx context.Context) (map[string]map[string]bool, error) {
 	activeSymbols := make(map[string]map[string]bool)
 
 	for _, robot := range robots {
-		platform := strings.ToLower(strings.TrimSpace(robot.Exchange))
-		symbol := strings.ToUpper(strings.TrimSpace(robot.Symbol))
+		// 关键：MarketAnalyzer 的 key 是 platform:symbol。
+		// 当机器人配置了 analysisSourceOverrides（例如 gate/bitget -> okx），
+		// 我们必须把“分析平台”加入 activeSymbols，否则一旦没有 OKX 机器人在跑，
+		// MarketAnalyzer 就会停止分析 OKX，导致 Gate/Bitget “市场状态/多周期K线”断更。
+		execPlatform := NormalizePlatform(robot.Exchange)
+		platform := ResolveAnalysisPlatform(ctx, execPlatform)
+		if platform == "" {
+			platform = execPlatform
+		}
+		symbol := NormalizeSymbol(robot.Symbol)
 
 		if activeSymbols[platform] == nil {
 			activeSymbols[platform] = make(map[string]bool)
@@ -432,9 +439,9 @@ func learnSymbolCharacteristics(ctx context.Context, platform, symbol string, kl
 	// 排序计算分位数
 	sort.Float64s(volatilities)
 
-	normalVol := volatilities[len(volatilities)/2]                    // 中位数
-	highVol := volatilities[int(float64(len(volatilities))*0.85)]     // 85分位数
-	lowVol := volatilities[int(float64(len(volatilities))*0.15)]       // 15分位数
+	normalVol := volatilities[len(volatilities)/2]                // 中位数
+	highVol := volatilities[int(float64(len(volatilities))*0.85)] // 85分位数
+	lowVol := volatilities[int(float64(len(volatilities))*0.15)]  // 15分位数
 
 	// 计算趋势阈值（使用价格变化率）
 	priceChanges := make([]float64, 0)
@@ -673,4 +680,3 @@ func max(a, b int) int {
 	}
 	return b
 }
-

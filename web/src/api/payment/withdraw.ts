@@ -6,11 +6,7 @@ import { http } from '@/utils/http/axios';
 /**
  * 申请提现
  */
-export function applyWithdraw(params: {
-  amount: number;
-  toAddress: string;
-  network: string;
-}) {
+export function applyWithdraw(params: { amount: number; toAddress: string; network: string }) {
   return http.request({
     url: '/payment/withdraw/apply',
     method: 'post',
@@ -50,11 +46,7 @@ export function withdrawView(params: { id: number }) {
 /**
  * 审核提现（管理员）
  */
-export function auditWithdraw(params: {
-  id: number;
-  status: number;
-  remark?: string;
-}) {
+export function auditWithdraw(params: { id: number; status: number; remark?: string }) {
   return http.request({
     url: '/payment/withdraw/audit',
     method: 'post',
@@ -83,4 +75,3 @@ export function cancelWithdraw(params: { id: number }) {
     params,
   });
 }
-

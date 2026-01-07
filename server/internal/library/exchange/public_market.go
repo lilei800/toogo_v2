@@ -1,11 +1,12 @@
 // Package exchange 公共行情服务
-// 支持多家交易所：Binance, Bitget, OKX, Gate.io
+// 支持多家交易所：Binance, OKX, Gate.io
 // 用于获取实时报价、K线等公开数据，无需用户API Key
 package exchange
 
 import (
 	"context"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,7 +20,6 @@ import (
 // 支持的交易所
 const (
 	PlatformBinance = "binance"
-	PlatformBitget  = "bitget"
 	PlatformOKX     = "okx"
 	PlatformGate    = "gate"
 )
@@ -65,11 +65,6 @@ func newPublicMarketService() *PublicMarketService {
 	pms.exchanges[PlatformBinance] = &PublicExchange{
 		platform: PlatformBinance,
 		baseURL:  "https://fapi.binance.com",
-		enabled:  true,
-	}
-	pms.exchanges[PlatformBitget] = &PublicExchange{
-		platform: PlatformBitget,
-		baseURL:  "https://api.bitget.com",
 		enabled:  true,
 	}
 	pms.exchanges[PlatformOKX] = &PublicExchange{
@@ -143,8 +138,6 @@ func (pms *PublicMarketService) GetTicker(ctx context.Context, platform, symbol 
 	switch platform {
 	case PlatformBinance:
 		ticker, err = pms.fetchBinanceTicker(ctx, symbol)
-	case PlatformBitget:
-		ticker, err = pms.fetchBitgetTicker(ctx, symbol)
 	case PlatformOKX:
 		ticker, err = pms.fetchOKXTicker(ctx, symbol)
 	case PlatformGate:
@@ -168,8 +161,6 @@ func (pms *PublicMarketService) GetTickerRealtime(ctx context.Context, platform,
 	switch platform {
 	case PlatformBinance:
 		return pms.fetchBinanceTicker(ctx, symbol)
-	case PlatformBitget:
-		return pms.fetchBitgetTicker(ctx, symbol)
 	case PlatformOKX:
 		return pms.fetchOKXTicker(ctx, symbol)
 	case PlatformGate:
@@ -185,7 +176,7 @@ func (pms *PublicMarketService) GetAllExchangesTicker(ctx context.Context, symbo
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
-	platforms := []string{PlatformBinance, PlatformBitget, PlatformOKX, PlatformGate}
+	platforms := []string{PlatformBinance, PlatformOKX, PlatformGate}
 
 	for _, platform := range platforms {
 		wg.Add(1)
@@ -330,88 +321,6 @@ func (pms *PublicMarketService) fetchBinanceKlines(ctx context.Context, symbol, 
 	return klines, nil
 }
 
-// ========== Bitget ==========
-
-func (pms *PublicMarketService) fetchBitgetTicker(ctx context.Context, symbol string) (*Ticker, error) {
-	client := pms.getHttpClient()
-	url := "https://api.bitget.com/api/v2/mix/market/ticker"
-
-	resp, err := client.Get(ctx, url, g.Map{
-		"symbol":      formatBitgetSymbol(symbol),
-		"productType": "USDT-FUTURES",
-	})
-	if err != nil {
-		return nil, gerror.Wrapf(err, "Bitget请求失败")
-	}
-	defer resp.Close()
-
-	json := gjson.New(resp.ReadAllString())
-	if json.Get("code").String() != "00000" {
-		return nil, gerror.Newf("Bitget API error: %s", json.Get("msg").String())
-	}
-
-	data := json.Get("data").Array()
-	if len(data) == 0 {
-		return nil, gerror.New("Bitget: No ticker data")
-	}
-
-	j := gjson.New(data[0])
-	return &Ticker{
-		Symbol:             symbol,
-		LastPrice:          j.Get("lastPr").Float64(),
-		BidPrice:           j.Get("bidPr").Float64(),
-		AskPrice:           j.Get("askPr").Float64(),
-		High24h:            j.Get("high24h").Float64(),
-		Low24h:             j.Get("low24h").Float64(),
-		Volume24h:          j.Get("baseVolume").Float64(),
-		QuoteVolume24h:     j.Get("quoteVolume").Float64(),
-		Change24h:          j.Get("change24h").Float64() * 100,
-		PriceChangePercent: j.Get("change24h").Float64() * 100,
-		Timestamp:          j.Get("ts").Int64(),
-	}, nil
-}
-
-func (pms *PublicMarketService) fetchBitgetKlines(ctx context.Context, symbol, interval string, limit int) ([]*Kline, error) {
-	client := pms.getHttpClient()
-	url := "https://api.bitget.com/api/v2/mix/market/candles"
-
-	resp, err := client.Get(ctx, url, g.Map{
-		"symbol":      formatBitgetSymbol(symbol),
-		"productType": "USDT-FUTURES",
-		"granularity": convertBitgetInterval(interval),
-		"limit":       limit,
-	})
-	if err != nil {
-		return nil, gerror.Wrapf(err, "Bitget K线请求失败")
-	}
-	defer resp.Close()
-
-	json := gjson.New(resp.ReadAllString())
-	if json.Get("code").String() != "00000" {
-		return nil, gerror.Newf("Bitget API error: %s", json.Get("msg").String())
-	}
-
-	data := json.Get("data").Array()
-	klines := make([]*Kline, 0, len(data))
-
-	for _, item := range data {
-		arr := gjson.New(item).Array()
-		if len(arr) >= 6 {
-			klines = append(klines, &Kline{
-				OpenTime:  gjson.New(arr[0]).Get(".").Int64(),
-				Open:      gjson.New(arr[1]).Get(".").Float64(),
-				High:      gjson.New(arr[2]).Get(".").Float64(),
-				Low:       gjson.New(arr[3]).Get(".").Float64(),
-				Close:     gjson.New(arr[4]).Get(".").Float64(),
-				Volume:    gjson.New(arr[5]).Get(".").Float64(),
-				CloseTime: gjson.New(arr[0]).Get(".").Int64(),
-			})
-		}
-	}
-
-	return klines, nil
-}
-
 // ========== OKX ==========
 
 func (pms *PublicMarketService) fetchOKXTicker(ctx context.Context, symbol string) (*Ticker, error) {
@@ -513,10 +422,29 @@ func (pms *PublicMarketService) fetchGateTicker(ctx context.Context, symbol stri
 	}
 	defer resp.Close()
 
-	json := gjson.New(resp.ReadAllString())
+	raw := resp.ReadAllString()
+	// Gate 公共接口可能在受限网络/地区返回 403/451 或 HTML 拦截页；若不检查 status，会被误解析成“空数组”
+	if resp.StatusCode != 200 {
+		preview := raw
+		if len(preview) > 400 {
+			preview = preview[:400]
+		}
+		return nil, gerror.Newf("Gate.io http status=%d, url=%s, preview=%s", resp.StatusCode, url, preview)
+	}
+
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || (!strings.HasPrefix(trimmed, "[") && !strings.HasPrefix(trimmed, "{")) {
+		preview := trimmed
+		if len(preview) > 400 {
+			preview = preview[:400]
+		}
+		return nil, gerror.Newf("Gate.io ticker unexpected body, url=%s, preview=%s", url, preview)
+	}
+
+	json := gjson.New(raw)
 	data := json.Array()
 	if len(data) == 0 {
-		return nil, gerror.New("Gate.io: No ticker data")
+		return nil, gerror.Newf("Gate.io: No ticker data, contract=%s", formatGateSymbol(symbol))
 	}
 
 	j := gjson.New(data[0])
@@ -550,20 +478,93 @@ func (pms *PublicMarketService) fetchGateKlines(ctx context.Context, symbol, int
 	}
 	defer resp.Close()
 
-	json := gjson.New(resp.ReadAllString())
+	raw := resp.ReadAllString()
+	// Gate 公共接口可能在受限网络/地区返回 403/451 或 HTML 拦截页；若不检查 status，会被误解析成“空数组”
+	if resp.StatusCode != 200 {
+		preview := raw
+		if len(preview) > 400 {
+			preview = preview[:400]
+		}
+		return nil, gerror.Newf("Gate.io K线 http status=%d, url=%s, preview=%s", resp.StatusCode, url, preview)
+	}
+
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || (!strings.HasPrefix(trimmed, "[") && !strings.HasPrefix(trimmed, "{")) {
+		preview := trimmed
+		if len(preview) > 400 {
+			preview = preview[:400]
+		}
+		return nil, gerror.Newf("Gate.io K线 unexpected body, url=%s, contract=%s, interval=%s, limit=%d, preview=%s",
+			url, formatGateSymbol(symbol), convertGateInterval(interval), limit, preview)
+	}
+
+	json := gjson.New(raw)
 	data := json.Array()
+	if len(data) == 0 {
+		return nil, gerror.Newf("Gate.io K线: empty data, contract=%s, interval=%s, limit=%d",
+			formatGateSymbol(symbol), convertGateInterval(interval), limit)
+	}
 	klines := make([]*Kline, 0, len(data))
 
 	for _, item := range data {
-		j := gjson.New(item)
+		arr := gjson.New(item).Array()
+		if len(arr) < 6 {
+			continue
+		}
+		t0 := g.NewVar(arr[0]).Int64()
+		openTime := t0
+		if openTime > 0 && openTime < 1e12 {
+			openTime = openTime * 1000
+		}
+
+		type cand struct {
+			open, high, low, close, vol float64
+		}
+		cands := []cand{
+			// [t, v, c, h, l, o]
+			{open: g.NewVar(arr[5]).Float64(), high: g.NewVar(arr[3]).Float64(), low: g.NewVar(arr[4]).Float64(), close: g.NewVar(arr[2]).Float64(), vol: g.NewVar(arr[1]).Float64()},
+			// [t, o, h, l, c, v]
+			{open: g.NewVar(arr[1]).Float64(), high: g.NewVar(arr[2]).Float64(), low: g.NewVar(arr[3]).Float64(), close: g.NewVar(arr[4]).Float64(), vol: g.NewVar(arr[5]).Float64()},
+			// [t, o, c, h, l, v]
+			{open: g.NewVar(arr[1]).Float64(), high: g.NewVar(arr[3]).Float64(), low: g.NewVar(arr[4]).Float64(), close: g.NewVar(arr[2]).Float64(), vol: g.NewVar(arr[5]).Float64()},
+			// [t, c, h, l, o, v]
+			{open: g.NewVar(arr[4]).Float64(), high: g.NewVar(arr[2]).Float64(), low: g.NewVar(arr[3]).Float64(), close: g.NewVar(arr[1]).Float64(), vol: g.NewVar(arr[5]).Float64()},
+		}
+		choose := func(c cand) bool {
+			if c.high <= 0 || c.low <= 0 || c.open <= 0 || c.close <= 0 {
+				return false
+			}
+			if c.high < c.low {
+				return false
+			}
+			if c.high < c.open || c.high < c.close {
+				return false
+			}
+			if c.low > c.open || c.low > c.close {
+				return false
+			}
+			return true
+		}
+		picked := cands[0]
+		for _, c := range cands {
+			if choose(c) {
+				picked = c
+				break
+			}
+		}
+		if !choose(picked) {
+			// 仍不合理则跳过（避免污染分析）
+			continue
+		}
+
 		klines = append(klines, &Kline{
-			OpenTime:  j.Get("t").Int64() * 1000,
-			Open:      j.Get("o").Float64(),
-			High:      j.Get("h").Float64(),
-			Low:       j.Get("l").Float64(),
-			Close:     j.Get("c").Float64(),
-			Volume:    j.Get("v").Float64(),
-			CloseTime: j.Get("t").Int64() * 1000,
+			OpenTime:  openTime,
+			Open:      picked.open,
+			High:      picked.high,
+			Low:       picked.low,
+			Close:     picked.close,
+			Volume:    picked.vol,
+			CloseTime: openTime,
 		})
 	}
 
@@ -587,8 +588,6 @@ func (pms *PublicMarketService) GetKlines(ctx context.Context, platform, symbol,
 	switch platform {
 	case PlatformBinance:
 		klines, err = pms.fetchBinanceKlines(ctx, symbol, interval, limit)
-	case PlatformBitget:
-		klines, err = pms.fetchBitgetKlines(ctx, symbol, interval, limit)
 	case PlatformOKX:
 		klines, err = pms.fetchOKXKlines(ctx, symbol, interval, limit)
 	case PlatformGate:
@@ -634,17 +633,12 @@ func (pms *PublicMarketService) GetMultiTickers(ctx context.Context, platform st
 
 // GetSupportedPlatforms 获取支持的交易所列表
 func (pms *PublicMarketService) GetSupportedPlatforms() []string {
-	return []string{PlatformBinance, PlatformBitget, PlatformOKX, PlatformGate}
+	return []string{PlatformBinance, PlatformOKX, PlatformGate}
 }
 
 // ========== Symbol格式化 ==========
 
 func formatBinanceSymbol(symbol string) string {
-	// BTCUSDT -> BTCUSDT
-	return symbol
-}
-
-func formatBitgetSymbol(symbol string) string {
 	// BTCUSDT -> BTCUSDT
 	return symbol
 }
@@ -659,26 +653,24 @@ func formatOKXSymbol(symbol string) string {
 }
 
 func formatGateSymbol(symbol string) string {
-	// BTCUSDT -> BTC_USDT
-	if len(symbol) > 4 && symbol[len(symbol)-4:] == "USDT" {
-		base := symbol[:len(symbol)-4]
+	// Gate futures contract: BTC_USDT
+	// 兼容输入：BTCUSDT / BTC_USDT / BTC-USDT / BTC/USDT
+	s := strings.ToUpper(strings.TrimSpace(symbol))
+	s = strings.ReplaceAll(s, "_", "")
+	s = strings.ReplaceAll(s, "-", "")
+	s = strings.ReplaceAll(s, "/", "")
+	if strings.HasSuffix(s, "USDT") {
+		base := strings.TrimSuffix(s, "USDT")
 		return base + "_USDT"
 	}
-	return symbol
+	// 兜底：如果输入本身就是带 "_" 的 contract
+	if strings.Contains(symbol, "_") {
+		return strings.ToUpper(strings.TrimSpace(symbol))
+	}
+	return s
 }
 
 // ========== Interval转换 ==========
-
-func convertBitgetInterval(interval string) string {
-	mapping := map[string]string{
-		"1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
-		"1h": "1H", "4h": "4H", "1d": "1D",
-	}
-	if v, ok := mapping[interval]; ok {
-		return v
-	}
-	return "15m"
-}
 
 func convertOKXInterval(interval string) string {
 	mapping := map[string]string{
@@ -694,7 +686,7 @@ func convertOKXInterval(interval string) string {
 func convertGateInterval(interval string) string {
 	mapping := map[string]string{
 		"1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
-		"1h": "1h", "4h": "4h", "1d": "1d",
+		"1h": "1h", "60m": "1h", "4h": "4h", "1d": "1d",
 	}
 	if v, ok := mapping[interval]; ok {
 		return v

@@ -130,7 +130,6 @@ const (
 const (
 	PlatformBinance = "binance"
 	PlatformOKX     = "okx"
-	PlatformBitget  = "bitget"
 	PlatformGate    = "gate"
 )
 

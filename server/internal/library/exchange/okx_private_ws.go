@@ -136,6 +136,8 @@ func (s *OKXPrivateStream) Stop() {
 
 func (s *OKXPrivateStream) onConnected() {
 	// login then subscribe
+	// 【关键修复】私有WS登录对 timestamp 很敏感：先同步 serverTime offset，再登录
+	_, _ = SyncServerTimeOffset(s.ctx, s.cfg)
 	_ = s.login()
 }
 
@@ -167,7 +169,7 @@ func (s *OKXPrivateStream) login() error {
 		return nil
 	}
 
-	ts := time.Now().Unix()
+	ts := nowSecWithOffset(s.cfg)
 	tsStr := g.NewVar(ts).String()
 	prehash := tsStr + "GET" + "/users/self/verify"
 	mac := hmac.New(sha256.New, []byte(s.cfg.SecretKey))
@@ -232,6 +234,11 @@ func (s *OKXPrivateStream) onMessage(msg []byte) {
 		}
 		if ev == "error" {
 			g.Log().Warningf(s.ctx, "[OKXPrivateWS] error msg: %s", string(msg))
+			// 常见：{"event":"error","msg":"Timestamp request expired","code":"60006"}
+			if IsTimestampExpiredError(nil, string(msg)) {
+				_, _ = SyncServerTimeOffset(s.ctx, s.cfg)
+				_ = s.login()
+			}
 			return
 		}
 	}

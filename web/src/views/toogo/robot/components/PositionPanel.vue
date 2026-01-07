@@ -1,7 +1,7 @@
 <template>
   <div class="position-section">
     <n-text depth="3" style="font-size: 12px; display: block; margin-bottom: 8px">当前持仓</n-text>
-    
+
     <template v-if="positions && positions.length > 0">
       <div v-for="pos in positions" :key="pos.symbol + pos.positionSide" class="position-item">
         <n-grid :cols="5" :x-gap="8" align="center">
@@ -30,40 +30,39 @@
         </n-grid>
       </div>
     </template>
-    
+
     <n-empty v-else size="small" description="暂无持仓" />
   </div>
 </template>
 
 <script setup lang="ts">
-import type { PositionData } from '../composables/useRobotStatus';
+  import type { PositionData } from '../composables/useRobotStatus';
 
-defineProps<{
-  positions: PositionData[] | undefined;
-}>();
+  defineProps<{
+    positions: PositionData[] | undefined;
+  }>();
 
-defineEmits<{
-  (e: 'close', position: PositionData): void;
-}>();
+  defineEmits<{
+    (e: 'close', position: PositionData): void;
+  }>();
 </script>
 
 <style scoped>
-.position-section {
-  margin-top: 12px;
-  padding: 12px;
-  background: var(--n-color-embedded);
-  border-radius: 8px;
-}
+  .position-section {
+    margin-top: 12px;
+    padding: 12px;
+    background: var(--n-color-embedded);
+    border-radius: 8px;
+  }
 
-.position-item {
-  padding: 10px;
-  background: var(--n-color);
-  border-radius: 6px;
-  margin-bottom: 8px;
-}
+  .position-item {
+    padding: 10px;
+    background: var(--n-color);
+    border-radius: 6px;
+    margin-bottom: 8px;
+  }
 
-.position-item:last-child {
-  margin-bottom: 0;
-}
+  .position-item:last-child {
+    margin-bottom: 0;
+  }
 </style>
-

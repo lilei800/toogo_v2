@@ -6,10 +6,7 @@ import { http } from '@/utils/http/axios';
 /**
  * 创建充值订单
  */
-export function createDeposit(params: {
-  amount: number;
-  network: string;
-}) {
+export function createDeposit(params: { amount: number; network: string }) {
   return http.request({
     url: '/payment/deposit/create',
     method: 'post',
@@ -66,4 +63,3 @@ export function cancelDeposit(params: { id: number }) {
     params,
   });
 }
-

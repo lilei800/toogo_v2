@@ -51,7 +51,7 @@ export const columns = [
         },
         {
           default: () => policyOptions[row.policy] ?? '未知',
-        }
+        },
       );
     },
     width: 100,
@@ -80,7 +80,7 @@ export const columns = [
         },
         {
           default: () => (row.status == 1 ? '运行中' : '已结束'),
-        }
+        },
       );
     },
     width: 100,

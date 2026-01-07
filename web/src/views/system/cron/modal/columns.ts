@@ -20,7 +20,7 @@ export const columns = [
     key: 'supName',
     width: 150,
     render(row) {
-      if (row.supName == ''){
+      if (row.supName == '') {
         return '顶级分组';
       }
       return row.supName;
@@ -51,7 +51,7 @@ export const columns = [
         },
         {
           default: () => (row.status === 1 ? '正常' : '禁用'),
-        }
+        },
       );
     },
     width: 150,

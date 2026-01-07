@@ -13,6 +13,7 @@ import {
   UserOutlined,
   CheckOutlined,
   BellOutlined,
+  CustomerServiceOutlined,
 } from '@vicons/antd';
 
 import { Refresh, LanguageOutline } from '@vicons/ionicons5';
@@ -32,6 +33,7 @@ export default {
   UserOutlined,
   CheckOutlined,
   BellOutlined,
+  CustomerServiceOutlined,
   Refresh,
   LanguageOutline,
 };

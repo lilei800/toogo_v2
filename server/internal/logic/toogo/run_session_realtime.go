@@ -4,8 +4,10 @@ package toogo
 
 import (
 	"context"
-	"strings"
+	"sync"
+	"time"
 
+	"hotgo/internal/consts"
 	"hotgo/internal/dao"
 	"hotgo/internal/model/entity"
 
@@ -13,19 +15,58 @@ import (
 	"github.com/gogf/gf/v2/os/gtime"
 )
 
-// refreshCurrentRunSessionSummaryByRobot 根据“当前运行区间 + 本地订单表(已同步交易所口径)”实时刷新汇总
+// refreshCurrentRunSessionSummaryByRobot 根据“当前运行区间 + 成交流水(trading_trade_fill)”实时刷新汇总（写回 run_session）。
 //
 // 设计目标：
 // - 触发点：自动平仓/手动平仓/开仓手续费补齐等“订单事件”
 // - 不依赖交易所 API（避免频繁 GetTradeHistory 消耗资源/限流）
 // - 幂等：采用“重算”而不是“累加”，避免重复触发导致重复统计
 func refreshCurrentRunSessionSummaryByRobot(ctx context.Context, userId, robotId int64, exchange, symbol string) {
+	// 为保持口径一致，这里统一用 trade_fill 口径重算（而不是订单表口径）。
+	refreshCurrentRunSessionSummaryByTradeFill(ctx, userId, robotId)
+}
+
+// ====== 成交流水(trade_fill)事件驱动写回 run_session ======
+
+var runSessionTradeFillDebounce sync.Map // key -> time.Time
+
+func shouldRunSessionRefresh(key string, interval time.Duration) bool {
+	if key == "" {
+		return false
+	}
+	now := time.Now()
+	if v, ok := runSessionTradeFillDebounce.Load(key); ok {
+		if t, ok2 := v.(time.Time); ok2 {
+			if now.Sub(t) < interval {
+				return false
+			}
+		}
+	}
+	runSessionTradeFillDebounce.Store(key, now)
+	return true
+}
+
+// triggerRunSessionRefreshByTradeFill 由“成交落库”触发的写回入口（节流 + 异步）。
+// 说明：只用 userId+robotId 定位 run_session，避免 exchange/symbol 历史数据不一致导致找不到区间。
+func triggerRunSessionRefreshByTradeFill(ctx context.Context, userId, robotId int64) {
 	if userId <= 0 || robotId <= 0 {
 		return
 	}
-	exchange = strings.TrimSpace(exchange)
-	symbol = strings.TrimSpace(symbol)
-	if exchange == "" || symbol == "" {
+	key := g.NewVar(userId).String() + ":" + g.NewVar(robotId).String()
+	if !shouldRunSessionRefresh(key, 3*time.Second) {
+		return
+	}
+	go func() {
+		// 不要用调用方 ctx（可能已取消）；这里走 background + timeout
+		tctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		refreshCurrentRunSessionSummaryByTradeFill(tctx, userId, robotId)
+	}()
+}
+
+// refreshCurrentRunSessionSummaryByTradeFill 找到当前运行区间(end_time IS NULL)，按时间窗从 hg_trading_trade_fill 重算并写回 run_session。
+func refreshCurrentRunSessionSummaryByTradeFill(ctx context.Context, userId, robotId int64) {
+	if userId <= 0 || robotId <= 0 {
 		return
 	}
 
@@ -34,66 +75,92 @@ func refreshCurrentRunSessionSummaryByRobot(ctx context.Context, userId, robotId
 	_ = dao.TradingRobotRunSession.Ctx(ctx).
 		Where(dao.TradingRobotRunSession.Columns().UserId, userId).
 		Where(dao.TradingRobotRunSession.Columns().RobotId, robotId).
-		Where(dao.TradingRobotRunSession.Columns().Exchange, exchange).
-		Where(dao.TradingRobotRunSession.Columns().Symbol, symbol).
 		WhereNull(dao.TradingRobotRunSession.Columns().EndTime).
 		OrderDesc(dao.TradingRobotRunSession.Columns().Id).
 		Limit(1).
 		Scan(&sess)
-	if sess == nil || sess.StartTime == nil || sess.StartTime.IsZero() {
+	if sess == nil {
 		return
 	}
 
 	now := gtime.Now()
 
-	// 从本地订单表重算（订单表字段由平仓时的交易所成交汇总写入/补齐）
-	// 统计口径：
-	// - total_pnl：sum(realized_profit)（仅 status=2 已平仓）
-	// - total_fee：sum(open_fee+close_fee)（仅当 fee coin 为 USDT/空时计入；避免币种不一致）
-	// - trade_count：此处按“平仓订单数”统计（更稳定）；成交(fill)笔数若需要可走强制同步接口补齐
+	// start_time 兜底：历史数据可能为 year=2006/空；优先用 robot.start_time，再用 sess.created_at
+	effectiveStart := sess.StartTime
+	if effectiveStart == nil || effectiveStart.IsZero() || effectiveStart.Year() == 2006 {
+		var rb *entity.TradingRobot
+		_ = dao.TradingRobot.Ctx(ctx).
+			Where(dao.TradingRobot.Columns().Id, robotId).
+			Where(dao.TradingRobot.Columns().UserId, userId).
+			Scan(&rb)
+		if rb != nil && rb.StartTime != nil && !rb.StartTime.IsZero() && rb.StartTime.Year() != 2006 {
+			effectiveStart = rb.StartTime
+		} else if sess.CreatedAt != nil && !sess.CreatedAt.IsZero() && sess.CreatedAt.Year() != 2006 {
+			effectiveStart = sess.CreatedAt
+		}
+		// 写回修正 start_time，避免后续重复兜底
+		if effectiveStart != nil && !effectiveStart.IsZero() && effectiveStart.Year() != 2006 {
+			_, _ = dao.TradingRobotRunSession.Ctx(ctx).
+				Where(dao.TradingRobotRunSession.Columns().Id, sess.Id).
+				Data(g.Map{"start_time": effectiveStart, "updated_at": now}).
+				Update()
+		}
+	}
+	if effectiveStart == nil || effectiveStart.IsZero() || effectiveStart.Year() == 2006 {
+		return
+	}
+
+	// 从成交流水表重算（口径与“运行区间列表展示”一致）
 	type aggRow struct {
-		Pnl   float64 `json:"pnl"   orm:"pnl"`
-		Fee   float64 `json:"fee"   orm:"fee"`
-		Count int     `json:"count" orm:"count"`
+		TotalPnl   float64 `orm:"total_pnl"`
+		TotalFee   float64 `orm:"total_fee"`
+		TradeCount int     `orm:"trade_count"`
 	}
 	var agg aggRow
 
-	// 注意：字段名在不同环境可能存在（历史迁移），这里用 SQL 表达式并容错 0 值
-	// fee 仅统计 USDT（或空）口径
-	//
-	// 说明：
-	// - MySQL 的 IF/IFNULL 在 PostgreSQL 不可用，因此统一用 CASE/COALESCE
-	// - UPPER/IS NULL/'' 判断在两边都可用
-	feeExpr := `
-SUM(
-  CASE WHEN (open_fee_coin IS NULL OR open_fee_coin='' OR UPPER(open_fee_coin)='USDT') THEN open_fee ELSE 0 END
-  +
-  CASE WHEN (close_fee_coin IS NULL OR close_fee_coin='' OR UPPER(close_fee_coin)='USDT') THEN close_fee ELSE 0 END
-) AS fee`
+	// PG 兼容：timestamp without timezone 读出可能被当作 UTC，导致 epoch 偏移（常见为 +8h）
+	// 这里将 “YYYY-MM-DD HH:mm:ss” 重新按 gtime 时区(Asia/Shanghai) 解析，再取 epoch-ms，确保与 trade_fill.ts 对齐。
+	fixEpochMs := func(t *gtime.Time) int64 {
+		if t == nil || t.IsZero() {
+			return 0
+		}
+		if dao.TradingRobotRunSession.DB().GetConfig().Type == consts.DBPgsql {
+			if tt, e := gtime.StrToTime(t.Format("Y-m-d H:i:s")); e == nil && tt != nil && !tt.IsZero() {
+				return tt.UnixMilli()
+			}
+		}
+		return t.UnixMilli()
+	}
 
-	_ = dao.TradingOrder.Ctx(ctx).
-		Fields("COALESCE(SUM(realized_profit),0) AS pnl", feeExpr, "COUNT(1) AS count").
+	startMs := fixEpochMs(effectiveStart)
+	endMs := now.UnixMilli()
+	if endMs < startMs {
+		endMs = startMs
+	}
+	startSec := startMs / 1000
+	endSec := endMs / 1000
+	const tsMsThreshold int64 = 1000000000000 // 1e12
+	_ = dao.TradingTradeFill.Ctx(ctx).
+		Fields("COALESCE(SUM(realized_pnl),0) AS total_pnl", "COALESCE(SUM(fee),0) AS total_fee", "COUNT(1) AS trade_count").
 		Where("user_id", userId).
 		Where("robot_id", robotId).
-		Where("exchange", exchange).
-		Where("symbol", symbol).
-		Where("status", OrderStatusClosed).
-		WhereGTE("close_time", sess.StartTime).
-		WhereLTE("close_time", now).
+		Where("((ts BETWEEN ? AND ?) OR (ts BETWEEN ? AND ? AND ts < ?))", startMs, endMs, startSec, endSec, tsMsThreshold).
 		Scan(&agg)
 
 	// 写回区间汇总
-	// total_pnl/total_fee 允许为 0（有效值），使用指针字段以便前端能区分"未同步/无数据"
-	pnl := agg.Pnl
-	fee := agg.Fee
+	runtimeSeconds := int((endMs - startMs) / 1000)
+	if runtimeSeconds < 0 {
+		runtimeSeconds = 0
+	}
 	_, err := dao.TradingRobotRunSession.Ctx(ctx).
 		Where(dao.TradingRobotRunSession.Columns().Id, sess.Id).
 		Data(g.Map{
-			"total_pnl":   pnl,
-			"total_fee":   fee,
-			"trade_count": agg.Count,
+			"total_pnl":       agg.TotalPnl,
+			"total_fee":       agg.TotalFee,
+			"trade_count":     agg.TradeCount,
 			"synced_at":   now,
 			"updated_at":  now,
+			"runtime_seconds": runtimeSeconds,
 		}).
 		Update()
 	if err != nil {

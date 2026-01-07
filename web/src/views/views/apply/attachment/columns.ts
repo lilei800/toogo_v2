@@ -127,7 +127,7 @@ export const columns = [
           },
           {
             default: () => getFileExt(row.fileUrl),
-          }
+          },
         );
       }
       return h(NImage, {

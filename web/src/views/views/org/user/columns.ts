@@ -45,7 +45,7 @@ export const columns = [
           {
             default: () =>
               row.realName !== '' ? row.realName.substring(0, 1) : row.username.substring(0, 2),
-          }
+          },
         );
       }
     },
@@ -66,7 +66,7 @@ export const columns = [
         },
         {
           default: () => row.roleName,
-        }
+        },
       );
     },
   },
@@ -86,7 +86,7 @@ export const columns = [
         },
         {
           default: () => row.deptName,
-        }
+        },
       );
     },
   },
@@ -122,7 +122,7 @@ export const columns = [
         },
         {
           default: () => (row.status == 1 ? '正常' : '已禁用'),
-        }
+        },
       );
     },
   },

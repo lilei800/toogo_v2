@@ -7,6 +7,7 @@ package toogo
 import (
 	"context"
 	"fmt"
+	"hotgo/internal/consts"
 	"hotgo/internal/dao"
 	"hotgo/internal/library/contexts"
 	exlib "hotgo/internal/library/exchange"
@@ -272,7 +273,7 @@ func (s *sToogoWallet) Transfer(ctx context.Context, in *toogoin.TransferInp) (r
 func (s *sToogoWallet) ConsumePower(ctx context.Context, userId int64, robotId int64, orderId int64, orderSn string, profitAmount float64) error {
 	g.Log().Infof(ctx, "[ConsumePower] 已禁用：跳过算力扣除 userId=%d, robotId=%d, orderId=%d, profit=%.4f",
 		userId, robotId, orderId, profitAmount)
-		return nil
+	return nil
 }
 
 // WalletLogList 钱包流水列表
@@ -691,23 +692,32 @@ func (s *sToogoWallet) OrderHistoryList(ctx context.Context, in *toogoin.OrderHi
 			needOpenAgg = true
 		}
 
-		// 是否需要补全“平仓成交口径”
+		// 是否需要补全"平仓成交口径"
 		needCloseAgg := false
 		if o.Status == 2 && strings.TrimSpace(o.CloseOrderId) != "" {
-			// 平仓价/平仓时间/手续费：任一缺失则补齐
-			if o.ClosePrice <= 0 || (o.CloseTime == nil || o.CloseTime.IsZero() || o.CloseTime.Year() == 2006) {
-				needCloseAgg = true
-			}
-			// 平仓手续费：缺失则补齐（手续费对账很关键）
-			if !needCloseAgg && (o.CloseFee == 0) && strings.TrimSpace(o.CloseFeeCoin) == "" {
-				needCloseAgg = true
-			}
-			// 已实现盈亏：RealizedProfit=0 可能真实为0，也可能是未回填。
-			// 为了让交易明细“盈亏/手续费”稳定可用，这里对“近期已平仓订单”更积极地补齐：
-			// - 若 close_time 不可信（缺失/占位），已经会触发 needCloseAgg
-			// - 若 close_time 可信且在近期窗口内，但 realized_profit=0，仍然尝试补齐一次
-			if !needCloseAgg && o.RealizedProfit == 0 && isRecentClose(o.CloseTime, recentCloseWindow) {
-				needCloseAgg = true
+			// 【优化】只对近期（14天内）的已平仓订单补齐数据，降低API调用
+			// 超过14天的老订单，数据库应该已经有完整数据，避免无谓的API请求
+			if !isRecentClose(o.CloseTime, recentCloseWindow) {
+				// 老订单：仅在关键字段完全缺失时才补齐
+				if o.ClosePrice <= 0 && o.RealizedProfit == 0 {
+					needCloseAgg = true
+				}
+			} else {
+				// 近期订单：平仓价/平仓时间/手续费：任一缺失则补齐
+				if o.ClosePrice <= 0 || (o.CloseTime == nil || o.CloseTime.IsZero() || o.CloseTime.Year() == 2006) {
+					needCloseAgg = true
+				}
+				// 平仓手续费：缺失则补齐（手续费对账很关键）
+				if !needCloseAgg && (o.CloseFee == 0) && strings.TrimSpace(o.CloseFeeCoin) == "" {
+					needCloseAgg = true
+				}
+				// 已实现盈亏：RealizedProfit=0 可能真实为0，也可能是未回填。
+				// 为了让交易明细"盈亏/手续费"稳定可用，这里对"近期已平仓订单"更积极地补齐：
+				// - 若 close_time 不可信（缺失/占位），已经会触发 needCloseAgg
+				// - 若 close_time 可信且在近期窗口内，但 realized_profit=0，仍然尝试补齐一次
+				if !needCloseAgg && o.RealizedProfit == 0 && isRecentClose(o.CloseTime, recentCloseWindow) {
+					needCloseAgg = true
+				}
 			}
 		}
 
@@ -792,8 +802,9 @@ func (s *sToogoWallet) OrderHistoryList(ctx context.Context, in *toogoin.OrderHi
 			}
 			trades, err := p.GetTradeHistory(ctx, symbol, limit)
 			if err == nil && len(trades) > 0 {
-				// 10秒足够覆盖“分页/刷新/并发请求”场景
-				_ = orderHistoryTradeCache.Set(ctx, cacheKey, trades, 10*time.Second)
+				// 【优化】延长缓存时间从10秒到5分钟，大幅减少API调用
+				// 交易明细页面数据变化不频繁，5分钟缓存可以覆盖大部分场景
+				_ = orderHistoryTradeCache.Set(ctx, cacheKey, trades, 5*time.Minute)
 			}
 			return trades, err
 		}
@@ -1198,11 +1209,18 @@ func (s *sToogoWallet) TradeHistoryList(ctx context.Context, in *toogoin.TradeHi
 	}
 	startMs := parseMs(in.StartTime)
 	endMs := parseMs(in.EndTime)
-	if startMs > 0 {
-		mod = mod.WhereGTE("f.ts", startMs)
-	}
-	if endMs > 0 {
-		mod = mod.WhereLTE("f.ts", endMs)
+	// ts 兼容：历史数据可能为“秒级(ts<1e12)”或“毫秒级(ts>=1e12)”
+	const tsMsThreshold int64 = 1000000000000 // 1e12
+	if startMs > 0 && endMs > 0 {
+		startSec := startMs / 1000
+		endSec := endMs / 1000
+		mod = mod.Where("((f.ts BETWEEN ? AND ?) OR (f.ts BETWEEN ? AND ? AND f.ts < ?))", startMs, endMs, startSec, endSec, tsMsThreshold)
+	} else if startMs > 0 {
+		startSec := startMs / 1000
+		mod = mod.Where("(f.ts >= ? OR (f.ts >= ? AND f.ts < ?))", startMs, startSec, tsMsThreshold)
+	} else if endMs > 0 {
+		endSec := endMs / 1000
+		mod = mod.Where("(f.ts <= ? OR (f.ts <= ? AND f.ts < ?))", endMs, endSec, tsMsThreshold)
 	}
 
 	// 初始化汇总统计
@@ -1367,6 +1385,11 @@ func (s *sToogoWallet) RunSessionSummaryList(ctx context.Context, in *toogoin.Ru
 		return nil, 0, nil, gerror.New("用户未登录")
 	}
 
+	// ===== 自愈：关闭“僵尸运行区间”（已停止/已删除/不存在的机器人仍有 end_time=NULL）=====
+	// 场景：早期版本未在 admin stop/delete 时落 end_time，或机器人被删除后遗留 open session。
+	// 影响：钱包-运行区间会长期显示“运行中”。
+	s.closeZombieRunSessions(ctx, memberId, in)
+
 	// 【兼容补齐】如果机器人处于“运行中”，但由于历史原因没有写入 run_session（例如：建表/上线之前已运行），
 	// 则自动补插一条“end_time=NULL”的运行区间记录，确保页面能看到“运行中”的区间。
 	//
@@ -1501,14 +1524,16 @@ func (s *sToogoWallet) RunSessionSummaryList(ctx context.Context, in *toogoin.Ru
 		}
 	}
 	robotMap := make(map[int64]string)
+	robotStartMap := make(map[int64]*gtime.Time)
 	if len(robotIds) > 0 {
 		var robots []*entity.TradingRobot
 		_ = dao.TradingRobot.Ctx(ctx).
-			Fields(dao.TradingRobot.Columns().Id, dao.TradingRobot.Columns().RobotName).
+			Fields(dao.TradingRobot.Columns().Id, dao.TradingRobot.Columns().RobotName, dao.TradingRobot.Columns().StartTime).
 			WhereIn(dao.TradingRobot.Columns().Id, robotIds).
 			Scan(&robots)
 		for _, robot := range robots {
 			robotMap[robot.Id] = robot.RobotName
+			robotStartMap[robot.Id] = robot.StartTime
 		}
 	}
 
@@ -1532,44 +1557,25 @@ func (s *sToogoWallet) RunSessionSummaryList(ctx context.Context, in *toogoin.Ru
 			}
 		}
 
-		// 【核心】运行中的区间：实时计算从启动时间到现在的统计数据
+		// 【口径】运行区间列表展示“区间记录本身字段”（hg_trading_robot_run_session）。
+		// total_pnl/total_fee/trade_count 由事件/手动更新/同步写回 run_session 后再展示。
 		isRunning := sess.EndTime == nil
-		var totalPnl, totalFee *float64
-		var tradeCount, runtimeSeconds int
+		totalPnl := sess.TotalPnl
+		totalFee := sess.TotalFee
+		tradeCount := sess.TradeCount
 
-		if isRunning && sess.StartTime != nil && !sess.StartTime.IsZero() {
-			// 计算实时运行时长（秒）
-			runtimeSeconds = int(gtime.Now().Sub(sess.StartTime).Seconds())
-
-			// 从成交流水表统计该区间的盈亏/手续费/成交笔数
-			// 时间范围：start_time 到现在
-			startMs := sess.StartTime.UnixMilli()
-			nowMs := gtime.Now().UnixMilli()
-
-			type aggRow struct {
-				TotalPnl   float64 `orm:"total_pnl"`
-				TotalFee   float64 `orm:"total_fee"`
-				TradeCount int     `orm:"trade_count"`
+		// 运行时长（秒）：运行中 end=now；已结束用 end_time
+		now := gtime.Now()
+		runtimeSeconds := 0
+		if sess.StartTime != nil && !sess.StartTime.IsZero() && sess.StartTime.Year() != 2006 {
+			end := now
+			if sess.EndTime != nil && !sess.EndTime.IsZero() && sess.EndTime.Year() != 2006 {
+				end = sess.EndTime
 			}
-			var agg aggRow
-			err := dao.TradingTradeFill.Ctx(ctx).
-				Fields("COALESCE(SUM(realized_pnl), 0) AS total_pnl, COALESCE(SUM(fee), 0) AS total_fee, COUNT(*) AS trade_count").
-				Where("robot_id", sess.RobotId).
-				Where("user_id", memberId).
-				WhereGTE("ts", startMs).
-				WhereLTE("ts", nowMs).
-				Scan(&agg)
-			if err == nil {
-				totalPnl = &agg.TotalPnl
-				totalFee = &agg.TotalFee
-				tradeCount = agg.TradeCount
+			runtimeSeconds = int(end.Sub(sess.StartTime).Seconds())
+			if runtimeSeconds < 0 {
+				runtimeSeconds = 0
 			}
-		} else {
-			// 已结束的区间：使用数据库中已保存的统计数据
-			totalPnl = sess.TotalPnl
-			totalFee = sess.TotalFee
-			tradeCount = sess.TradeCount
-			runtimeSeconds = sess.RuntimeSeconds
 		}
 
 		// 运行时长文本
@@ -1617,126 +1623,185 @@ func (s *sToogoWallet) RunSessionSummaryList(ctx context.Context, in *toogoin.Ru
 		list = append(list, item)
 	}
 
-	// 【核心修改】全量汇总统计（不受分页影响）
-	// 对于运行区间，需要分别统计"已结束区间"（从DB）和"运行中区间"（实时计算）
+	// 全量汇总统计（不受分页影响）：使用 run_session 表字段求和（由事件/手动更新/同步写回）
 	summary = &toogoin.RunSessionTotalSummary{
 		TotalSessions: totalCount,
 	}
 
-	// 1) 查询已结束区间的汇总（从DB直接聚合）
-	type endedAgg struct {
-		TotalRuntime int     `orm:"total_runtime"`
-		TotalPnl     float64 `orm:"total_pnl"`
-		TotalFee     float64 `orm:"total_fee"`
-		TotalTrades  int     `orm:"total_trades"`
-		TotalProfit  float64 `orm:"total_profit"`
-		TotalLoss    float64 `orm:"total_loss"`
-	}
-	var ea endedAgg
-	endedMod := dao.TradingRobotRunSession.Ctx(ctx).
-		Where(dao.TradingRobotRunSession.Columns().UserId, memberId).
-		WhereNotNull(dao.TradingRobotRunSession.Columns().EndTime)
+	// 汇总统计：扫描所有符合条件的区间（不分页），逐段累加 run_session 字段
+	var allSessions []*entity.TradingRobotRunSession
+	allMod := dao.TradingRobotRunSession.Ctx(ctx).
+		Where(dao.TradingRobotRunSession.Columns().UserId, memberId)
 	if in.RobotId > 0 {
-		endedMod = endedMod.Where(dao.TradingRobotRunSession.Columns().RobotId, in.RobotId)
+		allMod = allMod.Where(dao.TradingRobotRunSession.Columns().RobotId, in.RobotId)
 	}
 	if in.Exchange != "" {
-		endedMod = endedMod.Where(dao.TradingRobotRunSession.Columns().Exchange, in.Exchange)
+		allMod = allMod.Where(dao.TradingRobotRunSession.Columns().Exchange, in.Exchange)
 	}
 	if in.Symbol != "" {
-		endedMod = endedMod.Where(dao.TradingRobotRunSession.Columns().Symbol, in.Symbol)
+		allMod = allMod.Where(dao.TradingRobotRunSession.Columns().Symbol, in.Symbol)
+	}
+	if in.IsRunning == 1 {
+		allMod = allMod.WhereNull(dao.TradingRobotRunSession.Columns().EndTime)
+	} else if in.IsRunning == 2 {
+		allMod = allMod.WhereNotNull(dao.TradingRobotRunSession.Columns().EndTime)
 	}
 	if in.StartTime != "" {
-		endedMod = endedMod.WhereGTE(dao.TradingRobotRunSession.Columns().StartTime, in.StartTime)
+		allMod = allMod.WhereGTE(dao.TradingRobotRunSession.Columns().StartTime, in.StartTime)
 	}
 	if in.EndTime != "" {
-		endedMod = endedMod.WhereLTE(dao.TradingRobotRunSession.Columns().StartTime, in.EndTime)
+		allMod = allMod.WhereLTE(dao.TradingRobotRunSession.Columns().StartTime, in.EndTime)
 	}
-	_ = endedMod.Fields(
-		"COALESCE(SUM(runtime_seconds), 0) AS total_runtime",
-		"COALESCE(SUM(total_pnl), 0) AS total_pnl",
-		"COALESCE(SUM(total_fee), 0) AS total_fee",
-		"COALESCE(SUM(trade_count), 0) AS total_trades",
-		"COALESCE(SUM(CASE WHEN total_pnl > 0 THEN total_pnl ELSE 0 END), 0) AS total_profit",
-		"COALESCE(SUM(CASE WHEN total_pnl < 0 THEN total_pnl ELSE 0 END), 0) AS total_loss",
-	).Scan(&ea)
+	_ = allMod.Scan(&allSessions)
 
-	summary.TotalRuntime = ea.TotalRuntime
-	summary.TotalPnl = ea.TotalPnl
-	summary.TotalFee = ea.TotalFee
-	summary.TotalTrades = ea.TotalTrades
-	summary.TotalProfit = ea.TotalProfit
-	summary.TotalLoss = ea.TotalLoss
+	nowMs := gtime.Now().UnixMilli()
+	for _, rs := range allSessions {
+		if rs == nil || rs.RobotId <= 0 {
+			continue
+		}
+		// 时间窗：start=rs.start_time(兜底)，end=rs.end_time 或 now
+		st := rs.StartTime
+		if st == nil || st.IsZero() || st.Year() == 2006 {
+			continue
+		}
+		startMs := st.UnixMilli()
+		endMs := nowMs
+		if rs.EndTime != nil && !rs.EndTime.IsZero() && rs.EndTime.Year() != 2006 {
+			endMs = rs.EndTime.UnixMilli()
+		}
+		if endMs < startMs {
+			endMs = startMs
+		}
+		summary.TotalRuntime += int((endMs - startMs) / 1000)
 
-	// 2) 如果查询包含运行中的区间（IsRunning=0 或 1），需要实时计算运行中区间的统计
-	if in.IsRunning == 0 || in.IsRunning == 1 {
-		// 查询所有运行中区间
-		var runningSessions []*entity.TradingRobotRunSession
-		runningMod := dao.TradingRobotRunSession.Ctx(ctx).
-			Where(dao.TradingRobotRunSession.Columns().UserId, memberId).
-			WhereNull(dao.TradingRobotRunSession.Columns().EndTime)
-		if in.RobotId > 0 {
-			runningMod = runningMod.Where(dao.TradingRobotRunSession.Columns().RobotId, in.RobotId)
+		pnl := 0.0
+		fee := 0.0
+		if rs.TotalPnl != nil {
+			pnl = *rs.TotalPnl
 		}
-		if in.Exchange != "" {
-			runningMod = runningMod.Where(dao.TradingRobotRunSession.Columns().Exchange, in.Exchange)
+		if rs.TotalFee != nil {
+			fee = *rs.TotalFee
 		}
-		if in.Symbol != "" {
-			runningMod = runningMod.Where(dao.TradingRobotRunSession.Columns().Symbol, in.Symbol)
+		summary.TotalPnl += pnl
+		if pnl > 0 {
+			summary.TotalProfit += pnl
+		} else if pnl < 0 {
+			summary.TotalLoss += pnl
 		}
-		if in.StartTime != "" {
-			runningMod = runningMod.WhereGTE(dao.TradingRobotRunSession.Columns().StartTime, in.StartTime)
-		}
-		if in.EndTime != "" {
-			runningMod = runningMod.WhereLTE(dao.TradingRobotRunSession.Columns().StartTime, in.EndTime)
-		}
-		_ = runningMod.Scan(&runningSessions)
-
-		// 实时计算每个运行中区间的统计
-		for _, rs := range runningSessions {
-			if rs == nil || rs.StartTime == nil || rs.StartTime.IsZero() {
-				continue
-			}
-			// 运行时长
-			rt := int(gtime.Now().Sub(rs.StartTime).Seconds())
-			summary.TotalRuntime += rt
-
-			// 从成交流水表统计
-			startMs := rs.StartTime.UnixMilli()
-			nowMs := gtime.Now().UnixMilli()
-			type fillAgg struct {
-				TotalPnl    float64 `orm:"total_pnl"`
-				TotalProfit float64 `orm:"total_profit"`
-				TotalLoss   float64 `orm:"total_loss"`
-				TotalFee    float64 `orm:"total_fee"`
-				TradeCount  int     `orm:"trade_count"`
-			}
-			var fa fillAgg
-			_ = dao.TradingTradeFill.Ctx(ctx).
-				Fields(
-					"COALESCE(SUM(realized_pnl), 0) AS total_pnl",
-					"COALESCE(SUM(CASE WHEN realized_pnl > 0 THEN realized_pnl ELSE 0 END), 0) AS total_profit",
-					"COALESCE(SUM(CASE WHEN realized_pnl < 0 THEN realized_pnl ELSE 0 END), 0) AS total_loss",
-					"COALESCE(SUM(fee), 0) AS total_fee",
-					"COUNT(*) AS trade_count",
-				).
-				Where("robot_id", rs.RobotId).
-				Where("user_id", memberId).
-				WhereGTE("ts", startMs).
-				WhereLTE("ts", nowMs).
-				Scan(&fa)
-
-			summary.TotalPnl += fa.TotalPnl
-			summary.TotalProfit += fa.TotalProfit
-			summary.TotalLoss += fa.TotalLoss
-			summary.TotalFee += fa.TotalFee
-			summary.TotalTrades += fa.TradeCount
-		}
+		summary.TotalFee += fee
+		summary.TotalTrades += rs.TradeCount
 	}
 
 	summary.TotalNetPnl = summary.TotalPnl - summary.TotalFee
 	summary.TotalRuntimeText = formatDuration(summary.TotalRuntime)
 
 	return list, totalCount, summary, nil
+}
+
+// StartTradeFillSyncTask 启动成交流水后台同步任务
+// 目标：定期从交易所拉取成交数据并落库，避免用户查询交易明细时实时打API
+func (s *sToogoWallet) StartTradeFillSyncTask(ctx context.Context) {
+	task := GetTradeFillSyncTask()
+	if task.IsRunning() {
+		g.Log().Warning(ctx, "[StartTradeFillSyncTask] 成交流水同步任务已在运行中")
+		return
+	}
+
+	g.Log().Info(ctx, "[StartTradeFillSyncTask] 启动成交流水后台同步任务...")
+	task.Start()
+	g.Log().Info(ctx, "[StartTradeFillSyncTask] 成交流水后台同步任务已启动")
+}
+
+// closeZombieRunSessions closes open run sessions when the robot is not running / deleted / missing.
+func (s *sToogoWallet) closeZombieRunSessions(ctx context.Context, memberId int64, in *toogoin.RunSessionSummaryListInp) {
+	if memberId <= 0 {
+		return
+	}
+	// only heal when query might include running sessions (otherwise no need)
+	if in == nil || !(in.IsRunning == 0 || in.IsRunning == 1) {
+		return
+	}
+
+	type sess struct {
+		Id        int64       `orm:"id"`
+		RobotId   int64       `orm:"robot_id"`
+		StartTime *gtime.Time `orm:"start_time"`
+	}
+	var sessions []*sess
+	_ = dao.TradingRobotRunSession.Ctx(ctx).
+		Fields("id", "robot_id", "start_time").
+		Where(dao.TradingRobotRunSession.Columns().UserId, memberId).
+		WhereNull(dao.TradingRobotRunSession.Columns().EndTime).
+		Scan(&sessions)
+	if len(sessions) == 0 {
+		return
+	}
+
+	ids := make([]int64, 0, len(sessions))
+	for _, s := range sessions {
+		if s != nil && s.RobotId > 0 {
+			ids = append(ids, s.RobotId)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+
+	type rb struct {
+		Id        int64       `orm:"id"`
+		Status    int         `orm:"status"`
+		DeletedAt *gtime.Time `orm:"deleted_at"`
+	}
+	var robots []*rb
+	_ = dao.TradingRobot.Ctx(ctx).
+		Fields("id", "status", "deleted_at").
+		WhereIn(dao.TradingRobot.Columns().Id, ids).
+		Scan(&robots)
+	rbMap := make(map[int64]*rb, len(robots))
+	for _, r := range robots {
+		if r != nil && r.Id > 0 {
+			rbMap[r.Id] = r
+		}
+	}
+
+	now := gtime.Now()
+	for _, sessRow := range sessions {
+		if sessRow == nil || sessRow.Id <= 0 {
+			continue
+		}
+		r := rbMap[sessRow.RobotId]
+		// close if robot missing OR deleted OR not running(2)
+		needClose := false
+		reason := "robot_stopped"
+		if r == nil {
+			needClose = true
+			reason = "robot_missing"
+		} else if r.DeletedAt != nil && !r.DeletedAt.IsZero() {
+			needClose = true
+			reason = "robot_deleted"
+		} else if r.Status != 2 {
+			needClose = true
+			reason = "robot_not_running"
+		}
+		if !needClose {
+			continue
+		}
+
+		runtimeSeconds := 0
+		if sessRow.StartTime != nil && !sessRow.StartTime.IsZero() {
+			runtimeSeconds = int(now.Sub(sessRow.StartTime).Seconds())
+		}
+		_, _ = dao.TradingRobotRunSession.Ctx(ctx).
+			Where(dao.TradingRobotRunSession.Columns().Id, sessRow.Id).
+			WhereNull(dao.TradingRobotRunSession.Columns().EndTime).
+			Data(g.Map{
+				"end_time":        now,
+				"end_reason":      reason,
+				"runtime_seconds": runtimeSeconds,
+				"updated_at":      now,
+			}).
+			Update()
+	}
 }
 
 // formatDuration 格式化时长
@@ -1761,8 +1826,10 @@ func formatDuration(seconds int) string {
 	return fmt.Sprintf("%d秒", secs)
 }
 
-// SyncRunSession 同步运行区间盈亏数据
-func (s *sToogoWallet) SyncRunSession(ctx context.Context, sessionId int64) (totalPnl, totalFee float64, tradeCount int, err error) {
+// SyncRunSession 同步/重算运行区间盈亏数据
+// - calcOnly=true: 仅按本地成交流水(trading_trade_fill)时间窗重算并写回 run_session（不调用交易所）
+// - calcOnly=false: 先从交易所拉取成交落库，再按本地成交流水时间窗重算写回 run_session
+func (s *sToogoWallet) SyncRunSession(ctx context.Context, sessionId int64, calcOnly bool) (totalPnl, totalFee float64, tradeCount int, err error) {
 	memberId := contexts.GetUserId(ctx)
 	if memberId <= 0 {
 		return 0, 0, 0, gerror.New("用户未登录")
@@ -1779,6 +1846,11 @@ func (s *sToogoWallet) SyncRunSession(ctx context.Context, sessionId int64) (tot
 	}
 	if session == nil {
 		return 0, 0, 0, gerror.New("区间记录不存在")
+	}
+
+	// calcOnly：仅按本地成交流水时间窗重算写回
+	if calcOnly {
+		return s.recalcAndUpdateRunSessionFromTradeFill(ctx, session)
 	}
 
 	// 查询机器人信息
@@ -1815,49 +1887,107 @@ func (s *sToogoWallet) SyncRunSession(ctx context.Context, sessionId int64) (tot
 		return 0, 0, 0, gerror.Wrap(err, "获取成交历史失败")
 	}
 
-	// 【新增】同步时批量落库成交流水（幂等去重：uk_api_exchange_trade）
-	// 说明：运行区间同步属于“后台同步/对账”环节，成交数据应优先落库，页面查询只读DB。
-	sid := sessionId
-	_, _, _ = upsertTradeFillsFromTrades(ctx, robot.ApiConfigId, robot.Exchange, session.Symbol, trades, &sid)
+	// 【修复】同步时批量落库成交流水（幂等去重：uk_api_exchange_trade）
+	// 注意：这里不再给“本批次拉取到的所有成交”强行写 session_id，
+	// 否则会把区间外的历史成交污染到当前运行区间（导致运行区间列表成交笔数/手续费/盈亏被放大）。
+	// 运行区间统计以 ts 时间窗为准；session_id 仅作为可选的归属信息。
+	_, _, _ = upsertTradeFillsFromTrades(ctx, robot.ApiConfigId, ex.GetName(), session.Symbol, trades, nil)
+	// 按本地成交流水时间窗重算并写回 run_session（与页面展示口径一致）
+	return s.recalcAndUpdateRunSessionFromTradeFill(ctx, session)
+}
 
-	// 过滤区间内的成交
-	startMs := int64(0)
-	if session.StartTime != nil {
-		startMs = session.StartTime.UnixMilli()
+// recalcAndUpdateRunSessionFromTradeFill 按 run_session[start,end]（运行中 end=now）从 trading_trade_fill 聚合并写回 run_session。
+func (s *sToogoWallet) recalcAndUpdateRunSessionFromTradeFill(ctx context.Context, session *entity.TradingRobotRunSession) (totalPnl, totalFee float64, tradeCount int, err error) {
+	if session == nil || session.Id <= 0 {
+		return 0, 0, 0, gerror.New("session is nil")
 	}
-	endMs := int64(0)
-	if session.EndTime != nil {
-		endMs = session.EndTime.UnixMilli()
-	} else {
-		endMs = gtime.Now().UnixMilli() // 仍在运行，用当前时间
+	if session.RobotId <= 0 || session.UserId <= 0 {
+		return 0, 0, 0, gerror.New("invalid session robotId/userId")
 	}
-
-	for _, t := range trades {
-		if t == nil || t.Time <= 0 {
-			continue
+	// start_time 兜底：历史数据可能为空/2006；优先用 robot.start_time，其次用 session.created_at
+	effectiveStart := session.StartTime
+	if effectiveStart == nil || effectiveStart.IsZero() || effectiveStart.Year() == 2006 {
+		var rb *entity.TradingRobot
+		_ = dao.TradingRobot.Ctx(ctx).
+			Where(dao.TradingRobot.Columns().Id, session.RobotId).
+			Where(dao.TradingRobot.Columns().UserId, session.UserId).
+			Scan(&rb)
+		if rb != nil && rb.StartTime != nil && !rb.StartTime.IsZero() && rb.StartTime.Year() != 2006 {
+			effectiveStart = rb.StartTime
+		} else if session.CreatedAt != nil && !session.CreatedAt.IsZero() && session.CreatedAt.Year() != 2006 {
+			effectiveStart = session.CreatedAt
 		}
-		// 过滤时间范围
-		if t.Time < startMs || t.Time > endMs {
-			continue
-		}
-		tradeCount++
-		totalPnl += t.RealizedPnl
-		totalFee += math.Abs(t.Commission)
+	}
+	if effectiveStart == nil || effectiveStart.IsZero() || effectiveStart.Year() == 2006 {
+		return 0, 0, 0, gerror.New("session start_time invalid")
 	}
 
-	// 更新区间记录
+	// PG 兼容：timestamp without timezone 读出可能被当作 UTC，导致 epoch 偏移（常见为 +8h）
+	// 这里将 “YYYY-MM-DD HH:mm:ss” 重新按 gtime 时区(Asia/Shanghai) 解析，再取 epoch-ms，确保与 trade_fill.ts 对齐。
+	fixEpochMs := func(t *gtime.Time) int64 {
+		if t == nil || t.IsZero() {
+			return 0
+		}
+		if dao.TradingRobotRunSession.DB().GetConfig().Type == consts.DBPgsql {
+			if tt, e := gtime.StrToTime(t.Format("Y-m-d H:i:s")); e == nil && tt != nil && !tt.IsZero() {
+				return tt.UnixMilli()
+			}
+		}
+		return t.UnixMilli()
+	}
+
+	startMs := fixEpochMs(effectiveStart)
+	endMs := gtime.Now().UnixMilli()
+	if session.EndTime != nil && !session.EndTime.IsZero() && session.EndTime.Year() != 2006 {
+		endMs = fixEpochMs(session.EndTime)
+	}
+	if endMs < startMs {
+		endMs = startMs
+	}
+
+	type aggRow struct {
+		TotalPnl   float64 `orm:"total_pnl"`
+		TotalFee   float64 `orm:"total_fee"`
+		TradeCount int     `orm:"trade_count"`
+	}
+	var agg aggRow
+	startSec := startMs / 1000
+	endSec := endMs / 1000
+	const tsMsThreshold int64 = 1000000000000 // 1e12
+	aggErr := dao.TradingTradeFill.Ctx(ctx).
+		Fields("COALESCE(SUM(realized_pnl), 0) AS total_pnl, COALESCE(SUM(fee), 0) AS total_fee, COUNT(*) AS trade_count").
+		Where("robot_id", session.RobotId).
+		Where("user_id", session.UserId).
+		Where("((ts BETWEEN ? AND ?) OR (ts BETWEEN ? AND ? AND ts < ?))", startMs, endMs, startSec, endSec, tsMsThreshold).
+		Scan(&agg)
+	if aggErr != nil {
+		return 0, 0, 0, gerror.Wrap(aggErr, "aggregate trade_fill failed")
+	}
+
+	// runtime_seconds：运行中也允许写回（方便“区间记录本身字段”展示）
+	runtimeSeconds := int((endMs - startMs) / 1000)
+	if runtimeSeconds < 0 {
+		runtimeSeconds = 0
+	}
+
+	now := gtime.Now()
+	updateData := g.Map{
+		"start_time":       effectiveStart,
+		"total_pnl":       agg.TotalPnl,
+		"total_fee":       agg.TotalFee,
+		"trade_count":     agg.TradeCount,
+		"synced_at":       now,
+		"updated_at":      now,
+		"runtime_seconds": runtimeSeconds,
+	}
 	_, err = dao.TradingRobotRunSession.Ctx(ctx).
-		Where(dao.TradingRobotRunSession.Columns().Id, sessionId).
-		Data(g.Map{
-			"total_pnl":   totalPnl,
-			"total_fee":   totalFee,
-			"trade_count": tradeCount,
-			"synced_at":   gtime.Now(),
-		}).
+		Where(dao.TradingRobotRunSession.Columns().Id, session.Id).
+		Where(dao.TradingRobotRunSession.Columns().UserId, session.UserId).
+		Data(updateData).
 		Update()
 	if err != nil {
-		g.Log().Warningf(ctx, "更新区间盈亏失败: sessionId=%d, err=%v", sessionId, err)
+		return 0, 0, 0, gerror.Wrap(err, "update run_session failed")
 	}
 
-	return totalPnl, totalFee, tradeCount, nil
+	return agg.TotalPnl, agg.TotalFee, agg.TradeCount, nil
 }

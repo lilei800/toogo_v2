@@ -8,13 +8,16 @@ package trading
 
 import (
 	"context"
+	"fmt"
 	"hotgo/internal/consts"
 	"hotgo/internal/dao"
 	"hotgo/internal/library/contexts"
+	toogoLogic "hotgo/internal/logic/toogo"
 	"hotgo/internal/model/do"
 	"hotgo/internal/model/entity"
 	"hotgo/internal/model/input"
 	"hotgo/utility/encrypt"
+	"strings"
 	"time"
 
 	"github.com/gogf/gf/v2/errors/gerror"
@@ -166,8 +169,6 @@ func (s *apiConfigImpl) GetDefaultBaseUrl(platform string) string {
 	switch platform {
 	case "binance":
 		return "https://fapi.binance.com"
-	case "bitget":
-		return "https://api.bitget.com"
 	case "okx":
 		return "https://www.okx.com"
 	case "gate":
@@ -212,8 +213,13 @@ func (s *apiConfigImpl) Update(ctx context.Context, in *input.TradingApiConfigUp
 		dao.TradingApiConfig.Columns().Platform:  in.Platform,
 		dao.TradingApiConfig.Columns().BaseUrl:   in.BaseUrl,
 		dao.TradingApiConfig.Columns().IsDefault: in.IsDefault,
-		dao.TradingApiConfig.Columns().Status:    in.Status,
 		dao.TradingApiConfig.Columns().Remark:    in.Remark,
+	}
+
+	// status=0 代表“未传/不修改”，避免把数据库 status 覆盖成 0 导致前端显示为“禁用”
+	// 仅允许 1=启用 / 2=禁用
+	if in.Status == consts.StatusEnabled || in.Status == consts.StatusDisable {
+		data[dao.TradingApiConfig.Columns().Status] = in.Status
 	}
 
 	// 如果提供了新的密钥，则更新（加密）
@@ -316,7 +322,6 @@ func (s *apiConfigImpl) View(ctx context.Context, in *input.TradingApiConfigView
 // Test 测试API连接
 func (s *apiConfigImpl) Test(ctx context.Context, in *input.TradingApiConfigTestInp) (out *input.TradingApiConfigTestModel, err error) {
 	memberId := contexts.GetUserId(ctx)
-	tenantId := contexts.GetTenantId(ctx)
 	if memberId <= 0 {
 		return nil, gerror.New("用户未登录")
 	}
@@ -338,11 +343,13 @@ func (s *apiConfigImpl) Test(ctx context.Context, in *input.TradingApiConfigTest
 
 	startTime := time.Now()
 
-	// 清除缓存，确保使用最新配置
-	ExchangeManager.ClearCache(tenantId, memberId, in.Id)
+	// 统一平台口径
+	config.Platform = strings.ToLower(strings.TrimSpace(config.Platform))
+	// 清除 toogo 侧的交易所实例缓存，确保使用最新配置
+	toogoLogic.GetExchangeManager().RemoveExchange(config.Id)
 
-	// 获取交易所实例
-	exchange, err := ExchangeManager.GetExchange(ctx, in.Id)
+	// 获取交易所实例（使用 internal/library/exchange 实现，支持 gate/binance/okx/bitget）
+	ex, err := toogoLogic.GetExchangeManager().GetExchangeFromConfig(ctx, config)
 	if err != nil {
 		latency := int(time.Since(startTime).Milliseconds())
 		out = &input.TradingApiConfigTestModel{
@@ -363,11 +370,33 @@ func (s *apiConfigImpl) Test(ctx context.Context, in *input.TradingApiConfigTest
 		return out, nil
 	}
 
-	// 调用交易所API测试连接
-	balanceStr, err := exchange.TestConnection(ctx)
+	// 调用交易所API测试连接：获取余额
+	bal, err := ex.GetBalance(ctx)
 	latency := int(time.Since(startTime).Milliseconds())
 
 	if err != nil {
+		// Gate 特殊情况：合约账户未创建时会返回 USER_NOT_FOUND，但 API Key 本身可能是有效的
+		// 提示用户先划转资金以初始化合约账户，避免“测试失败”造成误解。
+		if config.Platform == "gate" && strings.Contains(err.Error(), "USER_NOT_FOUND") {
+			out = &input.TradingApiConfigTestModel{
+				Success: true,
+				Message: "连接成功，但 Gate 合约账户未创建：请先从现货账户划转任意资金到合约账户（USDT Futures）以创建合约账户",
+				Balance: "0.0000 USDT",
+				Latency: latency,
+			}
+
+			// 更新验证状态为成功（但带提示信息）
+			_, _ = dao.TradingApiConfig.Ctx(ctx).
+				Where(dao.TradingApiConfig.Columns().Id, in.Id).
+				Data(g.Map{
+					dao.TradingApiConfig.Columns().LastVerifyTime: gtime.Now(),
+					dao.TradingApiConfig.Columns().VerifyStatus:   1,
+					dao.TradingApiConfig.Columns().VerifyMessage:  out.Message,
+				}).
+				Update()
+			return out, nil
+		}
+
 		out = &input.TradingApiConfigTestModel{
 			Success: false,
 			Message: "API连接失败: " + err.Error(),
@@ -385,6 +414,8 @@ func (s *apiConfigImpl) Test(ctx context.Context, in *input.TradingApiConfigTest
 			Update()
 		return out, nil
 	}
+
+	balanceStr := fmt.Sprintf("%.4f USDT", bal.AvailableBalance)
 
 	// 连接成功
 	out = &input.TradingApiConfigTestModel{
@@ -453,12 +484,6 @@ func (s *apiConfigImpl) SetDefault(ctx context.Context, in *input.TradingApiConf
 func (s *apiConfigImpl) GetPlatforms(ctx context.Context) (list []*input.TradingApiConfigPlatformsModel, err error) {
 	list = []*input.TradingApiConfigPlatformsModel{
 		{
-			Value:    "bitget",
-			Label:    "Bitget",
-			BaseUrl:  "https://api.bitget.com",
-			NeedPass: false,
-		},
-		{
 			Value:    "binance",
 			Label:    "Binance（币安）",
 			BaseUrl:  "https://api.binance.com",
@@ -469,6 +494,12 @@ func (s *apiConfigImpl) GetPlatforms(ctx context.Context) (list []*input.Trading
 			Label:    "OKX（欧易）",
 			BaseUrl:  "https://www.okx.com",
 			NeedPass: true,
+		},
+		{
+			Value:    "gate",
+			Label:    "Gate.io",
+			BaseUrl:  "https://api.gateio.ws",
+			NeedPass: false,
 		},
 	}
 	return
@@ -487,7 +518,7 @@ func (s *apiConfigImpl) MaskApiKey(apiKey string) string {
 
 // ValidatePlatform 验证平台是否支持
 func (s *apiConfigImpl) ValidatePlatform(platform string) bool {
-	validPlatforms := []string{"bitget", "binance", "okx", "gate"}
+	validPlatforms := []string{"binance", "okx", "gate"}
 	for _, p := range validPlatforms {
 		if p == platform {
 			return true

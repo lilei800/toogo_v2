@@ -39,7 +39,7 @@
   function onValueChange(
     value: string | number | Array<string | number> | null,
     option: CascaderOption | Array<CascaderOption | null> | null,
-    pathValues: Array<CascaderOption | null>
+    pathValues: Array<CascaderOption | null>,
   ) {
     const tempPathValues = pathValues
       ? pathValues.map((it: CascaderOption | null) => ({
@@ -84,7 +84,7 @@
     {
       immediate: true,
       deep: true,
-    }
+    },
   );
 
   async function load(option) {

@@ -49,5 +49,8 @@ func WebSocket(ctx context.Context, group *ghttp.RouterGroup) {
 		// Toogo - 机器人持仓实时推送（positions snapshot）
 		"toogo/robot/positions/subscribe":   toogo.RobotPositionsRealtime.Subscribe,
 		"toogo/robot/positions/unsubscribe": toogo.RobotPositionsRealtime.Unsubscribe,
+		// Toogo - 机器人挂单实时推送（open orders snapshot）
+		"toogo/robot/orders/subscribe":   toogo.RobotOrdersRealtime.Subscribe,
+		"toogo/robot/orders/unsubscribe": toogo.RobotOrdersRealtime.Unsubscribe,
 	})
 }

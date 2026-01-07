@@ -72,10 +72,10 @@ type ExchangeAdvanced interface {
 
 // Config 交易所配置
 type Config struct {
-	Platform   string       `json:"platform"`   // 平台: binance, bitget, okx, gate
+	Platform   string       `json:"platform"`   // 平台: binance, okx, gate
 	ApiKey     string       `json:"apiKey"`     // API Key
 	SecretKey  string       `json:"secretKey"`  // Secret Key
-	Passphrase string       `json:"passphrase"` // Passphrase (OKX/Bitget需要)
+	Passphrase string       `json:"passphrase"` // Passphrase (OKX需要)
 	IsTestnet  bool         `json:"isTestnet"`  // 是否测试网
 	Proxy      *ProxyConfig `json:"proxy"`      // 代理配置
 }
@@ -187,6 +187,7 @@ type Order struct {
 	Side         string  `json:"side"`         // 买卖方向
 	PositionSide string  `json:"positionSide"` // 持仓方向
 	Type         string  `json:"type"`         // 订单类型
+	ReduceOnly   bool    `json:"reduceOnly,omitempty"` // 只减仓（部分交易所/接口支持）
 	Price        float64 `json:"price"`        // 价格
 	Quantity     float64 `json:"quantity"`     // 数量
 	FilledQty    float64 `json:"filledQty"`    // 已成交数量
@@ -316,8 +317,6 @@ func NewExchange(config *Config) (Exchange, error) {
 	switch config.Platform {
 	case "binance":
 		return NewBinance(config), nil
-	case "bitget":
-		return NewBitget(config), nil
 	case "okx":
 		return NewOKX(config), nil
 	case "gate":

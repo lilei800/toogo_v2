@@ -16,12 +16,12 @@ import (
 )
 
 func normalizePlatform(platform string) string {
-	return strings.ToLower(strings.TrimSpace(platform))
+	return NormalizePlatform(platform)
 }
 
 func normalizeSymbol(symbol string) string {
 	// 仅做轻量规范化：去空格 + 大写。避免破坏诸如 OKX 的 instId 格式（若业务层直接传 instId）。
-	return strings.ToUpper(strings.TrimSpace(symbol))
+	return NormalizeSymbol(symbol)
 }
 
 // MarketServiceManager 全局行情服务管理器（单例）
@@ -29,12 +29,14 @@ func normalizeSymbol(symbol string) string {
 type MarketServiceManager struct {
 	mu sync.RWMutex
 
-	// 每个交易所一个行情服务 key: platform (binance/bitget/okx/gate)
+	// 每个交易所一个行情服务 key: platform (binance/okx/gate)
 	services map[string]*ExchangeMarketService
 
 	// WebSocket服务（优先使用）
 	wsEnabled bool
-	bitgetWS  *exchange.BitgetWebSocket
+	// wsOnly: 强制“只使用WebSocket数据源”（ticker/klines均不做REST兜底/轮询）。
+	// 适用场景：需要彻底隔离行情链路与HTTP/交易所REST限流，并允许“未就绪则为空”的严格语义。
+	wsOnly    bool
 	binanceWS *exchange.BinanceWebSocket
 	okxWS     *exchange.OKXWebSocket
 	gateWS    *exchange.GateWebSocket
@@ -45,6 +47,12 @@ type MarketServiceManager struct {
 	// 【新增】价格更新回调（用于实时触发引擎检查）
 	// key: platform:symbol, value: 回调函数列表
 	priceCallbacks map[string][]func(*exchange.Ticker)
+
+	// 【新增】回调队列：将“实时报价（WS -> 缓存写入）”与“策略/订单/风控回调”彻底隔离
+	// - WS 线程只做“写缓存 + 非阻塞入队”，绝不执行慢逻辑
+	// - 回调侧用容量=1的队列做 coalesce，只保留最新 tick，避免 goroutine 风暴/CPU 抢占
+	// key: platform:symbol
+	callbackQueues map[string]chan *exchange.Ticker
 
 	// 运行状态
 	running bool
@@ -57,6 +65,9 @@ type ExchangeMarketService struct {
 
 	Platform string            // 交易所名称
 	Exchange exchange.Exchange // 交易所API实例
+
+	// WSOnly: 强制只使用WS数据源（禁用REST初始拉取/轮询兜底）
+	WSOnly bool
 
 	// 行情数据缓存 key: symbol
 	Tickers    map[string]*TickerCache
@@ -99,6 +110,7 @@ func GetMarketServiceManager() *MarketServiceManager {
 		marketServiceManager = &MarketServiceManager{
 			services:       make(map[string]*ExchangeMarketService),
 			priceCallbacks: make(map[string][]func(*exchange.Ticker)),
+			callbackQueues: make(map[string]chan *exchange.Ticker),
 			stopCh:         make(chan struct{}),
 		}
 	})
@@ -149,14 +161,18 @@ func (m *MarketServiceManager) startWebSocketServices(ctx context.Context) {
 
 	g.Log().Warning(ctx, "[MarketServiceManager] 准备启动WebSocket服务...")
 
+	// WebSocket-only 模式：强制行情/多周期K线只走WS（不做REST兜底/轮询）
+	wsOnlyVal, _ := g.Cfg().Get(ctx, "toogo.websocketOnly")
+
 	m.mu.Lock()
 	m.wsEnabled = true
+	m.wsOnly = (!wsOnlyVal.IsEmpty() && wsOnlyVal.Bool())
 	proxyDialer := m.proxyDialer // 复制代理配置
 	m.mu.Unlock()
 
 	// 统一启动流程：减少重复代码
 	successCount := 0
-	totalCount := 4
+	totalCount := 3
 
 	// 启动各个交易所WebSocket
 	startWS := func(name string, getter func() interface{}, setter func(interface{})) {
@@ -187,10 +203,10 @@ func (m *MarketServiceManager) startWebSocketServices(ctx context.Context) {
 		}
 	}
 
-	startWS("Bitget", func() interface{} { return exchange.GetBitgetWebSocket() }, func(ws interface{}) { m.bitgetWS = ws.(*exchange.BitgetWebSocket) })
-	startWS("Binance", func() interface{} { return exchange.GetBinanceWebSocket() }, func(ws interface{}) { m.binanceWS = ws.(*exchange.BinanceWebSocket) })
-	startWS("OKX", func() interface{} { return exchange.GetOKXWebSocket() }, func(ws interface{}) { m.okxWS = ws.(*exchange.OKXWebSocket) })
+	// 启动顺序：Gate -> OKX -> Binance
 	startWS("Gate", func() interface{} { return exchange.GetGateWebSocket() }, func(ws interface{}) { m.gateWS = ws.(*exchange.GateWebSocket) })
+	startWS("OKX", func() interface{} { return exchange.GetOKXWebSocket() }, func(ws interface{}) { m.okxWS = ws.(*exchange.OKXWebSocket) })
+	startWS("Binance", func() interface{} { return exchange.GetBinanceWebSocket() }, func(ws interface{}) { m.binanceWS = ws.(*exchange.BinanceWebSocket) })
 
 	g.Log().Warningf(ctx, "[MarketServiceManager] WebSocket服务启动完成: 成功=%d/%d", successCount, totalCount)
 }
@@ -216,7 +232,6 @@ func (m *MarketServiceManager) Stop() {
 		name   string
 		client stoppable
 	}{
-		{"Bitget", m.bitgetWS},
 		{"Binance", m.binanceWS},
 		{"OKX", m.okxWS},
 		{"Gate", m.gateWS},
@@ -258,6 +273,7 @@ func (m *MarketServiceManager) GetOrCreateService(ctx context.Context, platform 
 	svc := &ExchangeMarketService{
 		Platform:            platform,
 		Exchange:            ex,
+		WSOnly:              m.wsOnly,
 		Tickers:             make(map[string]*TickerCache),
 		Klines:              make(map[string]*KlineCache),
 		OrderBooks:          make(map[string]*OrderBookCache),
@@ -286,12 +302,22 @@ func (m *MarketServiceManager) GetService(platform string) *ExchangeMarketServic
 func (m *MarketServiceManager) Subscribe(ctx context.Context, platform, symbol string, ex exchange.Exchange) {
 	platform = normalizePlatform(platform)
 	symbol = normalizeSymbol(symbol)
-	// 订阅WebSocket（如果启用）
-	m.subscribeWebSocket(ctx, platform, symbol)
-
-	// 同时保留HTTP服务（作为降级方案）
+	// 先确保 HTTP/缓存服务存在（并触发首轮 fetchInitialData），避免 WS 回调早到导致写缓存时 svc 为空
 	svc := m.GetOrCreateService(ctx, platform, ex)
 	svc.Subscribe(ctx, symbol)
+
+	// 再订阅WebSocket（如果启用）
+	m.subscribeWebSocket(ctx, platform, symbol)
+}
+
+// SubscribeQuoteOnly 仅订阅报价（ticker/mark price），不订阅K线。
+// 适用场景：执行平台只需要报价/风控口径，K线/市场状态来自其它分析平台。
+func (m *MarketServiceManager) SubscribeQuoteOnly(ctx context.Context, platform, symbol string, ex exchange.Exchange) {
+	platform = normalizePlatform(platform)
+	symbol = normalizeSymbol(symbol)
+	svc := m.GetOrCreateService(ctx, platform, ex)
+	svc.Subscribe(ctx, symbol)
+	m.subscribeWebSocketQuoteOnly(ctx, platform, symbol)
 }
 
 // SubscribeWithCallback 订阅交易对行情并注册价格更新回调
@@ -307,9 +333,128 @@ func (m *MarketServiceManager) SubscribeWithCallback(ctx context.Context, platfo
 		key := platform + ":" + symbol
 		m.mu.Lock()
 		m.priceCallbacks[key] = append(m.priceCallbacks[key], callback)
+		// 确保回调队列与 worker 存在（用于隔离“报价更新”与“回调慢逻辑”）
+		if _, ok := m.callbackQueues[key]; !ok {
+			m.callbackQueues[key] = make(chan *exchange.Ticker, 1) // coalesce：只保留最新
+			go m.runPriceCallbackWorker(key)
+		}
 		m.mu.Unlock()
 
 		g.Log().Debugf(ctx, "[MarketServiceManager] 注册价格更新回调: %s", key)
+
+		// 【启动期优化】订阅后立刻尝试用“已有缓存ticker(WS/REST)”补一次回调，避免引擎/下单阶段 LastTicker 为空。
+		// 注意：fetchInitialData 是异步的，所以这里做短暂重试（最多2秒）。
+		go func() {
+			defer func() { recover() }()
+			deadline := time.Now().Add(2 * time.Second)
+			for time.Now().Before(deadline) {
+				tk := m.GetTicker(platform, symbol)
+				if tk != nil && tk.LastPrice > 0 {
+					callback(tk)
+					return
+				}
+				time.Sleep(200 * time.Millisecond)
+			}
+		}()
+	}
+}
+
+// SubscribeQuoteOnlyWithCallback 仅订阅报价并注册价格更新回调（不订阅K线）。
+func (m *MarketServiceManager) SubscribeQuoteOnlyWithCallback(ctx context.Context, platform, symbol string, ex exchange.Exchange, callback func(*exchange.Ticker)) {
+	platform = normalizePlatform(platform)
+	symbol = normalizeSymbol(symbol)
+	m.SubscribeQuoteOnly(ctx, platform, symbol, ex)
+
+	// 注册回调（逻辑同 SubscribeWithCallback）
+	if callback != nil {
+		key := platform + ":" + symbol
+		m.mu.Lock()
+		m.priceCallbacks[key] = append(m.priceCallbacks[key], callback)
+		if _, ok := m.callbackQueues[key]; !ok {
+			m.callbackQueues[key] = make(chan *exchange.Ticker, 1)
+			go m.runPriceCallbackWorker(key)
+		}
+		m.mu.Unlock()
+
+		g.Log().Debugf(ctx, "[MarketServiceManager] 注册价格更新回调(QuoteOnly): %s", key)
+
+		go func() {
+			defer func() { recover() }()
+			deadline := time.Now().Add(2 * time.Second)
+			for time.Now().Before(deadline) {
+				tk := m.GetTicker(platform, symbol)
+				if tk != nil && tk.LastPrice > 0 {
+					callback(tk)
+					return
+				}
+				time.Sleep(200 * time.Millisecond)
+			}
+		}()
+	}
+}
+
+// runPriceCallbackWorker 串行处理某个 (platform:symbol) 的价格回调。
+// 设计目标：
+// - WS ticker 更新只负责“写缓存 + 非阻塞入队”，不被任何慢逻辑拖慢
+// - 回调天然可能慢（止盈止损/DB/策略计算/日志），用 coalesce 合并高频 tick，避免 goroutine 风暴
+func (m *MarketServiceManager) runPriceCallbackWorker(key string) {
+	// 最小触发间隔：避免回调过密导致 CPU 被策略/订单逻辑抢占，从而间接影响“报价实时性”
+	const minInterval = 100 * time.Millisecond
+	var lastAt time.Time
+
+	for {
+		// 队列可能在运行时被创建/复用，这里每轮都读取一次，保证安全
+		m.mu.RLock()
+		ch := m.callbackQueues[key]
+		m.mu.RUnlock()
+		if ch == nil {
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
+
+		tk, ok := <-ch
+		if !ok {
+			return
+		}
+		if tk == nil {
+			continue
+		}
+
+		// coalesce：尽可能把积压的 tick 合并为最后一条（只保留最新）
+		for {
+			select {
+			case tk2 := <-ch:
+				if tk2 != nil {
+					tk = tk2
+				}
+			default:
+				goto PROCESS
+			}
+		}
+
+	PROCESS:
+		// 节流（不影响报价缓存写入，只影响回调执行频率）
+		if !lastAt.IsZero() {
+			if d := time.Since(lastAt); d < minInterval {
+				time.Sleep(minInterval - d)
+			}
+		}
+		lastAt = time.Now()
+
+		// 获取回调快照（避免持锁执行回调）
+		m.mu.RLock()
+		callbacks := append([]func(*exchange.Ticker){}, m.priceCallbacks[key]...)
+		m.mu.RUnlock()
+
+		for _, cb := range callbacks {
+			if cb == nil {
+				continue
+			}
+			func() {
+				defer func() { recover() }()
+				cb(tk)
+			}()
+		}
 	}
 }
 
@@ -324,6 +469,8 @@ func (m *MarketServiceManager) UnsubscribeCallback(platform, symbol string, call
 	// 移除指定的回调（如果传入nil，则清空所有回调）
 	if callback == nil {
 		delete(m.priceCallbacks, key)
+		// 不关闭 callbackQueues：避免并发发送导致 panic。
+		// worker 将阻塞在队列读取上，不消耗 CPU；后续重新注册回调可复用该队列。
 		return
 	}
 
@@ -376,26 +523,6 @@ func (m *MarketServiceManager) subscribeWebSocket(ctx context.Context, platform,
 	}
 
 	switch platform {
-	case "bitget":
-		if m.bitgetWS != nil && m.bitgetWS.IsRunning() {
-			// 订阅Ticker
-			m.bitgetWS.SubscribeTicker(symbol, func(ticker *exchange.Ticker) {
-				// WebSocket数据更新回调 - 更新HTTP服务的缓存以保持一致
-				if svc := m.GetService(platform); svc != nil {
-					svc.mu.Lock()
-					svc.Tickers[symbol] = &TickerCache{Data: ticker, UpdatedAt: time.Now()}
-					svc.mu.Unlock()
-				}
-				// 【新增】触发注册的回调函数（用于实时平仓检查）
-				m.triggerPriceCallbacks(platform, symbol, ticker)
-			})
-			// 订阅K线（多周期）
-			for _, interval := range []string{"1m", "5m", "15m", "30m", "1h"} {
-				_ = m.bitgetWS.SubscribeKline(symbol, interval, func(klines []*exchange.Kline) {
-					updateSvcKlines(interval, klines)
-				})
-			}
-		}
 	case "binance":
 		if m.binanceWS != nil && m.binanceWS.IsRunning() {
 			m.binanceWS.SubscribeTicker(symbol, func(ticker *exchange.Ticker) {
@@ -434,7 +561,10 @@ func (m *MarketServiceManager) subscribeWebSocket(ctx context.Context, platform,
 			}
 		}
 	case "gate":
-		if m.gateWS != nil && m.gateWS.IsRunning() {
+		// Gate WS 连接可能比其它交易所更慢（或短暂断线重连）。
+		// 这里不要用 IsRunning() 做硬门槛，否则“订阅请求发生在连接完成之前”会被跳过，导致永远没有K线数据。
+		// SubscribeKline/SubscribeTicker 内部会保存 subscriptions，连接恢复后 onConnected 会自动重放。
+		if m.gateWS != nil {
 			m.gateWS.SubscribeTicker(symbol, func(ticker *exchange.Ticker) {
 				if svc := m.GetService(platform); svc != nil {
 					svc.mu.Lock()
@@ -449,6 +579,145 @@ func (m *MarketServiceManager) subscribeWebSocket(ctx context.Context, platform,
 					updateSvcKlines(interval, klines)
 				})
 			}
+
+			// 兜底：如果 WS-only 模式下 Gate 长时间收不到 candlesticks（或解析异常），会导致 MarketAnalyzer 永远没有数据。
+			// 这里做一次延迟检查：若仍无任何K线，则触发一次 REST 拉取补齐（仅一次，避免刷接口）。
+			// 目的：让“市场状态/多周期播报”至少可用，即使 Gate WS 的 K线频道不稳定。
+			m.mu.RLock()
+			wsOnly := m.wsOnly
+			m.mu.RUnlock()
+			if wsOnly {
+				p := platform
+				sym := symbol
+				svcPlatform := platform // capture
+				go func() {
+					defer func() {
+						if r := recover(); r != nil {
+							g.Log().Warningf(context.Background(),
+								"[MarketServiceManager] Gate REST K线兜底 goroutine panic: platform=%s, symbol=%s, err=%v", p, sym, r)
+						}
+					}()
+					// Gate candlesticks 可能“慢热”：新订阅后 10~30 秒才可能推第一根K线。
+					// 这里不要在 5~6 秒内就判定“未就绪”，否则会误触发兜底并产生噪声日志。
+					time.Sleep(35 * time.Second)
+					svc := m.GetService(svcPlatform)
+					if svc == nil {
+						return
+					}
+				kc := svc.GetMultiTimeframeKlines(sym)
+				if !klineCacheHasAnyData(kc) {
+					// 【降级为Debug】Gate机器人通常使用OKX的市场状态和K线数据（analysisPlatform=okx），
+					// 所以Gate自己的K线兜底日志只用于调试，不应该刷屏。
+					g.Log().Debugf(context.Background(),
+						"[MarketServiceManager] Gate WS K线未就绪，触发一次REST兜底补齐: platform=%s, symbol=%s", p, sym)
+						// 注意：WS-only 模式下 ExchangeMarketService.fetchAllKlines 会被 WSOnly 短路，无法真正走 REST。
+						// 因此这里直接使用“公共行情服务”拉取 Gate 的 candlesticks（不依赖用户API），并写回 KlineCache，确保 MarketAnalyzer 可产出数据。
+						pms := exchange.GetPublicMarketService()
+						type it struct {
+							interval string
+							limit    int
+						}
+						items := []it{
+							{"1m", 100},
+							{"5m", 100},
+							{"15m", 100},
+							{"30m", 50},
+							{"1h", 50},
+						}
+						now := time.Now()
+						var n1, n5, n15, n30, n1h int
+						for _, item := range items {
+							kl, err := pms.GetKlines(context.Background(), exchange.PlatformGate, sym, item.interval, item.limit)
+							if err != nil || len(kl) == 0 {
+						if err != nil {
+								g.Log().Debugf(context.Background(),
+									"[MarketServiceManager] Gate REST K线兜底失败: platform=%s, symbol=%s, interval=%s, err=%v", p, sym, item.interval, err)
+							}
+								continue
+							}
+							svc.mu.Lock()
+							cache := svc.Klines[sym]
+							if cache == nil {
+								cache = &KlineCache{}
+								svc.Klines[sym] = cache
+							}
+							cache.UpdatedAt = now
+							switch item.interval {
+							case "1m":
+								cache.Klines1m = kl
+								n1 = len(kl)
+							case "5m":
+								cache.Klines5m = kl
+								n5 = len(kl)
+							case "15m":
+								cache.Klines15m = kl
+								n15 = len(kl)
+							case "30m":
+								cache.Klines30m = kl
+								n30 = len(kl)
+							case "1h":
+								cache.Klines1h = kl
+								n1h = len(kl)
+							}
+							svc.mu.Unlock()
+						}
+						g.Log().Debugf(context.Background(),
+							"[MarketServiceManager] Gate REST K线兜底完成: platform=%s, symbol=%s, 1m=%d, 5m=%d, 15m=%d, 30m=%d, 1h=%d",
+							p, sym, n1, n5, n15, n30, n1h)
+					}
+				}()
+			}
+		}
+	}
+}
+
+// subscribeWebSocketQuoteOnly 仅订阅报价（ticker/mark price），不订阅K线/不触发K线兜底。
+func (m *MarketServiceManager) subscribeWebSocketQuoteOnly(ctx context.Context, platform, symbol string) {
+	platform = normalizePlatform(platform)
+	symbol = normalizeSymbol(symbol)
+	m.mu.RLock()
+	wsEnabled := m.wsEnabled
+	m.mu.RUnlock()
+	if !wsEnabled {
+		return
+	}
+
+	switch platform {
+	case "binance":
+		if m.binanceWS != nil && m.binanceWS.IsRunning() {
+			m.binanceWS.SubscribeTicker(symbol, func(ticker *exchange.Ticker) {
+				if svc := m.GetService(platform); svc != nil {
+					svc.mu.Lock()
+					svc.Tickers[symbol] = &TickerCache{Data: ticker, UpdatedAt: time.Now()}
+					svc.mu.Unlock()
+				}
+				m.triggerPriceCallbacks(platform, symbol, ticker)
+			})
+			_ = m.binanceWS.SubscribeMarkPrice(symbol)
+		}
+	case "okx":
+		if m.okxWS != nil && m.okxWS.IsRunning() {
+			m.okxWS.SubscribeTicker(symbol, func(ticker *exchange.Ticker) {
+				if svc := m.GetService(platform); svc != nil {
+					svc.mu.Lock()
+					svc.Tickers[symbol] = &TickerCache{Data: ticker, UpdatedAt: time.Now()}
+					svc.mu.Unlock()
+				}
+				m.triggerPriceCallbacks(platform, symbol, ticker)
+			})
+			_ = m.okxWS.SubscribeMarkPrice(symbol)
+		}
+	case "gate":
+		// Gate quote-only: 只订阅 ticker（不订阅 candlesticks，因此不会打印 Gate K线兜底/未就绪日志）
+		if m.gateWS != nil {
+			m.gateWS.SubscribeTicker(symbol, func(ticker *exchange.Ticker) {
+				if svc := m.GetService(platform); svc != nil {
+					svc.mu.Lock()
+					svc.Tickers[symbol] = &TickerCache{Data: ticker, UpdatedAt: time.Now()}
+					svc.mu.Unlock()
+				}
+				m.triggerPriceCallbacks(platform, symbol, ticker)
+			})
 		}
 	}
 }
@@ -480,13 +749,27 @@ func (m *MarketServiceManager) triggerPriceCallbacks(platform, symbol string, ti
 	symbol = normalizeSymbol(symbol)
 	key := platform + ":" + symbol
 	m.mu.RLock()
-	callbacks := m.priceCallbacks[key]
+	ch := m.callbackQueues[key]
+	hasCallbacks := len(m.priceCallbacks[key]) > 0
 	m.mu.RUnlock()
 
-	// 异步调用所有回调，避免阻塞WebSocket处理
-	for _, cb := range callbacks {
-		if cb != nil {
-			go cb(ticker)
+	// 没有注册回调：直接返回（保证报价更新链路最短）
+	if !hasCallbacks || ch == nil {
+		return
+	}
+
+	// 非阻塞入队：coalesce，只保留最新 ticker
+	select {
+	case ch <- ticker:
+	default:
+		// 队列满：丢弃旧的，保留最新
+		select {
+		case <-ch:
+		default:
+		}
+		select {
+		case ch <- ticker:
+		default:
 		}
 	}
 }
@@ -503,11 +786,6 @@ func (m *MarketServiceManager) unsubscribeWebSocket(platform, symbol string) {
 	}
 
 	switch platform {
-	case "bitget":
-		// 当前 BitgetWS 有 UnsubscribeTicker，但 Kline 退订在现有实现里未暴露；这里先退订ticker（最关键）
-		if m.bitgetWS != nil && m.bitgetWS.IsRunning() {
-			_ = m.bitgetWS.UnsubscribeTicker(symbol)
-		}
 	case "binance":
 		if m.binanceWS != nil && m.binanceWS.IsRunning() {
 			_ = m.binanceWS.UnsubscribeTicker(symbol)
@@ -538,12 +816,17 @@ func (m *MarketServiceManager) GetTicker(platform, symbol string) *exchange.Tick
 	// 优先从WebSocket获取（如果启用且连接正常）
 	m.mu.RLock()
 	wsEnabled := m.wsEnabled
+	wsOnly := m.wsOnly
 	m.mu.RUnlock()
 
 	if wsEnabled {
 		ticker := m.getTickerFromWebSocket(platform, symbol)
 		if ticker != nil {
 			return ticker
+		}
+		// WS-only：不允许降级到HTTP缓存/REST
+		if wsOnly {
+			return nil
 		}
 	}
 
@@ -560,10 +843,6 @@ func (m *MarketServiceManager) getTickerFromWebSocket(platform, symbol string) *
 	platform = normalizePlatform(platform)
 	symbol = normalizeSymbol(symbol)
 	switch platform {
-	case "bitget":
-		if m.bitgetWS != nil && m.bitgetWS.IsRunning() {
-			return m.bitgetWS.GetTicker(symbol)
-		}
 	case "binance":
 		if m.binanceWS != nil && m.binanceWS.IsRunning() {
 			return m.binanceWS.GetTicker(symbol)
@@ -587,10 +866,15 @@ func (m *MarketServiceManager) GetKlines(platform, symbol, interval string) []*e
 	// 优先从WebSocket获取（如果启用且连接正常）
 	m.mu.RLock()
 	wsEnabled := m.wsEnabled
+	wsOnly := m.wsOnly
 	m.mu.RUnlock()
 	if wsEnabled {
 		if kl := m.getKlinesFromWebSocket(platform, symbol, interval); len(kl) > 0 {
 			return kl
+		}
+		// WS-only：不允许降级到HTTP缓存/REST
+		if wsOnly {
+			return nil
 		}
 	}
 	svc := m.GetService(platform)
@@ -605,10 +889,6 @@ func (m *MarketServiceManager) getKlinesFromWebSocket(platform, symbol, interval
 	platform = normalizePlatform(platform)
 	symbol = normalizeSymbol(symbol)
 	switch platform {
-	case "bitget":
-		if m.bitgetWS != nil && m.bitgetWS.IsRunning() {
-			return m.bitgetWS.GetKlines(symbol, interval)
-		}
 	case "binance":
 		if m.binanceWS != nil && m.binanceWS.IsRunning() {
 			return m.binanceWS.GetKlines(symbol, interval)
@@ -638,7 +918,7 @@ func (m *MarketServiceManager) GetMultiTimeframeKlines(platform, symbol string) 
 
 // GetMarketState 获取市场状态（全局共享，按 platform+symbol 缓存）
 // 每个币种（platform+symbol）有独立的市场状态信号，所有交易该币种的机器人共享同一套信号
-// 例如：bitget:BTCUSDT 和 binance:BTCUSDT 是两套独立的市场状态
+// 例如：okx:BTCUSDT 和 binance:BTCUSDT 是两套独立的市场状态
 // 【实时性优化】添加数据过期检查，确保使用最新的市场状态数据
 func (m *MarketServiceManager) GetMarketState(platform, symbol string) string {
 	platform = normalizePlatform(platform)
@@ -647,15 +927,21 @@ func (m *MarketServiceManager) GetMarketState(platform, symbol string) string {
 		return ""
 	}
 
-	// 使用全局 MarketAnalyzer 获取市场状态（按 platform+symbol 唯一标识）
+	// 允许“执行所/分析所”解耦：仅市场状态(K线分析)可按配置覆写数据源平台。
+	analysisPlatform := ResolveAnalysisPlatform(context.Background(), platform)
+	if analysisPlatform == "" {
+		analysisPlatform = platform
+	}
+
+	// 使用全局 MarketAnalyzer 获取市场状态（按 analysisPlatform+symbol 唯一标识）
 	analyzer := GetMarketAnalyzer()
-	analysis := analyzer.GetAnalysis(platform, symbol)
+	analysis := analyzer.GetAnalysis(analysisPlatform, symbol)
 	if analysis == nil {
 		return ""
 	}
 
 	// 验证分析结果是否匹配请求的币种（确保数据一致性）
-	if analysis.Platform != platform || analysis.Symbol != symbol {
+	if analysis.Platform != analysisPlatform || analysis.Symbol != symbol {
 		return ""
 	}
 
@@ -663,8 +949,8 @@ func (m *MarketServiceManager) GetMarketState(platform, symbol string) string {
 	// 超短线交易需要实时数据，过期数据可能导致错误决策
 	if time.Since(analysis.UpdatedAt) > 3*time.Second {
 		g.Log().Warningf(context.Background(),
-			"[MarketServiceManager] 市场状态数据过期: platform=%s, symbol=%s, age=%v",
-			platform, symbol, time.Since(analysis.UpdatedAt))
+			"[MarketServiceManager] 市场状态数据过期: execPlatform=%s, analysisPlatform=%s, symbol=%s, age=%v",
+			platform, analysisPlatform, symbol, time.Since(analysis.UpdatedAt))
 		return "" // 返回空，表示数据不可用
 	}
 
@@ -718,9 +1004,12 @@ func (s *ExchangeMarketService) Start(ctx context.Context) {
 	s.running = true
 	s.mu.Unlock()
 
-	// 启动定时更新任务
-	go s.runTickerUpdater(ctx)
-	go s.runKlineUpdater(ctx)
+	// WS-only 模式：禁用所有REST轮询更新（WS回调会写入缓存）
+	if !s.WSOnly {
+		// 启动定时更新任务
+		go s.runTickerUpdater(ctx)
+		go s.runKlineUpdater(ctx)
+	}
 
 	g.Log().Infof(ctx, "[ExchangeMarketService] %s 行情服务启动", s.Platform)
 }
@@ -745,8 +1034,10 @@ func (s *ExchangeMarketService) Subscribe(ctx context.Context, symbol string) {
 
 	s.Subscriptions[symbol]++
 	if s.Subscriptions[symbol] == 1 {
-		// 首次订阅，立即获取数据
-		go s.fetchInitialData(ctx, symbol)
+		// 首次订阅：WS-only 模式不做REST初始拉取，等待WS回填缓存
+		if !s.WSOnly {
+			go s.fetchInitialData(ctx, symbol)
+		}
 	}
 
 	g.Log().Debugf(ctx, "[ExchangeMarketService] %s 订阅 %s, 引用数=%d", s.Platform, symbol, s.Subscriptions[symbol])
@@ -845,6 +1136,9 @@ func (s *ExchangeMarketService) GetAllSubscriptions() map[string]int {
 
 // fetchInitialData 获取初始数据
 func (s *ExchangeMarketService) fetchInitialData(ctx context.Context, symbol string) {
+	if s.WSOnly {
+		return
+	}
 	if s.Exchange == nil {
 		return
 	}
@@ -932,11 +1226,16 @@ func (s *ExchangeMarketService) fetchAllKlines(ctx context.Context, symbol strin
 		wg.Add(1)
 		go func(interval string, count int, target *[]*exchange.Kline) {
 			defer wg.Done()
-			// WS优先：如果WS有数据，直接使用，避免REST请求
+			// WS优先：如果WS有数据，直接使用
 			if wsK := GetMarketServiceManager().getKlinesFromWebSocket(s.Platform, symbol, interval); len(wsK) > 0 {
 				mu.Lock()
 				*target = wsK
 				mu.Unlock()
+				return
+			}
+
+			// WS-only：不允许REST兜底
+			if s.WSOnly {
 				return
 			}
 
@@ -1016,6 +1315,11 @@ func (s *ExchangeMarketService) updateAllTickers(ctx context.Context) {
 			continue
 		}
 
+		// WS-only：不允许REST兜底
+		if s.WSOnly {
+			continue
+		}
+
 		ticker, err := s.Exchange.GetTicker(ctx, symbol)
 		if err != nil {
 			continue
@@ -1030,6 +1334,10 @@ func (s *ExchangeMarketService) updateAllTickers(ctx context.Context) {
 
 // updateAllKlines 更新所有K线
 func (s *ExchangeMarketService) updateAllKlines(ctx context.Context) {
+	// WS-only：K线由 WS 回调持续写入缓存，不做REST轮询
+	if s.WSOnly {
+		return
+	}
 	s.mu.RLock()
 	symbols := make([]string, 0, len(s.Subscriptions))
 	for symbol := range s.Subscriptions {
@@ -1055,7 +1363,6 @@ func (s *ExchangeMarketService) FetchTickerDirect(ctx context.Context, symbol st
 // WebSocketStatus WebSocket状态
 type WebSocketStatus struct {
 	Enabled       bool                      `json:"enabled"`
-	BitgetStatus  *exchange.BitgetWSStatus  `json:"bitget"`
 	BinanceStatus *exchange.BinanceWSStatus `json:"binance"`
 	OKXStatus     *exchange.OKXWSStatus     `json:"okx"`
 	GateStatus    *exchange.GateWSStatus    `json:"gate"`
@@ -1070,9 +1377,6 @@ func (m *MarketServiceManager) GetWebSocketStatus() *WebSocketStatus {
 		Enabled: m.wsEnabled,
 	}
 
-	if m.bitgetWS != nil {
-		status.BitgetStatus = m.bitgetWS.GetStatus()
-	}
 	if m.binanceWS != nil {
 		status.BinanceStatus = m.binanceWS.GetStatus()
 	}
@@ -1117,10 +1421,6 @@ func (m *MarketServiceManager) DisableWebSocket() {
 	}
 
 	m.wsEnabled = false
-
-	if m.bitgetWS != nil {
-		m.bitgetWS.Stop()
-	}
 	if m.binanceWS != nil {
 		m.binanceWS.Stop()
 	}

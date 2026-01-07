@@ -54,6 +54,7 @@ type TradingRobotColumns struct {
 	RuntimeSeconds          string // 已运行时长(秒)
 	AutoTradeEnabled        string // 全自动下单：0=否,1=是
 	AutoCloseEnabled        string // 全自动平仓：0=否,1=是
+	ProfitLockEnabled       string // 锁定盈利开关：0=关闭,1=开启（止盈启动后禁止自动开新仓）
 	DualSidePosition        string // 双向开单：0=单向,1=双向
 	Remark                  string // 备注
 	CreatedAt               string // 创建时间
@@ -96,6 +97,7 @@ var tradingRobotColumns = TradingRobotColumns{
 	RuntimeSeconds:          "runtime_seconds",
 	AutoTradeEnabled:        "auto_trade_enabled",
 	AutoCloseEnabled:        "auto_close_enabled",
+	ProfitLockEnabled:       "profit_lock_enabled",
 	DualSidePosition:        "dual_side_position",
 	Remark:                  "remark",
 	CreatedAt:               "created_at",

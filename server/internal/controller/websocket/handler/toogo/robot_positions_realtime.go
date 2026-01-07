@@ -2,6 +2,7 @@
 package toogo
 
 import (
+	"context"
 	"errors"
 	"strconv"
 	"strings"
@@ -83,6 +84,11 @@ func (c *cRobotPositionsRealtime) Subscribe(client *websocket.Client, req *webso
 
 	// 立即推一次 + 定时推
 	go func() {
+		// 订阅维度缓存：避免“获取失败时推空数组”导致前端把已有持仓清掉产生闪烁/丢失
+		// - key: robotId
+		// - value: 上一次成功返回的 positions snapshot（尽量保持引用隔离，避免外部修改）
+		lastOk := make(map[int64]any)
+
 		push := func() {
 			// 客户端断开/超时后停止
 			if client == nil || client.SendClose || !websocket.Manager().InClient(client) {
@@ -98,18 +104,32 @@ func (c *cRobotPositionsRealtime) Subscribe(client *websocket.Client, req *webso
 					continue
 				}
 
-				list, err := service.ToogoRobot().GetRobotPositions(client.Context(), robotId)
+				ctx := client.Context()
+				if ctx == nil {
+					ctx = context.Background()
+				}
+				list, err := service.ToogoRobot().GetRobotPositions(ctx, robotId)
 				item := g.Map{
 					"robotId": robotId,
 					"list":    list,
 					"error":   "",
 				}
 				if err != nil {
-					item["list"] = g.Slice{}
+					// 失败时：优先复用上一帧成功结果，避免前端闪烁/误判为“已平仓”
+					if prev, ok := lastOk[robotId]; ok && prev != nil {
+						item["list"] = prev
+						item["stale"] = true
+					} else {
+						item["list"] = g.Slice{}
+					}
 					item["error"] = err.Error()
 				} else if list == nil {
 					// 统一输出空数组，避免前端收到 null 误判为“无数据/未推送”
 					item["list"] = g.Slice{}
+					lastOk[robotId] = item["list"]
+				} else {
+					// 成功：记录最新快照（注意：这里存的是当前返回的 slice 引用；后续如需更强隔离可深拷贝）
+					lastOk[robotId] = list
 				}
 				items = append(items, item)
 			}

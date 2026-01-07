@@ -93,13 +93,13 @@
         <n-popover
           placement="bottom"
           v-if="item.icon === 'BellOutlined'"
-          trigger="click"
+          trigger="hover"
           :width="getIsMobile ? 276 : 420"
         >
           <template #trigger>
             <n-tooltip placement="bottom">
               <template #trigger>
-                <n-badge :value="notificationStore.getUnreadCount()" :max="99" processing>
+                <n-badge :value="bellUnreadCount" :max="99" processing>
                   <n-icon size="18">
                     <BellOutlined />
                   </n-icon>
@@ -109,7 +109,29 @@
             </n-tooltip>
           </template>
 
-          <SystemMessage />
+          <SystemMessage :excludeKeys="[9]" />
+        </n-popover>
+
+        <n-popover
+          placement="bottom"
+          v-else-if="item.icon === 'CustomerServiceOutlined'"
+          trigger="hover"
+          :width="getIsMobile ? 276 : 420"
+        >
+          <template #trigger>
+            <n-tooltip placement="bottom">
+              <template #trigger>
+                <n-badge :value="notificationStore.customerServiceUnread" :max="99" processing>
+                  <n-icon size="18">
+                    <CustomerServiceOutlined />
+                  </n-icon>
+                </n-badge>
+              </template>
+              <span>{{ item.tips }}</span>
+            </n-tooltip>
+          </template>
+
+          <SystemMessage :onlyKeys="[9]" />
         </n-popover>
 
         <div v-else>
@@ -394,7 +416,11 @@
         },
         {
           icon: 'BellOutlined',
-          tips: '我的消息',
+          tips: '消息（通知/公告/私信）',
+        },
+        {
+          icon: 'CustomerServiceOutlined',
+          tips: '客服',
         },
         {
           icon: 'LockOutlined',
@@ -420,7 +446,7 @@
                 h(NText, { depth: 3 }, { default: () => userStore?.info?.roleName }),
               ]),
             ]),
-          ]
+          ],
         );
       }
 
@@ -500,7 +526,7 @@
                       },
                       {
                         default: () => newVal.tagTitle,
-                      }
+                      },
                     ),
 
             content: () =>
@@ -524,6 +550,10 @@
                   type: 'info',
                   onClick: () => {
                     (nRef.value as NotificationReactive).destroy();
+                    if (newVal.type === 9) {
+                      router.push({ name: 'SupportChatClient' });
+                      return;
+                    }
                     router.push({
                       name: 'home_message',
                       query: {
@@ -534,19 +564,27 @@
                 },
                 {
                   default: () => '查看详情',
-                }
+                },
               ),
             onClose: () => {
               nRef.value = null;
             },
           });
         },
-        { immediate: true, deep: true }
+        { immediate: true, deep: true },
       );
 
       const updateMenu = () => {
         emit('update:collapsed', !props.collapsed);
       };
+
+      const bellUnreadCount = computed(() => {
+        return (
+          notificationStore.notifyUnread +
+          notificationStore.noticeUnread +
+          notificationStore.letterUnread
+        );
+      });
 
       onMounted(() => {
         if (notificationStore.getUnreadCount() === 0) {
@@ -573,6 +611,7 @@
         NotificationsIcon,
         SystemMessage,
         notificationStore,
+        bellUnreadCount,
         getIsMobile,
         userStore,
         updateMenu,

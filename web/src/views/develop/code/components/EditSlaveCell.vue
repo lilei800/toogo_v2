@@ -201,9 +201,9 @@
                   text: true,
                   iconPlacement: 'right',
                 },
-                { default: () => '字段', icon: renderIcon(HelpCircleOutline) }
+                { default: () => '字段', icon: renderIcon(HelpCircleOutline) },
               ),
-              'Go类型和属性定义取决于你在/hack/config.yaml中的配置参数'
+              'Go类型和属性定义取决于你在/hack/config.yaml中的配置参数',
             ),
             h(
               NButton,
@@ -215,7 +215,7 @@
                 style: { 'margin-left': '20px' },
                 onClick: () => (columnCollapse.value = !columnCollapse.value),
               },
-              { default: () => (columnCollapse.value ? '展开 >>' : '折叠 <<') }
+              { default: () => (columnCollapse.value ? '展开 >>' : '折叠 <<') },
             ),
           ]);
         },
@@ -314,9 +314,9 @@
                     text: true,
                     iconPlacement: 'right',
                   },
-                  { default: () => '列宽', icon: renderIcon(HelpCircleOutline) }
+                  { default: () => '列宽', icon: renderIcon(HelpCircleOutline) },
                 ),
-                '选填。设定固定值时表格生成自动计算scroll-x，未设定默认每列按100计算'
+                '选填。设定固定值时表格生成自动计算scroll-x，未设定默认每列按100计算',
               );
             },
             key: 'width',
@@ -373,7 +373,7 @@
         for (let i = 0; i < columns.length; i++) {
           // 相同字段名称和类型，保留原字段属性
           const index2 = join.columns.findIndex(
-            (item) => item.name == columns[i].name && item.dataType == columns[i].dataType
+            (item) => item.name == columns[i].name && item.dataType == columns[i].dataType,
           );
           if (index2 !== -1) {
             columns[i] = join.columns[index2];

@@ -10,6 +10,7 @@ import (
 	_ "hotgo/internal/logic/hook"
 	_ "hotgo/internal/logic/middleware"
 	_ "hotgo/internal/logic/pay"
+	_ "hotgo/internal/logic/support_chat"
 	_ "hotgo/internal/logic/sys"
 	_ "hotgo/internal/logic/tcpclient"
 	_ "hotgo/internal/logic/tcpserver"

@@ -197,6 +197,9 @@ func (a *MarketAnalyzer) GetAnalysis(platform, symbol string) *MarketAnalysis {
 		return nil
 	}
 
+	platform = NormalizePlatform(platform)
+	symbol = NormalizeSymbol(symbol)
+
 	// 使用 platform:symbol 作为唯一键
 	key := platform + ":" + symbol
 
@@ -299,8 +302,8 @@ func mapToCompatibleMarketState(state string) MarketState {
 	case "low_vol":
 		return MarketStateLowVol
 	default:
-		// 未知状态，返回默认值
-		return MarketStateTrend
+		// 未知状态，返回更安全的默认值（震荡/区间），避免把未知态误判为趋势
+		return MarketStateVolatile
 	}
 }
 
@@ -340,6 +343,11 @@ func (a *MarketAnalyzer) AnalyzeAllMarketsEnhanced(ctx context.Context) {
 			if klineCache == nil || ticker == nil {
 				continue
 			}
+			// 启动期/刚订阅时，K线缓存对象可能已创建但数据仍为空；此时分析会导致每秒刷“数据不足”
+			// 这里直接跳过，等待下一轮缓存填充。
+			if !klineCacheHasAnyData(klineCache) {
+				continue
+			}
 
 			wg.Add(1)
 			semaphore <- struct{}{}
@@ -372,6 +380,13 @@ func (a *MarketAnalyzer) AnalyzeAllMarketsEnhanced(ctx context.Context) {
 	}
 
 	wg.Wait()
+}
+
+func klineCacheHasAnyData(k *KlineCache) bool {
+	if k == nil {
+		return false
+	}
+	return len(k.Klines1m) > 0 || len(k.Klines5m) > 0 || len(k.Klines15m) > 0 || len(k.Klines30m) > 0 || len(k.Klines1h) > 0
 }
 
 // RunAnalysisLoopEnhanced 增强版分析循环

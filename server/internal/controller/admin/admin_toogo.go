@@ -130,7 +130,7 @@ func (c *cToogo) RunSessionSummaryList(ctx context.Context, req *admin.ToogoRunS
 
 // SyncRunSession 同步运行区间盈亏数据
 func (c *cToogo) SyncRunSession(ctx context.Context, req *admin.ToogoSyncRunSessionReq) (res *admin.ToogoSyncRunSessionRes, err error) {
-	totalPnl, totalFee, tradeCount, err := service.ToogoWallet().SyncRunSession(ctx, req.SessionId)
+	totalPnl, totalFee, tradeCount, err := service.ToogoWallet().SyncRunSession(ctx, req.SessionId, req.CalcOnly == 1)
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,11 @@
 import { NAvatar, NTag, NText, SelectRenderLabel, SelectRenderTag } from 'naive-ui';
 import { Component, h } from 'vue';
-import { BellOutlined, NotificationOutlined, SendOutlined } from '@vicons/antd';
+import {
+  BellOutlined,
+  CustomerServiceOutlined,
+  NotificationOutlined,
+  SendOutlined,
+} from '@vicons/antd';
 import { useDictStore } from '@/store/modules/dict';
 
 export interface personOption {
@@ -59,12 +64,12 @@ export const renderMultipleSelectTag: SelectRenderTag = ({ option, handleClose }
                       option.label !== ''
                         ? ((option?.label as string).substring(0, 1) as string)
                         : ((option?.username as string).substring(0, 1) as string),
-                  }
+                  },
                 ),
             option.label as string,
-          ]
+          ],
         ),
-    }
+    },
   );
 };
 
@@ -95,7 +100,7 @@ export const renderLabel: SelectRenderLabel = (option) => {
                 option.label !== ''
                   ? ((option?.label as string).substring(0, 1) as string)
                   : ((option?.username as string).substring(0, 2) as string),
-            }
+            },
           ),
       h(
         'div',
@@ -112,11 +117,11 @@ export const renderLabel: SelectRenderLabel = (option) => {
             { depth: 3, tag: 'div' },
             {
               default: () => option.username,
-            }
+            },
           ),
-        ]
+        ],
       ),
-    ]
+    ],
   );
 };
 
@@ -161,6 +166,9 @@ export function getIcon(row: MessageRow): Component {
   }
   if (row.type === 2) {
     return BellOutlined;
+  }
+  if (row.type === 9) {
+    return CustomerServiceOutlined;
   }
   return SendOutlined;
 }

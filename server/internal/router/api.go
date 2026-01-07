@@ -10,6 +10,7 @@ import (
 	"hotgo/internal/consts"
 	"hotgo/internal/controller/api/member"
 	"hotgo/internal/controller/api/pay"
+	"hotgo/internal/controller/api/support_chat"
 	"hotgo/internal/service"
 	"hotgo/utility/simple"
 
@@ -25,6 +26,7 @@ func Api(ctx context.Context, group *ghttp.RouterGroup) {
 		group.Middleware(service.Middleware().ApiAuth)
 		group.Bind(
 			member.NewV1(), // 管理员
+			support_chat.NewV1(), // 客服聊天
 		)
 	})
 }

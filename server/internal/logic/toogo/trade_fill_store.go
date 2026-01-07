@@ -23,6 +23,14 @@ type tradeFillOrderLink struct {
 	Exchange  string
 	Symbol    string
 	Direction string
+	// 下面字段用于 Gate 等“成交明细不稳定提供已实现盈亏”的场景：用本地订单口径回填/分摊
+	ExchangeOrderId string
+	CloseOrderId    string
+	RealizedProfit  float64
+	OpenTime        *gtime.Time
+	CloseTime       *gtime.Time
+	// IsCloseKey: 该 link 是否由 close_order_id 匹配产生（即当前 trade.order_id == 本地 close_order_id）
+	IsCloseKey bool
 }
 
 func normalizeTsMs(ts int64) int64 {
@@ -55,6 +63,11 @@ func upsertTradeFillsFromTrades(ctx context.Context, apiConfigId int64, exchange
 	if apiConfigId <= 0 {
 		return 0, 0, gerror.New("apiConfigId is required")
 	}
+	// 统一交易所标识口径：全部使用小写 platform（binance/okx/bitget/gate）
+	// 多交易所场景下，如果这里混入 robot.Exchange 的脏数据（大小写/别名），会导致：
+	// - PG upsert 的冲突键(api_config_id, exchange, trade_id)不命中 → 重复插入/唯一键报错
+	// - 订单/成交关联匹配困难（exchange 维度不一致）
+	exchangeName = strings.ToLower(strings.TrimSpace(exchangeName))
 	symbol = strings.TrimSpace(symbol)
 	if len(trades) == 0 {
 		return 0, 0, nil
@@ -75,8 +88,8 @@ func upsertTradeFillsFromTrades(ctx context.Context, apiConfigId int64, exchange
 		orderIDs = append(orderIDs, oid)
 	}
 
-	// orderId -> 本地订单映射
-	orderLink := make(map[string]*tradeFillOrderLink)
+	// orderId -> 本地订单候选映射（允许一对多，后续按时间/口径选择最佳候选）
+	orderLinks := make(map[string][]*tradeFillOrderLink)
 	if len(orderIDs) > 0 {
 		// 注意：dao.TradingOrder.Columns() 可能缺字段，统一用字符串列名
 		type row struct {
@@ -89,10 +102,13 @@ func upsertTradeFillsFromTrades(ctx context.Context, apiConfigId int64, exchange
 			Exchange        string `orm:"exchange"`
 			Symbol          string `orm:"symbol"`
 			Direction       string `orm:"direction"`
+			RealizedProfit  float64 `orm:"realized_profit"`
+			OpenTime        *gtime.Time `orm:"open_time"`
+			CloseTime       *gtime.Time `orm:"close_time"`
 		}
 		var rows []*row
 		q := dao.TradingOrder.Ctx(ctx).
-			Fields("id", "user_id", "robot_id", "order_sn", "exchange_order_id", "close_order_id", "exchange", "symbol", "direction").
+			Fields("id", "user_id", "robot_id", "order_sn", "exchange_order_id", "close_order_id", "exchange", "symbol", "direction", "realized_profit", "open_time", "close_time").
 			Where("exchange_order_id IN (?) OR close_order_id IN (?)", orderIDs, orderIDs)
 		if err := q.Scan(&rows); err != nil {
 			return 0, 0, gerror.Wrap(err, "query trading_order for trade fill mapping failed")
@@ -101,7 +117,7 @@ func upsertTradeFillsFromTrades(ctx context.Context, apiConfigId int64, exchange
 			if r == nil {
 				continue
 			}
-			link := &tradeFillOrderLink{
+			base := &tradeFillOrderLink{
 				OrderId:   r.Id,
 				UserId:    r.UserId,
 				RobotId:   r.RobotId,
@@ -109,39 +125,165 @@ func upsertTradeFillsFromTrades(ctx context.Context, apiConfigId int64, exchange
 				Exchange:  r.Exchange,
 				Symbol:    r.Symbol,
 				Direction: r.Direction,
+				ExchangeOrderId: strings.TrimSpace(r.ExchangeOrderId),
+				CloseOrderId:    strings.TrimSpace(r.CloseOrderId),
+				RealizedProfit:  r.RealizedProfit,
+				OpenTime:        r.OpenTime,
+				CloseTime:       r.CloseTime,
 			}
-			if strings.TrimSpace(r.ExchangeOrderId) != "" {
-				orderLink[strings.TrimSpace(r.ExchangeOrderId)] = link
+			if base.ExchangeOrderId != "" {
+				l := *base
+				l.IsCloseKey = false
+				orderLinks[base.ExchangeOrderId] = append(orderLinks[base.ExchangeOrderId], &l)
 			}
-			if strings.TrimSpace(r.CloseOrderId) != "" {
-				orderLink[strings.TrimSpace(r.CloseOrderId)] = link
+			if base.CloseOrderId != "" {
+				l := *base
+				l.IsCloseKey = true
+				orderLinks[base.CloseOrderId] = append(orderLinks[base.CloseOrderId], &l)
 			}
 		}
 	}
 
+	// Gate 专用：订单级已实现盈亏分摊（高效/稳定）
+	// - 订单关联可能出现“一对多”（历史脏数据/多来源写入），这里不依赖 close_order_id 唯一性
+	// - 先按 order_id 汇总本批 trades 的总成交数量，用于分摊
+	closeOrderTotalQty := make(map[string]float64) // orderId -> sumQty (base qty)
+	if exchangeName == "gate" {
+		for _, t := range trades {
+			if t == nil {
+				continue
+			}
+			oid := strings.TrimSpace(t.OrderId)
+			if oid == "" || t.Quantity <= 0 {
+				continue
+			}
+			closeOrderTotalQty[oid] += t.Quantity
+		}
+	}
+
+	absInt64 := func(x int64) int64 {
+		if x < 0 {
+			return -x
+		}
+		return x
+	}
+	absFloat64 := func(x float64) float64 {
+		if x < 0 {
+			return -x
+		}
+		return x
+	}
+	// chooseBestLink: 从多个候选本地订单中挑最可能匹配该成交的一个
+	// 规则（按优先级）：
+	// 1) 优先 IsCloseKey=true（trade.order_id 命中本地 close_order_id）
+	// 2) 优先 abs(realized_profit) 更大（平仓单更容易有非0 realized_profit）
+	// 3) 优先成交时间更接近（平仓候选看 close_time；开仓候选看 open_time）
+	chooseBestLink := func(cands []*tradeFillOrderLink, tradeTsMs int64) *tradeFillOrderLink {
+		if len(cands) == 0 {
+			return nil
+		}
+		var best *tradeFillOrderLink
+		var bestDt int64 = 1<<62
+		for _, c := range cands {
+			if c == nil {
+				continue
+			}
+			if best == nil {
+				best = c
+				bestDt = 1<<62
+				if tradeTsMs > 0 {
+					if c.IsCloseKey && c.CloseTime != nil && !c.CloseTime.IsZero() {
+						bestDt = absInt64(tradeTsMs - c.CloseTime.UnixMilli())
+					} else if c.OpenTime != nil && !c.OpenTime.IsZero() {
+						bestDt = absInt64(tradeTsMs - c.OpenTime.UnixMilli())
+					}
+				}
+				continue
+			}
+			// 1) IsCloseKey
+			if c.IsCloseKey != best.IsCloseKey {
+				if c.IsCloseKey {
+					best = c
+					if tradeTsMs > 0 && c.CloseTime != nil && !c.CloseTime.IsZero() {
+						bestDt = absInt64(tradeTsMs - c.CloseTime.UnixMilli())
+					} else {
+						bestDt = 1<<62
+					}
+				}
+				continue
+			}
+			// 2) abs(realized_profit)
+			ab := absFloat64(best.RealizedProfit)
+			ac := absFloat64(c.RealizedProfit)
+			if ac != ab {
+				if ac > ab {
+					best = c
+					if tradeTsMs > 0 {
+						if c.IsCloseKey && c.CloseTime != nil && !c.CloseTime.IsZero() {
+							bestDt = absInt64(tradeTsMs - c.CloseTime.UnixMilli())
+						} else if c.OpenTime != nil && !c.OpenTime.IsZero() {
+							bestDt = absInt64(tradeTsMs - c.OpenTime.UnixMilli())
+						} else {
+							bestDt = 1<<62
+						}
+					}
+				}
+				continue
+			}
+			// 3) time distance
+			if tradeTsMs > 0 {
+				dt := int64(1 << 62)
+				if c.IsCloseKey && c.CloseTime != nil && !c.CloseTime.IsZero() {
+					dt = absInt64(tradeTsMs - c.CloseTime.UnixMilli())
+				} else if c.OpenTime != nil && !c.OpenTime.IsZero() {
+					dt = absInt64(tradeTsMs - c.OpenTime.UnixMilli())
+				}
+				if dt < bestDt {
+					best = c
+					bestDt = dt
+				}
+			}
+		}
+		return best
+	}
+
 	// fallback owner：用于解决“成交落库发生在 close_order_id 写入之前”导致无法通过订单ID匹配 owner 的情况。
-	// 在本系统规则下：一个 api_config_id 通常只会被一个机器人使用（且机器人所属 user 唯一），因此可作为兜底 owner。
+	// 【多交易所/多机器人】同一 api_config_id 可能被多个机器人复用（不同symbol/不同策略），此时不能再“随便取一个机器人”做兜底，
+	// 否则会把成交错误归属到其他机器人/用户。
+	// 新策略：
+	// - 若能通过 order_id 关联到本地订单：用关联结果（最准确）
+	// - 若无法关联：仅当 (api_config_id + symbol) 能唯一定位到一个机器人时才兜底归属；否则不填 owner（user_id/robot_id=0）
 	var fallback tradeFillFallbackOwner
 	{
 		type rb struct {
-			Id     int64 `orm:"id"`
-			UserId int64 `orm:"user_id"`
+			Id     int64  `orm:"id"`
+			UserId int64  `orm:"user_id"`
+			Symbol string `orm:"symbol"`
 		}
-		var r rb
-		_ = dao.TradingRobot.Ctx(ctx).
-			Fields("id", "user_id").
+		var rs []*rb
+		q := dao.TradingRobot.Ctx(ctx).
+			Fields("id", "user_id", "symbol").
 			Where("api_config_id", apiConfigId).
-			WhereNull("deleted_at").
-			Limit(1).
-			Scan(&r)
-		if r.Id > 0 && r.UserId > 0 {
-			fallback.RobotId = r.Id
-			fallback.UserId = r.UserId
+			WhereNull("deleted_at")
+		if symbol != "" {
+			q = q.Where("symbol", symbol)
+		}
+		_ = q.Limit(3).Scan(&rs)
+		if len(rs) == 1 && rs[0] != nil && rs[0].Id > 0 && rs[0].UserId > 0 {
+			fallback.RobotId = rs[0].Id
+			fallback.UserId = rs[0].UserId
 		}
 	}
 
 	now := gtime.Now()
 	data := make([]g.Map, 0, len(trades))
+	// 事件驱动：成交落库后，触发一次“当前运行区间”汇总写回（按 trade_fill 时间窗口径）
+	// 只依赖 userId+robotId，避免 exchange/symbol 历史数据不一致导致找不到 run_session
+	type rsKey struct {
+		UserId  int64
+		RobotId int64
+	}
+	rsKeys := make(map[string]*rsKey)
 	for _, t := range trades {
 		if t == nil {
 			continue
@@ -162,7 +304,7 @@ func upsertTradeFillsFromTrades(ctx context.Context, apiConfigId int64, exchange
 			sym = strings.TrimSpace(t.Symbol)
 		}
 
-		link := orderLink[oid]
+		link := chooseBestLink(orderLinks[oid], tsMs)
 		uid := int64(0)
 		rid := int64(0)
 		if link != nil {
@@ -175,6 +317,16 @@ func upsertTradeFillsFromTrades(ctx context.Context, apiConfigId int64, exchange
 		}
 
 		fee := math.Abs(t.Commission)
+		realizedPnl := t.RealizedPnl
+		// Gate 专用：用本地订单 realized_profit 分摊回填成交流水 realized_pnl（仅平仓订单ID）
+		if exchangeName == "gate" && realizedPnl == 0 && link != nil && link.IsCloseKey {
+			if link.RealizedProfit != 0 {
+				totalQty := closeOrderTotalQty[oid]
+				if totalQty > 0 && t.Quantity > 0 {
+					realizedPnl = link.RealizedProfit * (t.Quantity / totalQty)
+				}
+			}
+		}
 
 		data = append(data, g.Map{
 			"tenant_id":       0,
@@ -182,7 +334,7 @@ func upsertTradeFillsFromTrades(ctx context.Context, apiConfigId int64, exchange
 			"robot_id":        rid,
 			"session_id":      sessionId,
 			"api_config_id":   apiConfigId,
-			"exchange":        strings.TrimSpace(exchangeName),
+			"exchange":        exchangeName,
 			"symbol":          sym,
 			"order_id":        oid,
 			"client_order_id": "",
@@ -190,13 +342,21 @@ func upsertTradeFillsFromTrades(ctx context.Context, apiConfigId int64, exchange
 			"side":            normalizeUpper(t.Side),
 			"price":           t.Price,
 			"qty":             t.Quantity,
-			"realized_pnl":    t.RealizedPnl,
+			"realized_pnl":    realizedPnl,
 			"fee":             fee,
 			"fee_coin":        strings.TrimSpace(t.CommissionAsset),
 			"ts":              tsMs,
 			"created_at":      now,
 			"updated_at":      now,
 		})
+
+		// collect unique keys for run-session refresh
+		if uid > 0 && rid > 0 {
+			k := g.NewVar(uid).String() + ":" + g.NewVar(rid).String()
+			if _, ok := rsKeys[k]; !ok {
+				rsKeys[k] = &rsKey{UserId: uid, RobotId: rid}
+			}
+		}
 	}
 
 	if len(data) == 0 {
@@ -212,6 +372,16 @@ func upsertTradeFillsFromTrades(ctx context.Context, apiConfigId int64, exchange
 	_, err = dao.TradingTradeFill.Ctx(ctx).Data(data).Save()
 	if err != nil {
 		return 0, matched, gerror.Wrap(err, "save trading_trade_fill failed")
+		}
+	}
+
+	// 触发 run_session 汇总写回（异步 + 去抖）
+	if len(rsKeys) > 0 {
+		for _, k := range rsKeys {
+			if k == nil {
+				continue
+			}
+			triggerRunSessionRefreshByTradeFill(ctx, k.UserId, k.RobotId)
 		}
 	}
 	return len(data), matched, nil

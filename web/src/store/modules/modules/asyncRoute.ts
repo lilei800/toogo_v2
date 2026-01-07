@@ -31,7 +31,7 @@ export interface IAsyncRouteState {
 function filter<T = any>(
   tree: T[],
   func: (n: T) => boolean,
-  config: Partial<TreeHelperConfig> = {}
+  config: Partial<TreeHelperConfig> = {},
 ): T[] {
   config = getConfig(config);
   const children = config.children as string;

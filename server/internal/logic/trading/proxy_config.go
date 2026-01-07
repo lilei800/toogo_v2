@@ -43,8 +43,9 @@ func (s *proxyConfigImpl) Get(ctx context.Context, in *input.TradingProxyConfigG
 	if config == nil {
 		out = &input.TradingProxyConfigModel{
 			Enabled:      0,
-			ProxyType:    "http",            // HTTP代理已验证可用，使用HTTP作为默认
-			ProxyAddress: "127.0.0.1:33210", // HTTP代理端口（已验证可用）
+			// 适配常见本机代理默认端口（例如 v2rayN 默认 SOCKS5=10808）
+			ProxyType:    "socks5",
+			ProxyAddress: "127.0.0.1:10808",
 			AuthEnabled:  0,
 		}
 		return

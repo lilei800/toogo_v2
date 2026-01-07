@@ -65,13 +65,28 @@ func (s *sAdminNotice) Edit(ctx context.Context, in *adminin.NoticeEditInp) (err
 		return
 	}
 
-	if in.Type == consts.NoticeTypeLetter && len(in.Receiver) == 0 {
-		err = gerror.New("私信类型必须选择接收人")
+	receiverRequired := func(t int64) bool {
+		switch t {
+		case consts.NoticeTypeLetter,
+			consts.NoticeTypeFinance,
+			consts.NoticeTypeOrder,
+			consts.NoticeTypeCommission,
+			consts.NoticeTypePromotion,
+			consts.NoticeTypeTicket,
+			consts.NoticeTypeCustomerService:
+			return true
+		default:
+			return false
+		}
+	}
+
+	if receiverRequired(in.Type) && len(in.Receiver) == 0 {
+		err = gerror.New("该消息类型必须选择接收人")
 		return
 	}
 
 	// 检查选项接收人是否合法
-	if in.Type == consts.NoticeTypeLetter {
+	if receiverRequired(in.Type) {
 		count, _ := dao.AdminMember.Ctx(ctx).Handler(handler.FilterAuthWithField("id")).WhereIn("id", in.Receiver).Count()
 		if count != len(in.Receiver) {
 			err = gerror.New("接收人不合法")
@@ -106,7 +121,7 @@ func (s *sAdminNotice) Edit(ctx context.Context, in *adminin.NoticeEditInp) (err
 		Data:  in,
 	}
 	simple.SafeGo(ctx, func(ctx context.Context) {
-		if in.Type == consts.NoticeTypeLetter {
+		if receiverRequired(in.Type) {
 			for _, receiverId := range in.Receiver {
 				websocket.SendToUser(receiverId, response)
 			}
@@ -364,24 +379,54 @@ func (s *sAdminNotice) UnreadCount(ctx context.Context, in *adminin.NoticeUnread
 	res.NotifyCount = stat(consts.NoticeTypeNotify)
 	res.NoticeCount = stat(consts.NoticeTypeNotice)
 	res.LetterCount = stat(consts.NoticeTypeLetter)
+	res.FinanceCount = stat(consts.NoticeTypeFinance)
+	res.OrderCount = stat(consts.NoticeTypeOrder)
+	res.CommissionCount = stat(consts.NoticeTypeCommission)
+	res.PromotionCount = stat(consts.NoticeTypePromotion)
+	res.TicketCount = stat(consts.NoticeTypeTicket)
+	res.CustomerServiceCount = stat(consts.NoticeTypeCustomerService)
 	return
 }
 
 // messageIds 获取我的消息所有的消息ID
 func (s *sAdminNotice) messageIds(ctx context.Context, memberId int64) (ids []int64, err error) {
-	columns, err := s.Model(ctx, &handler.Option{FilterAuth: false}).
+	// 1) 广播类：通知/公告
+	broadcastArr, err := s.Model(ctx, &handler.Option{FilterAuth: false}).
 		Fields(dao.AdminNotice.Columns().Id).
 		Where(dao.AdminNotice.Columns().Status, consts.StatusEnabled).
-		Where(
-			s.Model(ctx, &handler.Option{FilterAuth: false}).Builder().WhereIn("type", []int{consts.NoticeTypeNotify, consts.NoticeTypeNotice}).
-				WhereOr(s.Model(ctx, &handler.Option{FilterAuth: false}).Builder().Where("type", consts.NoticeTypeLetter)),
-		).Array()
+		WhereIn(dao.AdminNotice.Columns().Type, []int64{consts.NoticeTypeNotify, consts.NoticeTypeNotice}).
+		Array()
 	if err != nil {
-		err = gerror.Wrap(err, "获取我的消息失败！")
-		return
+		return nil, gerror.Wrap(err, "获取我的消息失败！")
 	}
 
-	ids = g.NewVar(columns).Int64s()
+	// 2) 定向类：receiver 包含 memberId（PostgreSQL JSONB）
+	targetedTypes := []int64{
+		consts.NoticeTypeLetter,
+		consts.NoticeTypeFinance,
+		consts.NoticeTypeOrder,
+		consts.NoticeTypeCommission,
+		consts.NoticeTypePromotion,
+		consts.NoticeTypeTicket,
+		consts.NoticeTypeCustomerService,
+	}
+
+	targetedModel := s.Model(ctx, &handler.Option{FilterAuth: false}).
+		Fields(dao.AdminNotice.Columns().Id).
+		Where(dao.AdminNotice.Columns().Status, consts.StatusEnabled).
+		WhereIn(dao.AdminNotice.Columns().Type, targetedTypes)
+
+	// receiver @> '[memberId]'::jsonb
+	// 说明：receiver 存储为 JSONB 数组，如 [1,2,3]
+	targetedModel = targetedModel.Where(fmt.Sprintf("%s @> ?::jsonb", dao.AdminNotice.Columns().Receiver), fmt.Sprintf("[%d]", memberId))
+
+	targetedArr, err := targetedModel.Array()
+	if err != nil {
+		return nil, gerror.Wrap(err, "获取我的消息失败！")
+	}
+
+	ids = append(ids, g.NewVar(broadcastArr).Int64s()...)
+	ids = append(ids, g.NewVar(targetedArr).Int64s()...)
 	return
 }
 

@@ -21,6 +21,8 @@ func (c *cStrategyGroup) List(ctx context.Context, req *trading.StrategyGroupLis
 		Exchange:   req.Exchange,
 		Symbol:     req.Symbol,
 		IsOfficial: req.IsOfficial,
+		NonPersonal: req.NonPersonal,
+		IsActive:   req.IsActive,
 	})
 	if err != nil {
 		return nil, err
@@ -44,6 +46,10 @@ func (c *cStrategyGroup) Create(ctx context.Context, req *trading.StrategyGroupC
 		MarginMode:  req.MarginMode,
 		Description: req.Description,
 		Sort:        req.Sort,
+		IsOfficial: req.IsOfficial,
+		UserId:     req.UserId,
+		IsActive:   req.IsActive,
+		IsVisible:  req.IsVisible,
 	})
 	if err != nil {
 		return nil, err
@@ -64,6 +70,8 @@ func (c *cStrategyGroup) Update(ctx context.Context, req *trading.StrategyGroupU
 		Description: req.Description,
 		Sort:        req.Sort,
 		IsVisible:   req.IsVisible,
+		IsOfficial:  req.IsOfficial,
+		IsActive:    req.IsActive,
 		Confirmed:   req.Confirmed,
 	})
 	if err != nil {
@@ -107,6 +115,16 @@ func (c *cStrategyGroup) CopyFromOfficial(ctx context.Context, req *trading.Stra
 	res = &trading.StrategyGroupCopyRes{
 		Id: groupId,
 	}
+	return
+}
+
+// Clone 复制策略组（含策略模板）
+func (c *cStrategyGroup) Clone(ctx context.Context, req *trading.StrategyGroupCloneReq) (res *trading.StrategyGroupCloneRes, err error) {
+	newId, err := toogo.NewStrategyGroupService().Clone(ctx, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	res = &trading.StrategyGroupCloneRes{Id: newId}
 	return
 }
 

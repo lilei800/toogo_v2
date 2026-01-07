@@ -74,11 +74,11 @@ export const columns = [
                       },
                       {
                         default: () => column.option.name?.substring(0, 1) as string,
-                      }
+                      },
                     ),
               default: () => column.option.name,
             }),
-        }
+        },
       );
     },
     width: 180,

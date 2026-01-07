@@ -1,7 +1,7 @@
 <template>
   <div class="robot-page">
     <!-- 统计概览 -->
-    <n-grid cols="2 s:3 m:3 l:5 xl:5 2xl:5" :x-gap="8" :y-gap="8" responsive="screen" class="mb-2">
+    <n-grid cols="2 s:2 m:2 l:4 xl:4 2xl:4" :x-gap="8" :y-gap="8" responsive="screen" class="mb-2">
       <n-gi>
         <n-card :bordered="false" size="small" content-style="padding: 8px 12px;">
           <n-statistic label="总机器人" :value="total">
@@ -18,10 +18,10 @@
       </n-gi>
       <n-gi>
         <n-card :bordered="false" size="small" content-style="padding: 8px 12px;">
-          <n-statistic label="今日盈亏">
+          <n-statistic label="今日净盈亏">
             <template #default>
-              <n-text :type="todayPnl >= 0 ? 'success' : 'error'" strong>
-                {{ todayPnl >= 0 ? '+' : '' }}{{ todayPnl.toFixed(2) }}
+              <n-text :type="todayNetPnl >= 0 ? 'success' : 'error'" strong>
+                {{ todayNetPnl >= 0 ? '+' : '' }}{{ todayNetPnl.toFixed(2) }}
               </n-text>
             </template>
           </n-statistic>
@@ -29,45 +29,87 @@
       </n-gi>
       <n-gi>
         <n-card :bordered="false" size="small" content-style="padding: 8px 12px;">
-          <n-statistic label="累计盈亏">
+          <n-statistic label="累计净盈亏">
             <template #default>
-              <n-text :type="totalPnl >= 0 ? 'success' : 'error'" strong>
-                {{ totalPnl >= 0 ? '+' : '' }}{{ totalPnl.toFixed(2) }}
+              <n-text :type="totalNetPnl >= 0 ? 'success' : 'error'" strong>
+                {{ totalNetPnl >= 0 ? '+' : '' }}{{ totalNetPnl.toFixed(2) }}
               </n-text>
             </template>
-          </n-statistic>
-        </n-card>
-      </n-gi>
-      <n-gi>
-        <n-card :bordered="false" size="small" content-style="padding: 8px 12px;">
-          <n-statistic label="消耗算力" :value="totalPower.toFixed(2)">
-            <template #prefix><n-icon :component="ThunderboltOutlined" /></template>
           </n-statistic>
         </n-card>
       </n-gi>
     </n-grid>
 
     <!-- 操作栏 -->
-    <n-card :bordered="false" size="small" class="mb-3">
-      <n-space justify="space-between" align="center">
-        <n-space align="center">
-          <n-select v-model:value="searchParams.status" :options="statusOptions" placeholder="状态筛选" style="width: 120px" clearable size="small" />
-          <n-select v-model:value="searchParams.platform" :options="platformOptions" placeholder="平台筛选" style="width: 120px" clearable size="small" />
-          <n-button size="small" @click="loadData">
+    <n-card :bordered="false" size="small" class="mb-3 filter-toolbar-card">
+      <n-space justify="space-between" align="center" :wrap="false" :size="16">
+        <!-- 左侧筛选区 -->
+        <n-space align="center" :size="12" :wrap="false">
+          <n-tag :bordered="false" size="small" style="font-weight: 600;">
+            筛选条件
+          </n-tag>
+          <n-select 
+            v-model:value="searchParams.status" 
+            :options="statusOptions" 
+            placeholder="选择状态" 
+            style="min-width: 140px"
+            clearable 
+            size="small"
+            :consistent-menu-width="false"
+            @update:value="loadData"
+          />
+          <n-select 
+            v-model:value="searchParams.platform" 
+            :options="platformOptions" 
+            placeholder="选择交易所" 
+            style="min-width: 140px"
+            clearable 
+            size="small"
+            :consistent-menu-width="false"
+            @update:value="loadData"
+          />
+          <n-button size="small" secondary @click="loadData">
             <template #icon><n-icon :component="ReloadOutlined" /></template>
             刷新
           </n-button>
         </n-space>
-        <n-button type="primary" @click="router.push('/toogo/robot/create')">
-          <template #icon><n-icon :component="PlusOutlined" /></template>
-          创建机器人
-        </n-button>
+        
+        <!-- 右侧操作区 -->
+        <n-space align="center" :size="12" :wrap="false">
+          <n-tag :bordered="false" size="small" style="font-weight: 600;">
+            视图模式
+          </n-tag>
+          <n-radio-group v-model:value="robotListViewMode" size="small" @update:value="persistRobotListViewMode">
+            <n-radio-button value="card">卡片</n-radio-button>
+            <n-radio-button value="table">列表</n-radio-button>
+          </n-radio-group>
+          <n-divider vertical />
+          <n-button type="primary" size="small" @click="router.push('/toogo/robot/create')">
+            <template #icon><n-icon :component="PlusOutlined" /></template>
+            创建机器人
+          </n-button>
+        </n-space>
       </n-space>
     </n-card>
 
     <!-- 机器人列表 -->
-    <n-grid cols="1 s:1 m:2 l:2 xl:2 2xl:3" :x-gap="16" :y-gap="16" responsive="screen" v-if="robotList.length > 0">
-      <n-gi v-for="robot in robotList" :key="robot.id">
+    <template v-if="robotList.length > 0">
+      <!-- 列表视图 -->
+      <n-card v-if="robotListViewMode === 'table'" :bordered="false" size="small" class="mb-3 robot-list-table-card">
+        <n-data-table
+          :columns="robotTableColumns"
+          :data="robotList"
+          :loading="loading"
+          :row-key="(row) => row.id"
+          size="medium"
+          striped
+          class="robot-list-table"
+        />
+      </n-card>
+
+      <!-- 卡片视图（原样保留） -->
+      <n-grid v-else cols="1 s:1 m:2 l:2 xl:2 2xl:3" :x-gap="16" :y-gap="16" responsive="screen">
+        <n-gi v-for="robot in robotList" :key="robot.id">
         <n-card 
           class="robot-card" 
           :class="{ 'running': robot.status === 2 }" 
@@ -115,120 +157,23 @@
                 </div>
                 <div class="stat-divider"></div>
                 <div class="stat-item">
-                  <span class="stat-label">算力</span>
-                  <span class="stat-value warning">{{ walletPowerMap[robot.userId]?.toFixed(2) || '--' }}</span>
-                </div>
-              </div>
-
-              <n-divider style="margin: 12px 0" />
-
-              <!-- 策略参数 -->
-              <div class="strategy-params-container">
-                <!-- 警告提示：使用后备值 -->
-                <n-alert v-if="getConfigError(robot.id)" type="warning" size="small" style="margin-bottom: 8px" :show-icon="true">
-                  <template #header>
-                    <n-space align="center" :size="4">
-                      <n-icon :component="WarningOutlined" />
-                      <span>策略模板加载失败，使用数据库静态值</span>
-                    </n-space>
-                  </template>
-                  {{ getConfigError(robot.id) }}
-                </n-alert>
-                
-                <div class="param-text-item">
-                  <span class="label">窗口:</span>
-                  <span class="value highlight">{{ formatWindowTime(analysisData[robot.id]?.config?.timeWindow || analysisData[robot.id]?.signal?.strategyWindow) }}</span>
-                </div>
-                <div class="param-text-item">
-                  <span class="label">波动:</span>
-                  <span class="value highlight">{{ (analysisData[robot.id]?.config?.threshold || analysisData[robot.id]?.signal?.strategyThreshold)?.toFixed(1) || '--' }}U</span>
-                </div>
-                <div class="param-text-item">
-                  <span class="label">杠杆:</span>
-                  <span class="value">
-                    {{ getRobotLeverage(robot.id) > 0 ? `${getRobotLeverage(robot.id)}x` : '--' }}
+                  <span class="stat-label">净盈亏</span>
+                  <span
+                    class="stat-value"
+                    :class="getRunningSessionNetPnl(robot.id) === null ? '' : (Number(getRunningSessionNetPnl(robot.id)) >= 0 ? 'success' : 'error')"
+                  >
+                    {{
+                      getRunningSessionNetPnl(robot.id) === null
+                        ? '--'
+                        : ((Number(getRunningSessionNetPnl(robot.id)) >= 0 ? '+' : '') + Number(getRunningSessionNetPnl(robot.id)).toFixed(6))
+                    }}
                   </span>
                 </div>
-                <div class="param-text-item">
-                  <span class="label">保证金:</span>
-                  <span class="value">
-                    {{ getRobotMarginPercent(robot.id) > 0 ? `${getRobotMarginPercent(robot.id).toFixed(0)}%` : '--' }}
-                  </span>
+                <div class="stat-divider"></div>
+                <div class="stat-item">
+                  <span class="stat-label">运行</span>
+                  <span class="stat-value">{{ formatRuntime(getRobotRuntimeSeconds(robot)) }}</span>
                 </div>
-                <div class="param-text-item">
-                  <span class="label">止损:</span>
-                  <span class="value error">
-                    {{ getRobotStopLossPercent(robot.id) > 0 ? `${getRobotStopLossPercent(robot.id).toFixed(1)}%` : '--' }}
-                  </span>
-                </div>
-                <div class="param-text-item">
-                  <span class="label">启动止盈:</span>
-                  <span class="value success">
-                    {{ getRobotAutoStartRetreat(robot.id) > 0 ? `${getRobotAutoStartRetreat(robot.id).toFixed(1)}%` : '--' }}
-                  </span>
-                </div>
-                <div class="param-text-item">
-                  <span class="label">止盈回撤:</span>
-                  <span class="value success">
-                    {{ getRobotProfitRetreat(robot.id) > 0 ? `${getRobotProfitRetreat(robot.id).toFixed(1)}%` : '--' }}
-                  </span>
-                </div>
-                <div class="param-text-item">
-                  <span class="label">运行:</span>
-                  <span class="value">{{ formatRuntime(robot.runtimeSeconds || analysisData[robot.id]?.config?.runtimeSeconds) }}</span>
-                </div>
-              </div>
-
-
-              <n-divider style="margin: 12px 0" />
-              
-              <!-- 多周期市场状态实时播报（新算法 + 平滑机制，默认折叠） -->
-              <div v-if="analysisData[robot.id]?.marketStateRealtime" class="market-realtime-panel">
-                <n-space justify="space-between" align="center">
-                  <n-space align="center" :size="8">
-                    <n-button text size="tiny" @click="toggleMarketRealtime(robot.id)">
-                      {{ marketRealtimeExpanded[robot.id] ? '收起' : '展开' }} 多周期播报
-                    </n-button>
-                    <n-tag
-                      size="tiny"
-                      :bordered="false"
-                      :type="getMarketStateType(analysisData[robot.id]?.marketStateRealtime?.state)"
-                    >
-                      {{ formatMarketState(analysisData[robot.id]?.marketStateRealtime?.state) }}
-                    </n-tag>
-                    <n-tag type="warning" size="tiny" :bordered="false" style="opacity: 0.7;">
-                      {{ formatRiskPref(analysisData[robot.id]?.config?.riskPreference) }}
-                    </n-tag>
-                    <n-text depth="3" style="font-size: 12px">
-                      投票占比 {{ Math.round((analysisData[robot.id]?.marketStateRealtime?.voteRatio || 0) * 100) }}%
-                    </n-text>
-                  </n-space>
-                  <n-text depth="3" style="font-size: 11px">
-                    {{ analysisData[robot.id]?.marketStateRealtime?.updatedAt }}
-                  </n-text>
-                </n-space>
-
-                <n-collapse-transition :show="!!marketRealtimeExpanded[robot.id]">
-                  <div style="margin-top: 8px">
-                    <!-- 状态图例 -->
-                    <n-text depth="3" style="font-size: 11px; display: block; margin-bottom: 6px;">
-                      低波动＝波动不足 ｜ 震荡＝波动足但不单边 ｜ 高波动＝波动大但乱扫 ｜ 趋势＝波动足且单边
-                    </n-text>
-                    <!-- 各周期状态 -->
-                    <n-space :size="6" style="flex-wrap: wrap;">
-                      <n-tag
-                        v-for="tf in (analysisData[robot.id]?.marketStateRealtime?.timeframes || [])"
-                        :key="tf.interval"
-                    size="small"
-                        :bordered="false"
-                        :type="getMarketStateType(tf.smoothedState)"
-                      >
-                        {{ tf.interval }} {{ formatMarketState(tf.smoothedState) }}
-                        <n-text depth="3" style="font-size: 10px; margin-left: 4px;">V{{ (tf.v ?? 0).toFixed(1) }} D{{ (tf.d ?? 0).toFixed(1) }}</n-text>
-                            </n-tag>
-              </n-space>
-                  </div>
-                </n-collapse-transition>
               </div>
             </div>
 
@@ -299,7 +244,7 @@
                   <!-- 当前价格 -->
                   <div class="current-price-block">
                     <span class="price-value" :class="getPriceChangeClass(robot.id)">
-                      {{ formatPrice(tickerData[robot.id]?.lastPrice || analysisData[robot.id]?.signal?.currentPrice) }}
+                      {{ formatPrice(tickerData[robot.id]?.markPrice || tickerData[robot.id]?.lastPrice || analysisData[robot.id]?.signal?.currentPrice) }}
                     </span>
                     <span class="price-change" :class="getPriceChangeClass(robot.id)">
                       {{ formatPriceChange(tickerData[robot.id]?.change24h) }}
@@ -336,19 +281,180 @@
                     <!-- 实时价点 + 标签 -->
                     <circle :cx="getCurrentPriceX(analysisData[robot.id])" :cy="getCurrentPriceY(analysisData[robot.id])" r="5" class="point-current" />
                     <text :x="getCurrentPriceX(analysisData[robot.id]) + 8" :y="getCurrentPriceY(analysisData[robot.id]) + 4" class="price-label price-label-current">
-                      {{ formatPrice(analysisData[robot.id]?.signal?.currentPrice || tickerData[robot.id]?.lastPrice) }}
+                      {{ formatPrice(analysisData[robot.id]?.signal?.currentPrice || tickerData[robot.id]?.markPrice || tickerData[robot.id]?.lastPrice) }}
                     </text>
                   </svg>
                   <div class="chart-labels">
                     <span class="label-high">高 {{ formatPrice(analysisData[robot.id]?.signal?.windowMaxPrice) }}</span>
                     <span class="label-low">低 {{ formatPrice(analysisData[robot.id]?.signal?.windowMinPrice) }}</span>
+              </div>
+
+                  <!-- 信号说明（移到图表下方，去掉背景色和边框） -->
+              <div v-if="analysisData[robot.id]?.signal?.reason" class="signal-reason">
+                {{ analysisData[robot.id]?.signal?.reason }}
                   </div>
                 </div>
               </div>
 
-              <!-- 信号说明 -->
-              <div v-if="analysisData[robot.id]?.signal?.reason" class="signal-reason">
-                {{ analysisData[robot.id]?.signal?.reason }}
+              <!-- 运行中：窗口/波动/杠杆等整行 + 多周期播报（迁移到预警记录上方） -->
+              <div class="signal-prelogs-panels">
+                <!-- 市场状态与风险偏好映射（默认折叠，展开可修改；参考创建机器人页） -->
+                <n-collapse
+                  :expanded-names="riskMappingExpandedNames[robot.id] ?? riskMappingExpandedEmpty"
+                  style="margin: 0 0 8px 0;"
+                  @update:expanded-names="(names) => onRiskMappingExpanded(robot.id, names as any)"
+                >
+                  <n-collapse-item name="marketMapping">
+                    <template #header>
+                      <span style="font-size: 12px; font-weight: 500">风险偏好</span>
+                    </template>
+                    <template #header-extra>
+                      <n-space :size="4">
+                        <n-tag
+                          v-for="market in marketStateMapping"
+                          :key="market.key"
+                          :type="market.tagType"
+                          size="small"
+                          :bordered="false"
+                          class="risk-mapping-tag"
+                        >
+                          {{ market.label.replace('市场', '') }}→{{ getRiskLabel(marketRiskMappingForm[robot.id]?.[market.key]) }}
+                        </n-tag>
+                      </n-space>
+                    </template>
+
+                    <div style="padding: 6px 0 2px;">
+                      <n-text depth="3" style="font-size: 12px; margin-bottom: 10px; display: block;">
+                        机器人运行时会根据市场状态自动选择对应的风险偏好，并据此匹配策略模板
+                      </n-text>
+
+                      <n-spin :show="!!riskMappingLoading[robot.id]">
+                        <n-grid :cols="4" :x-gap="12" :y-gap="12">
+                          <n-gi v-for="market in marketStateMapping" :key="market.key">
+                            <div class="mapping-item-card">
+                              <div class="mapping-header">
+                                <n-tag :type="market.tagType" size="small">{{ market.label }}</n-tag>
+                              </div>
+                              <div class="mapping-arrow">↓</div>
+                              <n-select
+                                v-model:value="marketRiskMappingForm[robot.id][market.key]"
+                                :options="riskPreferenceSelectOptions"
+                                size="small"
+                                style="width: 100%"
+                              />
+                            </div>
+                          </n-gi>
+                        </n-grid>
+
+                        <div style="display: flex; justify-content: flex-end; margin-top: 10px;">
+                          <n-button
+                            size="small"
+                            type="primary"
+                            :loading="!!riskMappingSaving[robot.id]"
+                            @click="saveMarketRiskMapping(robot.id)"
+                          >
+                            保存映射
+                          </n-button>
+                        </div>
+                      </n-spin>
+                    </div>
+                  </n-collapse-item>
+                </n-collapse>
+
+                <!-- 多周期市场状态实时播报 -->
+                <div v-if="analysisData[robot.id]?.marketStateRealtime" class="market-realtime-panel" style="margin-top: 0;">
+                  <n-space justify="space-between" align="center">
+                    <n-space align="center" :size="8">
+                      <n-button text size="tiny" @click="toggleMarketRealtime(robot.id)">
+                        {{ marketRealtimeExpanded[robot.id] ? '收起' : '展开' }} 多周期播报
+                      </n-button>
+                      <n-tag
+                        size="tiny"
+                        :bordered="false"
+                        :type="getMarketStateType(analysisData[robot.id]?.marketStateRealtime?.state)"
+                      >
+                        {{ formatMarketState(analysisData[robot.id]?.marketStateRealtime?.state) }}
+                      </n-tag>
+                      <n-tag type="warning" size="tiny" :bordered="false" style="opacity: 0.7;">
+                        {{ formatRiskPref(analysisData[robot.id]?.config?.riskPreference) }}
+                      </n-tag>
+                      <n-text depth="3" style="font-size: 12px">
+                        投票占比 {{ Math.round((analysisData[robot.id]?.marketStateRealtime?.voteRatio || 0) * 100) }}%
+                      </n-text>
+                    </n-space>
+                    <n-text depth="3" style="font-size: 11px">
+                      {{ analysisData[robot.id]?.marketStateRealtime?.updatedAt }}
+                    </n-text>
+                  </n-space>
+
+                  <n-collapse-transition :show="!!marketRealtimeExpanded[robot.id]">
+                    <div style="margin-top: 8px">
+                      <n-text depth="3" style="font-size: 11px; display: block; margin-bottom: 6px;">
+                        趋势：价格一直往一个方向走（涨或跌）
+                        <br />
+                        震荡：价格上下波动，但没有明显方向
+                        <br />
+                        高波动：价格来回跑得很快、很猛
+                        <br />
+                        低波动：价格动得很慢，很磨人
+                      </n-text>
+                      <n-space :size="6" style="flex-wrap: wrap;">
+                        <n-tag
+                          v-for="tf in (analysisData[robot.id]?.marketStateRealtime?.timeframes || [])"
+                          :key="tf.interval"
+                          size="small"
+                          :bordered="false"
+                          :type="getMarketStateType(tf.smoothedState)"
+                        >
+                          {{ tf.interval }} {{ formatMarketState(tf.smoothedState) }}
+                          <n-text depth="3" style="font-size: 10px; margin-left: 4px;">V{{ (tf.v ?? 0).toFixed(1) }} D{{ (tf.d ?? 0).toFixed(1) }}</n-text>
+                        </n-tag>
+                      </n-space>
+                    </div>
+                  </n-collapse-transition>
+                </div>
+
+                <!-- 策略参数（窗口/波动/杠杆等整行）：放在预警记录行正上方 -->
+                <div class="strategy-params-container" style="margin-top: 10px;">
+                  <n-alert v-if="getConfigError(robot.id)" type="warning" size="small" style="margin-bottom: 8px" :show-icon="true">
+                    <template #header>
+                      <n-space align="center" :size="4">
+                        <n-icon :component="WarningOutlined" />
+                        <span>策略模板加载失败，使用数据库静态值</span>
+                      </n-space>
+                    </template>
+                    {{ getConfigError(robot.id) }}
+                  </n-alert>
+
+                  <div class="param-text-item">
+                    <span class="label">窗口:</span>
+                    <span class="value highlight">{{ formatWindowTime(analysisData[robot.id]?.config?.timeWindow || analysisData[robot.id]?.signal?.strategyWindow) }}</span>
+                  </div>
+                  <div class="param-text-item">
+                    <span class="label">波动:</span>
+                    <span class="value highlight">{{ (analysisData[robot.id]?.config?.threshold || analysisData[robot.id]?.signal?.strategyThreshold)?.toFixed(1) || '--' }}U</span>
+                  </div>
+                  <div class="param-text-item">
+                    <span class="label">杠杆:</span>
+                    <span class="value">{{ getRobotLeverage(robot.id) > 0 ? `${getRobotLeverage(robot.id)}x` : '--' }}</span>
+                  </div>
+                  <div class="param-text-item">
+                    <span class="label">保证金:</span>
+                    <span class="value">{{ getRobotMarginPercent(robot.id) > 0 ? `${getRobotMarginPercent(robot.id).toFixed(0)}%` : '--' }}</span>
+                  </div>
+                  <div class="param-text-item">
+                    <span class="label">止损:</span>
+                    <span class="value error">{{ getRobotStopLossPercent(robot.id) > 0 ? `${getRobotStopLossPercent(robot.id).toFixed(1)}%` : '--' }}</span>
+                  </div>
+                  <div class="param-text-item">
+                    <span class="label">启动止盈:</span>
+                    <span class="value success">{{ getRobotAutoStartRetreat(robot.id) > 0 ? `${getRobotAutoStartRetreat(robot.id).toFixed(1)}%` : '--' }}</span>
+                  </div>
+                  <div class="param-text-item">
+                    <span class="label">止盈回撤:</span>
+                    <span class="value success">{{ getRobotProfitRetreat(robot.id) > 0 ? `${getRobotProfitRetreat(robot.id).toFixed(1)}%` : '--' }}</span>
+                  </div>
+                </div>
               </div>
 
               <!-- 预警记录（可展开） -->
@@ -445,7 +551,7 @@
               <!-- 交易执行日志（按需加载：展开时才请求，节省资源） -->
               <n-collapse
                 :default-expanded-names="[]"
-                :expanded-names="executionExpandedNames[robot.id] || []"
+                :expanded-names="executionExpandedNames[robot.id] ?? executionExpandedEmpty"
                 @update:expanded-names="(names) => onExecutionExpanded(robot.id, names)"
                 style="margin-top: 6px"
               >
@@ -453,16 +559,9 @@
                   <template #header>
                     <n-space align="center" :size="8">
                       <span style="font-size: 12px; font-weight: 500">订单日志 ({{ executionLogs[robot.id]?.length || 0 }})</span>
-                      <n-tag v-if="getLastFailedLog(robot.id)" type="error" size="small" :bordered="false">
-                        最近失败：{{ getLastFailedLog(robot.id)?.eventTypeLabel || '失败' }}
-                      </n-tag>
                     </n-space>
                   </template>
-                  <template #header-extra>
-                    <n-button text size="tiny" @click.stop="refreshExecutionLogs(robot.id)">
-                      <template #icon><n-icon :component="ReloadOutlined" /></template>
-                    </n-button>
-                  </template>
+                  <!-- header-extra 的“刷新”按钮会造成理解成本，且现在已自动预取/展开自动刷新，这里移除 -->
                   <n-space v-if="executionLogs[robot.id]?.length" align="center" justify="space-between" style="margin-bottom: 8px">
                     <n-space align="center" :size="10">
                       <n-switch v-model:value="executionOnlyFailed[robot.id]" size="small" />
@@ -472,9 +571,9 @@
                       {{ formatUpdateTime(executionLastLoadedAt[robot.id]) }}
                     </n-text>
                   </n-space>
-                  <div class="execution-logs-list" v-if="executionLogs[robot.id]?.length > 0">
+                  <div class="execution-logs-list" v-if="getExecutionLogsForRobot(robot.id).length > 0">
                     <n-card
-                      v-for="(log, idx) in getExecutionLogsForRobot(robot.id).slice(0, 20)"
+                      v-for="(log, idx) in getExecutionLogsForRobot(robot.id)"
                       :key="idx"
                       :bordered="false"
                       size="small"
@@ -671,6 +770,13 @@
                       </div>
                     </n-card>
                   </div>
+                  <!-- 原始有日志，但筛选后为空（例如开启“只看失败”但当前无失败记录） -->
+                  <n-empty
+                    v-else-if="executionLogs[robot.id]?.length > 0 && executionOnlyFailed[robot.id]"
+                    description="暂无失败订单日志"
+                    size="small"
+                    style="padding: 20px 0;"
+                  />
                   <n-empty v-else description="暂无订单日志" size="small" style="padding: 20px 0;" />
                 </n-collapse-item>
               </n-collapse>
@@ -691,7 +797,7 @@
                 </n-space>
                 <n-space align="center" :size="12">
                   <n-space align="center" :size="4">
-                    <span style="font-size: 11px; color: var(--text-color-3); opacity: 0.7;">自动下单</span>
+                    <span style="font: var(--font-small); color: var(--text-color-3); opacity: 0.75;">自动下单</span>
                     <n-switch 
                       :value="analysisData[robot.id]?.config?.autoTradeEnabled || false" 
                       @update:value="(val) => toggleAutoTrade(robot, val)"
@@ -700,7 +806,7 @@
                     />
                   </n-space>
                   <n-space align="center" :size="4">
-                    <span style="font-size: 11px; color: var(--text-color-3); opacity: 0.7;">双向开单</span>
+                    <span style="font: var(--font-small); color: var(--text-color-3); opacity: 0.75;">双向开单</span>
                     <n-switch 
                       :value="analysisData[robot.id]?.config?.dualSidePosition !== false" 
                       @update:value="(val) => toggleDualSidePosition(robot, val)"
@@ -709,10 +815,19 @@
                     />
                   </n-space>
                   <n-space align="center" :size="4">
-                    <span style="font-size: 11px; color: var(--text-color-3); opacity: 0.7;">自动平仓</span>
+                    <span style="font: var(--font-small); color: var(--text-color-3); opacity: 0.75;">自动平仓</span>
                     <n-switch 
                       :value="analysisData[robot.id]?.config?.autoCloseEnabled || false" 
                       @update:value="(val) => toggleAutoClose(robot, val)"
+                      size="small"
+                      class="tiny-switch"
+                    />
+                  </n-space>
+                  <n-space align="center" :size="4">
+                    <span style="font: var(--font-small); color: var(--text-color-3); opacity: 0.75;">锁定盈利</span>
+                    <n-switch
+                      :value="analysisData[robot.id]?.config?.profitLockEnabled !== false"
+                      @update:value="(val) => toggleProfitLock(robot, val)"
                       size="small"
                       class="tiny-switch"
                     />
@@ -724,7 +839,7 @@
                   <thead>
                     <tr>
                       <th class="col-info">交易信息</th>
-                      <th class="col-quantity">持仓数量</th>
+                      <th class="col-quantity">保证金/数量</th>
                       <th class="col-price">开仓价格</th>
                       <th class="col-price">市价</th>
                       <th class="col-pl">未实现盈亏</th>
@@ -738,50 +853,48 @@
                       <td class="col-info">
                         <div class="info-cell">
                           <div class="info-row-second">
-                            <span class="symbol-text">{{ pos.symbol }}</span>
-                          </div>
-                          <div class="info-row-middle">
                             <span :class="['side-tag-mini', pos.positionSide === 'LONG' ? 'long' : 'short']">
                               {{ pos.positionSide === 'LONG' ? '多' : '空' }}
                             </span>
+                          </div>
+                          <div class="info-row-middle">
                             <span :class="['margin-mode-tag', pos.marginType === 'crossed' ? 'crossed' : 'isolated']">
                               {{ pos.marginType === 'crossed' ? '全仓' : '逐仓' }}
                             </span>
-                          </div>
-                          <div class="info-row-margin">
-                            <span class="margin-info">
-                              {{ ((pos.margin && pos.margin > 0 ? pos.margin : pos.isolatedMargin) || 0) > 0
-                                ? (pos.margin && pos.margin > 0 ? pos.margin : pos.isolatedMargin).toFixed(2)
-                                : '--'
-                              }} USDT
+                            <span class="leverage-tag">
+                              杠杆 {{ (pos.leverage && Number(pos.leverage) > 0) ? (Number(pos.leverage) + 'x') : '--' }}
                             </span>
                           </div>
                           <div class="info-row-order" v-if="pos.orderId || pos.clientOrderId">
                             <div class="order-info-item" v-if="pos.orderId">
-                              <span class="order-label">订单ID:</span>
                               <span class="order-value">{{ pos.orderId }}</span>
                             </div>
                             <div class="order-info-item" v-if="pos.clientOrderId">
-                              <span class="order-label">客户端ID:</span>
                               <span class="order-value">{{ pos.clientOrderId }}</span>
                             </div>
                             <div class="order-info-item" v-if="pos.orderType">
-                              <span class="order-label">类型:</span>
                               <span class="order-value">{{ pos.orderType === 'MARKET' ? '市价' : pos.orderType === 'LIMIT' ? '限价' : pos.orderType }}</span>
                             </div>
                             <div class="order-info-item" v-if="pos.orderSide">
-                              <span class="order-label">方向:</span>
                               <span class="order-value">{{ pos.orderSide === 'BUY' ? '买入' : pos.orderSide === 'SELL' ? '卖出' : pos.orderSide }}</span>
                             </div>
                             <div class="order-info-item" v-if="pos.orderCreateTime">
-                              <span class="order-label">时间:</span>
                               <span class="order-value">{{ formatTime(pos.orderCreateTime) }}</span>
                             </div>
                           </div>
                         </div>
                       </td>
                       <td class="col-quantity">
-                        <span class="quantity-value">{{ Math.abs(pos.positionAmt).toFixed(4) }}</span>
+                        <div class="qty-cell">
+                          <span class="margin-in-qty">
+                            {{
+                              ((pos.margin && pos.margin > 0 ? pos.margin : pos.isolatedMargin) || 0) > 0
+                                ? (pos.margin && pos.margin > 0 ? pos.margin : pos.isolatedMargin).toFixed(2)
+                                : '--'
+                            }}
+                          </span>
+                          <span class="quantity-value">{{ Math.abs(pos.positionAmt).toFixed(4) }}</span>
+                        </div>
                       </td>
                       <td class="col-price">
                         <span class="price-value">{{ pos.entryPrice?.toFixed(2) || '--' }}</span>
@@ -801,7 +914,21 @@
                         <div class="monitor-cell">
                           <!-- ①止损进度：|未实现盈亏| / (保证金 × 止损%) 达到100%时平仓 -->
                           <div class="monitor-item">
-                            <div class="monitor-label" :title="'当前亏损: ' + Math.abs(pos.unrealizedPnl || 0).toFixed(2) + ' USDT / 止损阈值: ' + (((pos.stopLossPercent ?? null) !== null && Number(pos.stopLossPercent) > 0) ? ((pos.margin || 0) * (Number(pos.stopLossPercent) / 100)).toFixed(2) : (getRobotStopLossPercent(robot.id) !== null && getRobotStopLossPercent(robot.id) > 0 ? ((pos.margin || 0) * (getRobotStopLossPercent(robot.id) / 100)).toFixed(2) : '--')) + ' USDT'">
+                            <div class="monitor-label" :title="(() => {
+                              const unreal = Math.abs(Number(pos.unrealizedPnl || 0));
+                              const slp = ((pos.stopLossPercent ?? null) !== null && Number(pos.stopLossPercent) > 0)
+                                ? Number(pos.stopLossPercent)
+                                : getRobotStopLossPercent(robot.id);
+                              let m = (pos.margin && pos.margin > 0 ? pos.margin : pos.isolatedMargin) || 0;
+                              if (m <= 0) {
+                                const qty = Math.abs(Number(pos.positionAmt ?? pos.position_amount ?? pos.quantity ?? 0));
+                                const entry = Number(pos.entryPrice ?? pos.entry_price ?? 0);
+                                const lev = Number(pos.leverage ?? getRobotLeverage(robot.id) ?? 0);
+                                if (qty > 0 && entry > 0 && lev > 0) m = (qty * entry) / lev;
+                              }
+                              const threshold = (slp && slp > 0 && m > 0) ? (m * (slp / 100)).toFixed(2) : '--';
+                              return '当前亏损: ' + unreal.toFixed(2) + ' USDT / 止损阈值: ' + threshold + ' USDT';
+                            })()">
                               止损
                             </div>
                             <div class="progress-bar-container">
@@ -816,14 +943,14 @@
                               'text-warning': calcStopLossProgress(pos, robot) >= 80 && calcStopLossProgress(pos, robot) < 100
                             }">
                               <span>{{ calcStopLossProgress(pos, robot) >= 100 ? '⚠️100%' : calcStopLossProgress(pos, robot).toFixed(1) + '%' }}</span>
-                              <span style="color: #9ca3af; font-size: 9px; margin-left: 2px;">/{{ (pos.stopLossPercent ?? null) !== null && Number(pos.stopLossPercent) > 0 ? Number(pos.stopLossPercent).toFixed(1) + '%' : (getRobotStopLossPercent(robot.id) > 0 ? getRobotStopLossPercent(robot.id).toFixed(1) + '%' : '--') }}</span>
+                              <span style="color: #9ca3af; font: var(--font-tiny); margin-left: 2px;">/{{ (pos.stopLossPercent ?? null) !== null && Number(pos.stopLossPercent) > 0 ? Number(pos.stopLossPercent).toFixed(1) + '%' : (getRobotStopLossPercent(robot.id) > 0 ? getRobotStopLossPercent(robot.id).toFixed(1) + '%' : '--') }}</span>
                             </div>
                           </div>
-                          <!-- ②止盈回撤：(实时最高盈利金额 - 实时未实现盈亏) / 最高盈利金额 >= 设定的百分比时平仓 -->
+                          <!-- ②止盈：(实时最高盈利金额 - 实时未实现盈亏) / 最高盈利金额 >= 设定的百分比时平仓 -->
                           <!-- 默认100%绿色满条，启动后从100%往回撤 -->
                           <div class="monitor-item">
                             <div class="monitor-label" :title="getTakeProfitRetreatSwitch(robot.id, pos.symbol, pos.positionSide, pos) ? ('回撤: ' + (((pos.maxProfitReached || 0) - (pos.unrealizedPnl || 0)) / (pos.maxProfitReached || 1) * 100).toFixed(1) + '% / 设定: ' + (((pos.profitRetreatPercent ?? null) !== null && Number(pos.profitRetreatPercent) > 0) ? Number(pos.profitRetreatPercent) + '%' : (getRobotProfitRetreat(robot.id) !== null && getRobotProfitRetreat(robot.id) > 0 ? getRobotProfitRetreat(robot.id) + '%' : '--'))) : '未启动止盈，默认100%'">
-                              止盈回撤
+                              回撤止盈
                             </div>
                             <div class="progress-bar-container">
                               <div class="progress-bar progress-bar-success" 
@@ -836,16 +963,17 @@
                             <div class="monitor-value" style="font-weight: normal;">
                               <template v-if="!getTakeProfitRetreatSwitch(robot.id, pos.symbol, pos.positionSide, pos)">
                                 <span style="color: #22c55e;">100%</span>
-                                <span style="color: #9ca3af; font-size: 9px; margin-left: 2px;">/{{ (pos.profitRetreatPercent ?? null) !== null && Number(pos.profitRetreatPercent) > 0 ? Number(pos.profitRetreatPercent).toFixed(1) + '%' : (getRobotProfitRetreat(robot.id) > 0 ? getRobotProfitRetreat(robot.id).toFixed(1) + '%' : '--') }}</span>
+                                <span style="color: #9ca3af; font: var(--font-tiny); margin-left: 2px;">/{{ (pos.profitRetreatPercent ?? null) !== null && Number(pos.profitRetreatPercent) > 0 ? Number(pos.profitRetreatPercent).toFixed(1) + '%' : (getRobotProfitRetreat(robot.id) > 0 ? getRobotProfitRetreat(robot.id).toFixed(1) + '%' : '--') }}</span>
                               </template>
                               <template v-else>
                                 <span :style="{ color: calcProfitRetreatProgress(pos, robot) <= 20 ? '#ef4444' : (calcProfitRetreatProgress(pos, robot) <= 50 ? '#f59e0b' : '#22c55e') }">{{ calcProfitRetreatProgress(pos, robot) <= 0 ? '⚠️0%' : calcProfitRetreatProgress(pos, robot).toFixed(1) + '%' }}</span>
-                                <span style="color: #9ca3af; font-size: 9px; margin-left: 2px;">/{{ (pos.profitRetreatPercent ?? null) !== null && Number(pos.profitRetreatPercent) > 0 ? Number(pos.profitRetreatPercent).toFixed(1) + '%' : (getRobotProfitRetreat(robot.id) > 0 ? getRobotProfitRetreat(robot.id).toFixed(1) + '%' : '--') }}</span>
+                                <span style="color: #9ca3af; font: var(--font-tiny); margin-left: 2px;">/{{ (pos.profitRetreatPercent ?? null) !== null && Number(pos.profitRetreatPercent) > 0 ? Number(pos.profitRetreatPercent).toFixed(1) + '%' : (getRobotProfitRetreat(robot.id) > 0 ? getRobotProfitRetreat(robot.id).toFixed(1) + '%' : '--') }}</span>
                               </template>
                             </div>
                           </div>
                           <!-- ③启动止盈：未实现盈亏/保证金 达到设定%时开启止盈 -->
-                          <div class="monitor-item">
+                          <!-- 说明：一旦“止盈开关”已启动（不可关闭原则），这里不再随盈利回落显示“回退血条”，避免误导 -->
+                          <div v-if="!getTakeProfitRetreatSwitch(robot.id, pos.symbol, pos.positionSide, pos)" class="monitor-item">
                             <div class="monitor-label" :title="'盈利: ' + ((pos.unrealizedPnl || 0) / (pos.margin || 1) * 100).toFixed(1) + '% / 启动: ' + (((pos.autoStartRetreatPercent ?? null) !== null && Number(pos.autoStartRetreatPercent) > 0) ? Number(pos.autoStartRetreatPercent) + '%' : (getRobotAutoStartRetreat(robot.id) !== null && getRobotAutoStartRetreat(robot.id) > 0 ? getRobotAutoStartRetreat(robot.id) + '%' : '--'))">
                               启动止盈
                             </div>
@@ -860,18 +988,28 @@
                               'text-success': calcStartProfitProgress(pos, robot) >= 100,
                               'text-warning': calcStartProfitProgress(pos, robot) >= 80 && calcStartProfitProgress(pos, robot) < 100
                             }">
-                              <span>{{ calcStartProfitProgress(pos, robot) >= 100 ? '✓已启动' : calcStartProfitProgress(pos, robot).toFixed(1) + '%' }}</span>
-                              <span style="color: #9ca3af; font-size: 9px; margin-left: 2px;">/{{ (pos.autoStartRetreatPercent ?? null) !== null && Number(pos.autoStartRetreatPercent) > 0 ? Number(pos.autoStartRetreatPercent).toFixed(1) + '%' : (getRobotAutoStartRetreat(robot.id) > 0 ? getRobotAutoStartRetreat(robot.id).toFixed(1) + '%' : '--') }}</span>
+                              <span>{{ calcStartProfitProgress(pos, robot) >= 100 ? '✓已满足' : calcStartProfitProgress(pos, robot).toFixed(1) + '%' }}</span>
+                              <span style="color: #9ca3af; font: var(--font-tiny); margin-left: 2px;">/{{ (pos.autoStartRetreatPercent ?? null) !== null && Number(pos.autoStartRetreatPercent) > 0 ? Number(pos.autoStartRetreatPercent).toFixed(1) + '%' : (getRobotAutoStartRetreat(robot.id) > 0 ? getRobotAutoStartRetreat(robot.id).toFixed(1) + '%' : '--') }}</span>
                             </div>
                           </div>
-                          <!-- 启动止盈回撤开关 -->
+                          <div v-else class="monitor-item">
+                            <div class="monitor-label" title="止盈开关已启动（不可关闭），启动止盈条件不再回退显示">
+                              启动止盈
+                            </div>
+                            <div class="progress-bar-container">
+                              <div class="progress-bar" :style="{ width: '100%', backgroundColor: '#22c55e' }"></div>
+                            </div>
+                            <div class="monitor-value text-success">
+                              <span>✓已启动</span>
+                            </div>
+                          </div>
+                          <!-- 启动止盈开关（不可关闭原则：启用后直到平仓前不允许关闭） -->
                           <div class="monitor-item monitor-switch">
-                            <div class="monitor-label" style="width: 60px; min-width: 60px; font-size: 9px;">启动止盈回撤</div>
+                            <div class="monitor-label" style="width: 60px; min-width: 60px; font: var(--font-tiny);">启动止盈开关</div>
                             <div class="monitor-value" style="flex: 1; display: flex; align-items: center; justify-content: flex-end;">
                               <n-switch 
                                 :value="getTakeProfitRetreatSwitch(robot.id, pos.symbol, pos.positionSide, pos)"
-                                @update:value="(val) => setTakeProfitRetreatSwitch(robot.id, pos.symbol, pos.positionSide, val, pos)"
-                                :disabled="getTakeProfitRetreatSwitch(robot.id, pos.symbol, pos.positionSide, pos)"
+                                :disabled="true"
                                 size="small"
                                 style="--n-switch-width: 32px; --n-switch-height: 16px;"
                               />
@@ -879,13 +1017,13 @@
                           </div>
                           <!-- 最高盈利 -->
                           <div class="monitor-item monitor-max-profit">
-                            <div class="monitor-label" style="width: 52px; min-width: 52px; font-size: 0.7rem;">最高盈利</div>
-                            <div class="monitor-value" style="font-size: 0.7rem; font-weight: 600; flex: 1; text-align: right;">
+                            <div class="monitor-label" style="width: 52px; min-width: 52px; font: var(--font-small);">最高盈利</div>
+                            <div class="monitor-value" style="font: var(--font-small); font-weight: 500; flex: 1; text-align: right;">
                               <span v-if="pos.maxProfitReached > 0" style="color: #22c55e; font-weight: 600;">
                                 {{ pos.maxProfitReached.toFixed(4) }}
                               </span>
                               <span v-else style="color: var(--text-color-3);">--</span>
-                              <span v-if="pos.maxProfitReached > 0" style="font-size: 0.6rem;"> USDT</span>
+                              <span v-if="pos.maxProfitReached > 0" style="font: var(--font-tiny);"> USDT</span>
                             </div>
                           </div>
                         </div>
@@ -974,9 +1112,13 @@
                   <template #icon><n-icon :component="PauseCircleOutlined" /></template>
                   停止运行
                 </n-button>
-                <n-button v-else-if="robot.status === 3 || robot.status === 1" type="primary" size="small" @click="startRobot(robot)">
+                <n-button v-else-if="robot.status === 1" type="primary" size="small" @click="startRobot(robot)">
                   <template #icon><n-icon :component="PlayCircleOutlined" /></template>
                   启动运行
+                </n-button>
+                <n-button v-else-if="robot.status === 3" type="primary" size="small" @click="startRobot(robot)">
+                  <template #icon><n-icon :component="PlayCircleOutlined" /></template>
+                  重启
                 </n-button>
                 <!-- 定时启动倒计时 -->
                 <ScheduleCountdown 
@@ -1006,8 +1148,9 @@
             </n-space>
           </template>
         </n-card>
-      </n-gi>
-    </n-grid>
+        </n-gi>
+      </n-grid>
+    </template>
 
     <n-card v-else :bordered="false">
       <n-empty description="暂无机器人，创建一个开始自动交易吧！" size="large">
@@ -1345,9 +1488,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, h } from 'vue';
+import { ref, reactive, onMounted, onUnmounted, h, nextTick } from 'vue';
 import { useRouter } from 'vue-router';
-import { useMessage, useDialog, NTag, NButton, NSpace, NPopconfirm, NCollapseTransition } from 'naive-ui';
+import { useMessage, useDialog, NTag, NButton, NSpace, NPopconfirm, NCollapseTransition, NProgress } from 'naive-ui';
 import { ToogoRobotApi, ToogoExchangeApi, ToogoStrategyApi, ToogoWalletApi, ToogoSubscriptionApi } from '@/api/toogo';
 import { http } from '@/utils/http/axios';
 import { addOnMessage, removeOnMessage, sendMsg, WebSocketMessage } from '@/utils/websocket/index';
@@ -1369,10 +1512,52 @@ const router = useRouter();
 const message = useMessage();
 const dialog = useDialog();
 
+// ===== 机器人列表视图（卡片/列表）=====
+type RobotListViewMode = 'card' | 'table';
+const ROBOT_LIST_VIEW_MODE_KEY = 'toogo_robot_list_view_mode_v1';
+const robotListViewMode = ref<RobotListViewMode>((() => {
+  try {
+    const v = window?.localStorage?.getItem(ROBOT_LIST_VIEW_MODE_KEY);
+    if (v === 'table' || v === 'card') return v;
+  } catch (_) {
+    // ignore
+  }
+  return 'card';
+})());
+const persistRobotListViewMode = () => {
+  try {
+    window?.localStorage?.setItem(ROBOT_LIST_VIEW_MODE_KEY, robotListViewMode.value);
+  } catch (_) {
+    // ignore
+  }
+};
+
 const robotList = ref<any[]>([]);
 const loading = ref(false);
 const total = ref(0);
 const showDetailModal = ref(false);
+
+// 手动平仓提交中的防重复点击（robotId_symbol_positionSide -> bool）
+const closeInFlight = ref<Record<string, boolean>>({});
+// 手动平仓的“假进度条”（0-100），用于弹框里提示用户请求进行中
+const closeProgress = ref<Record<string, number>>({});
+
+const getCloseKey = (robotId: number, symbol: string, positionSide: string) =>
+  `${robotId}_${symbol}_${positionSide}`;
+
+const startCloseProgress = (key: string) => {
+  closeProgress.value[key] = 8;
+  const timer = window.setInterval(() => {
+    const cur = closeProgress.value[key] ?? 0;
+    // 缓慢逼近 90，给用户“正在处理”的反馈；成功/失败由业务逻辑终止
+    if (cur < 90) {
+      closeProgress.value[key] = Math.min(90, cur + Math.max(1, Math.round((90 - cur) * 0.15)));
+    }
+  }, 350);
+  return () => {
+    window.clearInterval(timer);
+  };
+};
 const currentRobot = ref<any>(null);
 const currentRobotStrategy = ref<any>(null); // 当前机器人使用的策略组信息
 const currentStrategyTemplate = ref<any>(null); // 当前策略组对应的策略模板（用于显示参数）
@@ -1391,9 +1576,16 @@ const walletPowerMap = ref<Record<number, number>>({});
 
 // 统计数据
 const runningCount = ref(0);
-const todayPnl = ref(0);
-const totalPnl = ref(0);
-const totalPower = ref(0);
+const todayNetPnl = ref(0);
+const totalNetPnl = ref(0);
+
+// 运行区间数据（来自 钱包-交易明细-运行区间）
+// key: robotId -> value
+const runningSessionNetPnlMap = ref<Record<number, number>>({});  // 净盈亏（扣手续费）
+const runningSessionPnlMap = ref<Record<number, number>>({});      // 盈亏
+const runningSessionFeeMap = ref<Record<number, number>>({});      // 手续费
+const runningSessionTradeCountMap = ref<Record<number, number>>({}); // 成交笔数
+let runningSessionNetPnlLastLoadedAt = 0;
 
 // 实时数据
 const tickerData = ref<Record<number, any>>({});
@@ -1404,6 +1596,509 @@ const signalLogs = ref<Record<number, any[]>>({});  // 方向预警日志
 // 启动止盈回撤开关状态（key: robotId_symbol_positionSide）
 const takeProfitRetreatSwitch = ref<Record<string, boolean>>({});
 const executionLogs = ref<Record<number, any[]>>({});  // 交易执行日志
+
+// 金额格式化辅助函数（千分位 + 保留2位小数）
+const formatAmount = (val: any): string => {
+  if (val === undefined || val === null) return '--';
+  const n = Number(val);
+  if (!Number.isFinite(n)) return '--';
+  return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
+
+// 盈亏金额格式化（保留8位小数）
+const formatPnlAmount = (val: any): string => {
+  if (val === undefined || val === null) return '--';
+  const n = Number(val);
+  if (!Number.isFinite(n)) return '--';
+  return n.toFixed(8);
+};
+
+// 列表视图列定义（复用现有页面数据，不额外请求后端）
+const robotTableColumns: any[] = [
+  {
+    title: '名称',
+    key: 'robotName',
+    width: 150,
+    align: 'center',
+    ellipsis: { tooltip: true },
+    render: (row: any) => h('span', { 
+      style: 'font-weight: 600; font-size: 14px; color: var(--text-color-1);'
+    }, row.robotName || '--'),
+  },
+  {
+    title: '状态',
+    key: 'status',
+    width: 80,
+    align: 'center',
+    render: (row: any) => h(NTag, { 
+      type: getStatusType(row.status), 
+      size: 'small',
+      bordered: false,
+    }, { default: () => getStatusText(row.status) }),
+  },
+  {
+    title: '交易所',
+    key: 'exchange',
+    width: 80,
+    align: 'center',
+    render: (row: any) => h(NTag, { 
+      size: 'small',
+      bordered: false,
+    }, { default: () => String(row.exchange || row.platform || '--').toUpperCase() }),
+  },
+  {
+    title: '货币对',
+    key: 'symbol',
+    width: 100,
+    align: 'center',
+    render: (row: any) => h(NTag, { 
+      size: 'small', 
+      type: 'info',
+      bordered: false,
+      style: 'font-family: "Consolas", "Monaco", monospace;'
+    }, { default: () => row.symbol || row.tradingPair || '--' }),
+  },
+  {
+    title: '账户权益',
+    key: 'accountEquity',
+    width: 95,
+    align: 'center',
+    render: (row: any) => {
+      const a = analysisData.value[row.id]?.account;
+      const v = a?.accountEquity ?? a?.totalBalance;
+      return h('span', { 
+        style: [
+          'font-variant-numeric: tabular-nums;',
+          'font-weight: 500;',
+          'color: var(--text-color-2);',
+          'font-family: "Consolas", "Monaco", monospace;'
+        ].join(' ')
+      }, formatAmount(v));
+    },
+  },
+  {
+    title: '可用余额',
+    key: 'availableBalance',
+    width: 95,
+    align: 'center',
+    render: (row: any) => {
+      const v = analysisData.value[row.id]?.account?.availableBalance;
+      return h('span', { 
+        style: [
+          'font-variant-numeric: tabular-nums;',
+          'font-weight: 500;',
+          'color: var(--text-color-2);',
+          'font-family: "Consolas", "Monaco", monospace;'
+        ].join(' ')
+      }, formatAmount(v));
+    },
+  },
+  {
+    title: '保证金',
+    key: 'margin',
+    width: 95,
+    align: 'center',
+    render: (row: any) => {
+      const list = positionData.value[row.id] || [];
+      if (!Array.isArray(list) || list.length === 0) {
+        return h('span', { style: 'color: var(--text-color-3);' }, '--');
+      }
+      let sum = 0;
+      for (const pos of list) {
+        const m = Number(pos?.margin ?? pos?.isolatedMargin ?? 0);
+        if (Number.isFinite(m) && m > 0) sum += m;
+      }
+      return h('span', { 
+        style: [
+          'font-variant-numeric: tabular-nums;',
+          'font-weight: 600;',
+          'color: var(--warning-color);',
+          'font-family: "Consolas", "Monaco", monospace;'
+        ].join(' ')
+      }, sum > 0 ? formatAmount(sum) : '--');
+    },
+  },
+  {
+    title: '盈亏',
+    key: 'totalPnl',
+    width: 140,
+    align: 'center',
+    render: (row: any) => {
+      const v = getRunningSessionPnl(row.id);
+      if (v === null || v === undefined) return h('span', { style: 'color: var(--text-color-3);' }, '--');
+      const n = Number(v);
+      const isPositive = n >= 0;
+      const color = isPositive ? '#18a058' : '#d03050';
+      
+      return h(
+        'span',
+        {
+          style: [
+            `color: ${color}`,
+            'font-weight: 600',
+            'font-size: 13px',
+            'font-variant-numeric: tabular-nums',
+            'font-family: "Consolas", "Monaco", monospace',
+          ].join(';'),
+        },
+        `${n >= 0 ? '+' : ''}${formatPnlAmount(n)}`
+      );
+    },
+  },
+  {
+    title: '手续费',
+    key: 'totalFee',
+    width: 130,
+    align: 'center',
+    render: (row: any) => {
+      const v = getRunningSessionFee(row.id);
+      if (v === null || v === undefined) return h('span', { style: 'color: var(--text-color-3);' }, '--');
+      
+      return h(
+        'span',
+        {
+          style: [
+            'color: #f0a020',
+            'font-weight: 500',
+            'font-size: 13px',
+            'font-variant-numeric: tabular-nums',
+            'font-family: "Consolas", "Monaco", monospace',
+          ].join(';'),
+        },
+        formatPnlAmount(v)
+      );
+    },
+  },
+  {
+    title: '成交笔数',
+    key: 'tradeCount',
+    width: 70,
+    align: 'center',
+    render: (row: any) => {
+      const v = getRunningSessionTradeCount(row.id);
+      if (v === null || v === undefined) return h('span', { style: 'color: var(--text-color-3);' }, '--');
+      
+      return h(
+        'span',
+        {
+          style: [
+            'font-weight: 500',
+            'font-size: 13px',
+            'font-variant-numeric: tabular-nums',
+          ].join(';'),
+        },
+        String(v)
+      );
+    },
+  },
+  {
+    title: '净盈亏',
+    key: 'netPnl',
+    width: 150,
+    align: 'center',
+    render: (row: any) => {
+      const v = getRunningSessionNetPnl(row.id);
+      if (v === null || v === undefined) return h('span', { style: 'color: var(--text-color-3);' }, '--');
+      const n = Number(v);
+      const isPositive = n >= 0;
+      const color = isPositive ? '#18a058' : '#d03050';
+      
+      return h(
+        'span',
+        {
+          style: [
+            `color: ${color}`,
+            'font-weight: 700',
+            'font-size: 14px',
+            'font-variant-numeric: tabular-nums',
+            'font-family: "Consolas", "Monaco", monospace;',
+          ].join(';'),
+        },
+        `${n >= 0 ? '+' : ''}${formatPnlAmount(n)}`
+      );
+    },
+  },
+  {
+    title: '方向 / 未实现盈亏',
+    key: 'positions',
+    minWidth: 180,
+    align: 'center',
+    render: (row: any) => {
+      const list = positionData.value[row.id] || [];
+      if (!Array.isArray(list) || list.length === 0) {
+        return h('span', { style: 'color: var(--text-color-3);' }, '--');
+      }
+      const show = list.slice(0, 2);
+      const rows = show.map((pos: any) => {
+        const pnl = Number(pos?.unrealizedPnl || 0);
+        const isLong = String(pos?.positionSide).toUpperCase() === 'LONG';
+        const isPnlPositive = pnl >= 0;
+        
+        const pnlColor = isPnlPositive ? '#18a058' : '#d03050';
+        
+        return h(
+          'div',
+          { style: 'display: flex; align-items: center; justify-content: center; gap: 4px; padding: 1px 0;' },
+          [
+            h(
+              NTag,
+              { 
+                type: isLong ? 'success' : 'error',
+                size: 'small',
+                style: 'font-weight: 600; min-width: 32px; text-align: center;'
+              },
+              { default: () => (isLong ? '多' : '空') }
+            ),
+            h(
+              'span',
+              {
+                style: [
+                  `color: ${pnlColor}`,
+                  'font-weight: 700',
+                  'font-size: 12px',
+                  'font-variant-numeric: tabular-nums',
+                  'font-family: "Consolas", "Monaco", monospace',
+                ].join(';'),
+              },
+              `${pnl >= 0 ? '+' : ''}${formatPnlAmount(pnl)}`
+            ),
+          ]
+        );
+      });
+      if (list.length > show.length) {
+        rows.push(h('div', { 
+          style: [
+            'color: var(--text-color-3);',
+            'font-size: 10px;',
+            'margin-top: 2px;',
+            'text-align: center;',
+          ].join(' ')
+        }, `... 另有 ${list.length - show.length} 个持仓`));
+      }
+      return h('div', { style: 'display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 2px 0;' }, rows);
+    },
+  },
+  {
+    title: '实时预警',
+    key: 'signal',
+    minWidth: 110,
+    align: 'center',
+    render: (row: any) => {
+      const sig = analysisData.value[row.id]?.signal;
+      const dir = String(sig?.direction || '').toUpperCase();
+      if (!dir) {
+        return h('span', { style: 'color: var(--text-color-3); font-size: 12px;' }, '暂无信号');
+      }
+      if (dir !== 'LONG' && dir !== 'SHORT') {
+        return h(NTag, { size: 'small', bordered: false }, { default: () => dir });
+      }
+
+      const isLong = dir === 'LONG';
+      const tagType = isLong ? 'success' : 'error';
+      const label = isLong ? '做多' : '做空';
+      const dist = isLong ? sig?.distanceFromMin : sig?.distanceFromMax;
+      const distNum = Number(dist ?? 0);
+      const distText = dist === undefined || dist === null ? '--' : formatAmount(distNum);
+      
+      return h('div', { style: 'display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 2px 0;' }, [
+        h(NTag, { 
+          size: 'small',
+          type: tagType,
+          bordered: false,
+        }, { default: () => label }),
+        h('span', { 
+          style: [
+            'color: var(--text-color-3);',
+            'font-size: 10px;',
+            'font-variant-numeric: tabular-nums;',
+            'font-family: "Consolas", "Monaco", monospace;',
+            'text-align: center;',
+          ].join(' ')
+        }, `距${distText}U`),
+      ]);
+    },
+  },
+  {
+    title: '运行时长',
+    key: 'runtime',
+    width: 120,
+    align: 'center',
+    render: (row: any) => {
+      const runtime = formatRuntime(getRobotRuntimeSeconds(row));
+      return h('span', {
+        style: [
+          'font-weight: 600;',
+          'color: var(--primary-color);',
+          'font-variant-numeric: tabular-nums;',
+          'font-family: "Consolas", "Monaco", monospace;',
+          'font-size: 13px;',
+        ].join(' ')
+      }, runtime);
+    },
+  },
+  {
+    title: '操作',
+    key: 'actions',
+    width: 90,
+    align: 'center',
+    render: (row: any) => {
+      return h(
+        'div',
+        { style: 'display: flex; gap: 6px; justify-content: center; flex-wrap: wrap;' },
+        [
+          h(
+            NButton,
+            { 
+              size: 'small',
+              type: 'info',
+              secondary: true,
+              style: 'font-weight: 500;',
+              onClick: () => viewDetail(row)
+            },
+            { default: () => '详情' }
+          ),
+        ]
+      );
+    },
+  },
+];
+
+// 用于“运行时长”等纯前端展示的每秒刷新（不依赖后端推送频率）
+const nowTick = ref<number>(Date.now());
+let nowTickTimer: any = null;
+
+// ===== 市场状态与风险偏好映射（每个机器人独立）=====
+// 注意：使用 reactive Record，避免动态 key 响应式丢失
+const riskMappingExpandedNames = reactive<Record<number, string[]>>({});
+const riskMappingExpandedEmpty: string[] = [];
+const riskMappingLoading = reactive<Record<number, boolean>>({});
+const riskMappingSaving = reactive<Record<number, boolean>>({});
+const riskMappingLoadedAt = reactive<Record<number, number>>({});
+const marketRiskMappingForm = reactive<Record<number, Record<string, string>>>({});
+
+// 市场状态映射配置（与创建机器人页保持一致）
+const marketStateMapping = [
+  { key: 'trend', label: '趋势市场', icon: '📈', tagType: 'success' as const },
+  { key: 'volatile', label: '震荡市场', icon: '📊', tagType: 'warning' as const },
+  { key: 'high_vol', label: '高波动市场', icon: '⚡', tagType: 'error' as const },
+  { key: 'low_vol', label: '低波动市场', icon: '😴', tagType: 'info' as const },
+];
+
+// 风险偏好选项
+const riskPreferenceSelectOptions = [
+  { label: '🛡️ 保守', value: 'conservative' },
+  { label: '⚖️ 平衡', value: 'balanced' },
+  { label: '🚀 激进', value: 'aggressive' },
+];
+
+const getRiskLabel = (value: string | undefined) => {
+  const map: Record<string, string> = { conservative: '保守', balanced: '平衡', aggressive: '激进' };
+  return map[String(value || '').toLowerCase()] || (value || '--');
+};
+
+const ensureMarketRiskMappingLoaded = async (robotId: number) => {
+  if (!robotId) return;
+  if (riskMappingLoading[robotId]) return;
+  // 5分钟内不重复拉取，除非用户主动保存后再展开
+  const last = riskMappingLoadedAt[robotId] || 0;
+  if (last > 0 && Date.now() - last < 5 * 60_000) return;
+
+  riskMappingLoading[robotId] = true;
+  try {
+    const res: any = await ToogoRobotApi.getRiskConfig({ robotId });
+    const cfg = res?.marketRiskMapping || res?.MarketRiskMapping || res?.config?.marketRiskMapping || res?.config?.MarketRiskMapping || {};
+    const mapping = cfg || {};
+    if (!marketRiskMappingForm[robotId]) {
+      marketRiskMappingForm[robotId] = {};
+    }
+    // 保证四个 key 都存在（后端也要求）
+    marketRiskMappingForm[robotId].trend = String(mapping.trend || marketRiskMappingForm[robotId].trend || 'balanced');
+    marketRiskMappingForm[robotId].volatile = String(mapping.volatile || marketRiskMappingForm[robotId].volatile || 'balanced');
+    marketRiskMappingForm[robotId].high_vol = String(mapping.high_vol || marketRiskMappingForm[robotId].high_vol || 'aggressive');
+    marketRiskMappingForm[robotId].low_vol = String(mapping.low_vol || marketRiskMappingForm[robotId].low_vol || 'conservative');
+    riskMappingLoadedAt[robotId] = Date.now();
+  } catch (e: any) {
+    console.warn('[riskMapping] load failed:', e);
+  } finally {
+    riskMappingLoading[robotId] = false;
+  }
+};
+
+const onRiskMappingExpanded = (robotId: number, names: string[]) => {
+  if (!robotId) return;
+  riskMappingExpandedNames[robotId] = Array.isArray(names) ? names : [];
+  if ((riskMappingExpandedNames[robotId] || []).includes('marketMapping')) {
+    ensureMarketRiskMappingLoaded(robotId);
+  }
+};
+
+const saveMarketRiskMapping = async (robotId: number) => {
+  if (!robotId) return;
+  if (riskMappingSaving[robotId]) return;
+  const mapping = marketRiskMappingForm[robotId] || {};
+  // 前端兜底：补齐 required keys
+  const payload = {
+    trend: mapping.trend || 'balanced',
+    volatile: mapping.volatile || 'balanced',
+    high_vol: mapping.high_vol || 'aggressive',
+    low_vol: mapping.low_vol || 'conservative',
+  };
+  riskMappingSaving[robotId] = true;
+  try {
+    await ToogoRobotApi.saveRiskConfig({
+      robotId,
+      config: {
+        marketRiskMapping: payload,
+      },
+    });
+    message.success('保存成功');
+    riskMappingLoadedAt[robotId] = Date.now();
+  } catch (e: any) {
+    message.error(e?.message || '保存失败');
+  } finally {
+    riskMappingSaving[robotId] = false;
+  }
+};
+
+// ===== 交易执行日志（折叠面板 + 懒加载）=====
+// 注意：这里使用 reactive 的 Record，避免模板对动态 key 的索引访问出现响应式丢失，导致“展开不起作用”。
+const executionExpandedNames = reactive<Record<number, string[]>>({});
+const executionOnlyFailed = reactive<Record<number, boolean>>({});
+const executionLastLoadedAt = reactive<Record<number, number>>({});
+// 稳定的空数组引用：避免模板里使用 `|| []` 每次渲染都创建新数组，导致 Collapse 受控状态不生效
+const executionExpandedEmpty: string[] = [];
+
+const refreshExecutionLogs = async (robotId: number, force: boolean = true) => {
+  if (!robotId) return;
+  if (!force) {
+    const last = executionLastLoadedAt[robotId] || 0;
+    // 2秒内不重复刷新，避免短时间重复触发
+    if (last > 0 && Date.now() - last < 2000) return;
+  }
+  await loadExecutionLogs(robotId, 50);
+};
+
+const onExecutionExpanded = (robotId: number, names: string[]) => {
+  if (!robotId) return;
+  executionExpandedNames[robotId] = Array.isArray(names) ? names : [];
+  // 展开后才加载（按需）
+  if ((executionExpandedNames[robotId] || []).includes('execution-logs')) {
+    // 不阻塞 UI 更新，避免“点了但没展开”的错觉
+    refreshExecutionLogs(robotId, false);
+  }
+};
+
+// 切换订单日志展开状态（用于点击"最近失败"标签）
+const getExecutionLogsForRobot = (robotId: number): any[] => {
+  const logs = executionLogs.value[robotId] || [];
+  if (executionOnlyFailed[robotId]) {
+    return logs.filter((l: any) => {
+      const s = String(l?.status || '').toLowerCase();
+      return s === 'failed' || s === 'error' || s === 'fail' || s === 'failed.'; // 兼容不同写法
+    });
+  }
+  return logs;
+};
 
 // 多周期播报面板展开状态（默认折叠）
 const marketRealtimeExpanded = ref<Record<number, boolean>>({});
@@ -1439,7 +2134,7 @@ const searchParams = ref({
 });
 
 const statusOptions = [
-  { label: '全部', value: null },
+  { label: '全部状态', value: null },
   { label: '未启动', value: 1 },
   { label: '运行中', value: 2 },
   { label: '已暂停', value: 3 },
@@ -1447,9 +2142,8 @@ const statusOptions = [
 ];
 
 const platformOptions = [
-  { label: '全部', value: null },
+  { label: '全部交易所', value: null },
   { label: 'Binance', value: 'binance' },
-  { label: 'Bitget', value: 'bitget' },
   { label: 'OKX', value: 'okx' },
   { label: 'Gate.io', value: 'gate' },
 ];
@@ -2082,6 +2776,41 @@ const formatRuntime = (seconds: number | undefined) => {
   }
 };
 
+// 获取运行时长（秒）：优先用 startTime 本地计算，其次用后端 runtimeSeconds，再兜底机器人列表字段
+const getRobotRuntimeSeconds = (robot: any): number => {
+  const rid = Number(robot?.id || 0);
+  const cfg = rid ? analysisData.value?.[rid]?.config : null;
+
+  // 1) 优先用 startTime 本地计算（保证每秒变化）
+  const startTimeStr = String(cfg?.startTime || robot?.startTime || '').trim();
+  if (startTimeStr) {
+    // 后端曾出现把 Go layout "2006-01-02 15:04:05" 原样返回的情况；这种不应参与计算
+    if (startTimeStr.includes('2006-01-02') || startTimeStr.includes('20060102')) {
+      // ignore
+    } else {
+    // 后端常见格式 "YYYY-MM-DD HH:mm:ss"；在部分浏览器需要替换成 ISO
+    const t = new Date(startTimeStr.replace(' ', 'T')).getTime();
+    if (!isNaN(t)) {
+      // 兜底：异常年份（例如 1970/2006 模板/默认值）不参与计算
+      const y = new Date(t).getFullYear();
+      if (y >= 2015 && y <= 2100) {
+      const secs = Math.floor((nowTick.value - t) / 1000);
+      return secs > 0 ? secs : 0;
+      }
+    }
+    }
+  }
+
+  // 2) 后端实时分析里带的 runtimeSeconds
+  const rs = Number(cfg?.runtimeSeconds ?? 0);
+  if (rs > 0) return rs;
+
+  // 3) 机器人列表字段（DB字段，可能不实时）
+  const rr = Number(robot?.runtimeSeconds ?? 0);
+  if (rr > 0) return rr;
+  return 0;
+};
+
 
 // 格式化市场状态（兼容多种格式）
 const formatMarketState = (state: string | undefined) => {
@@ -2115,11 +2844,22 @@ const formatRiskPref = (pref: string | undefined) => {
 };
 
 
-// 格式化日志时间
+// 格式化日志时间（必须健壮：后端可能返回 "YYYY-MM-DD HH:mm:ss" 字符串，部分浏览器 new Date() 解析会失败）
 const formatLogTime = (time: string | number | undefined) => {
   if (!time) return '--';
-  const date = new Date(time);
+  try {
+    let input: any = time;
+    if (typeof input === 'string') {
+      // 兼容 "2025-12-26 16:37:20" → "2025-12-26T16:37:20"
+      // 以及后端可能返回的 gtime.String() 格式
+      input = input.trim().replace(' ', 'T');
+    }
+    const date = new Date(input);
+    if (isNaN(date.getTime())) return '--';
   return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  } catch (e) {
+    return '--';
+  }
 };
 
 // 格式化持仓时间（日期+时间）
@@ -2163,111 +2903,44 @@ const formatRiskPreference = (pref: string | undefined): string => {
 // 血条进度 = (当前盈利百分比 / 设定启动止盈百分比) × 100%
 // 【重要】一旦止盈回撤已启动，血条锁定在100%
 const calcStartProfitProgress = (pos: any, robot: any) => {
-  const unrealizedPL = pos.unrealizedPnl || 0;
-  const margin = (pos.margin && pos.margin > 0 ? pos.margin : pos.isolatedMargin) || 0;
-  
-  // 【关键】如果止盈回撤已启动（后端状态或前端状态），血条锁定在100%
-  const key = `${robot.id}_${pos.symbol}_${pos.positionSide}`;
-  const localSwitchValue = takeProfitRetreatSwitch.value[key] || false;
-  const backendTakeProfitEnabled = pos.takeProfitEnabled || false;
-  if (localSwitchValue || backendTakeProfitEnabled) {
-    return 100; // 已启动，锁定100%
+  // 【完全由后端控制】只使用后端计算的值，不再进行前端计算
+  // 如果后端没有返回数据，返回0（表示未计算或未满足条件）
+  if (pos && ('takeProfitStartProgress' in pos) && pos.takeProfitStartProgress !== undefined && pos.takeProfitStartProgress !== null) {
+    const v = Number(pos.takeProfitStartProgress);
+    if (!Number.isNaN(v)) {
+      return Math.max(0, Math.min(100, v));
+    }
   }
-  
-  // 冻结策略参数优先（订单创建时的参数），兜底才用当前机器人配置
-  const autoStartPercent = (pos?.autoStartRetreatPercent ?? null) !== null
-    ? Number(pos.autoStartRetreatPercent)
-    : getRobotAutoStartRetreat(robot.id);
-  
-  // 如果参数无效，返回0（不显示进度）
-  if (!autoStartPercent || autoStartPercent <= 0) return 0;
-  
-  // 只有盈利时才显示启动止盈进度
-  if (margin <= 0 || unrealizedPL <= 0) return 0;
-  
-  // 计算当前盈利占保证金的百分比：未实现盈亏 / 保证金 × 100%
-  const currentProfitPercent = (unrealizedPL / margin) * 100;
-  
-  // 血条进度 = (当前盈利百分比 / 设定启动止盈百分比) × 100%
-  // 当达到100%时，自动启动止盈回撤
-  const progress = (currentProfitPercent / autoStartPercent) * 100;
-  
-  return Math.min(100, progress);
+  // 后端未返回数据时，返回0（不显示进度）
+  return 0;
 };
 
-// ①、止损进度计算（与后端计算逻辑一致）
-// 公式：
-//   ①、止损金额计算：止损金额 = 保证金 × (止损百分比 / 100%)
-//   ②、止损进度计算（血条进度）：止损进度 = |未实现盈亏| / 止损金额 × 100%
-//   ③、触发平仓条件：止损进度 ≥ 100%
-// 【重要】使用机器人详情页的参数获取方法（与后端buildConfigInfo一致）
+// ①、止损进度计算（完全由后端控制）
+// 【完全由后端控制】只使用后端计算的值，不再进行前端计算
 const calcStopLossProgress = (pos: any, robot: any) => {
-  const unrealizedPL = pos.unrealizedPnl || 0;
-  const margin = (pos.margin && pos.margin > 0 ? pos.margin : pos.isolatedMargin) || 0;
-  
-  // 冻结策略参数优先（订单创建时的参数），兜底才用当前机器人配置
-  const stopLossPercent = (pos?.stopLossPercent ?? null) !== null
-    ? Number(pos.stopLossPercent)
-    : getRobotStopLossPercent(robot.id);
-  
-  // 如果参数无效，返回0（不显示进度）
-  if (!stopLossPercent || stopLossPercent <= 0) return 0;
-  
-  // 如果未实现盈亏 >= 0（盈利或持平），返回0（不显示进度）
-  if (unrealizedPL >= 0) return 0;
-  
-  // 如果保证金 <= 0，返回0
-  if (margin <= 0) return 0;
-  
-  // ①、止损金额计算：止损金额 = 保证金 × (止损百分比 / 100%)
-  const stopLossAmount = margin * (stopLossPercent / 100);
-  
-  // ②、止损进度计算（血条进度）：止损进度 = |未实现盈亏| / 止损金额 × 100%
-  const absUnrealizedPnl = Math.abs(unrealizedPL);
-  const progress = (absUnrealizedPnl / stopLossAmount) * 100;
-  
-  // 限制最大值为100%
-  return Math.min(100, progress);
+  // 如果后端没有返回数据，返回0（表示未计算或未满足条件）
+  if (pos && ('stopLossProgress' in pos) && pos.stopLossProgress !== undefined && pos.stopLossProgress !== null) {
+    const v = Number(pos.stopLossProgress);
+    if (!Number.isNaN(v)) {
+      return Math.max(0, Math.min(100, v));
+    }
+  }
+  // 后端未返回数据时，返回0（不显示进度）
+  return 0;
 };
 
-// ②、止盈回撤进度计算：
-// 止盈回撤百分比 = (实时最高盈利金额 - 实时未实现盈亏) / 最高盈利金额 × 100%
-// 触发平仓条件：止盈回撤百分比 >= 设定的止盈回撤百分比时，自动平仓
-// 血条默认100%，回撤到0%
+// ②、止盈回撤进度计算（完全由后端控制）
+// 【完全由后端控制】只使用后端计算的值，不再进行前端计算
 const calcProfitRetreatProgress = (pos: any, robot: any) => {
-  const unrealizedPL = pos.unrealizedPnl || 0;
-  const maxProfitReached = pos.maxProfitReached || 0;
-  
-  // 【关键】检查是否已启动止盈回撤（优先使用后端状态）
-  const key = `${robot.id}_${pos.symbol}_${pos.positionSide}`;
-  const localSwitchValue = takeProfitRetreatSwitch.value[key] || false;
-  const backendTakeProfitEnabled = pos.takeProfitEnabled || false;
-  const isStarted = localSwitchValue || backendTakeProfitEnabled;
-  
-  // 如果未启动止盈回撤，返回100%（满条）
-  if (!isStarted) {
-    return 100;
+  // 如果后端没有返回数据，返回100%（默认满条，表示安全状态）
+  if (pos && ('takeProfitRetreatBar' in pos) && pos.takeProfitRetreatBar !== undefined && pos.takeProfitRetreatBar !== null) {
+    const v = Number(pos.takeProfitRetreatBar);
+    if (!Number.isNaN(v)) {
+      return Math.max(0, Math.min(100, v));
+    }
   }
-  
-  // 冻结策略参数优先（订单创建时的参数），兜底才用当前机器人配置
-  const profitRetreatPercent = (pos?.profitRetreatPercent ?? null) !== null
-    ? Number(pos.profitRetreatPercent)
-    : getRobotProfitRetreat(robot.id);
-  
-  // 如果参数无效，返回100%（满条，表示安全状态）
-  if (!profitRetreatPercent || profitRetreatPercent <= 0) return 100;
-  
-  // 如果没有最高盈利记录，返回100%（满条）
-  if (maxProfitReached <= 0) return 100;
-  
-  // 计算当前回撤百分比：(最高盈利 - 当前盈利) / 最高盈利 × 100%
-  const currentRetreatPercent = ((maxProfitReached - unrealizedPL) / maxProfitReached) * 100;
-  
-  // 血条进度 = 100% - (当前回撤百分比 / 设定回撤百分比) × 100%
-  // 当回撤达到设定值时，血条为0%，触发平仓
-  const progress = 100 - (currentRetreatPercent / profitRetreatPercent) * 100;
-  
-  return Math.max(0, Math.min(100, progress));
+  // 后端未返回数据时，返回100%（默认满条）
+  return 100;
 };
 
 // 格式化更新时间（相对时间）
@@ -2298,11 +2971,17 @@ const loadSignalLogs = async (robotId: number) => {
 };
 
 // 加载交易执行日志
-const loadExecutionLogs = async (robotId: number) => {
+// - 列表页会“预取最近几条”，用于展示数量/最近失败
+// - 展开面板会加载更多
+const loadExecutionLogs = async (robotId: number, limit: number = 50) => {
   try {
-    const res = await ToogoRobotApi.executionLogs({ robotId, limit: 20 });
+    const res = await ToogoRobotApi.executionLogs({ robotId, limit });
     if (res?.list) {
       executionLogs.value[robotId] = res.list;
+    }
+    executionLastLoadedAt[robotId] = Date.now();
+    if (executionOnlyFailed[robotId] === undefined) {
+      executionOnlyFailed[robotId] = false;
     }
   } catch (error: any) {
     console.debug('加载交易执行日志失败:', error);
@@ -2310,24 +2989,61 @@ const loadExecutionLogs = async (robotId: number) => {
   }
 };
 
+// 预取订单日志（避免必须手动展开才能看到“最近失败/日志数量”）
+const preloadExecutionLogs = async () => {
+  const robots = robotList.value || [];
+  if (!robots.length) return;
+  // 控制并发，避免接口风暴
+  const concurrency = robots.length <= 8 ? 4 : 2;
+  let idx = 0;
+  const worker = async () => {
+    while (idx < robots.length) {
+      const i = idx++;
+      const r = robots[i];
+      if (!r?.id) continue;
+      // 已加载过就跳过
+      if (Array.isArray(executionLogs.value[r.id]) && executionLogs.value[r.id].length > 0) continue;
+      await loadExecutionLogs(r.id, 8);
+    }
+  };
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+};
+
+const normalizeEventType = (eventType: any) => {
+  // 兼容：有些库里 event_type 可能带尾逗号（例如 close_take_profit，）
+  return String(eventType || '')
+    .trim()
+    .replace(/[，,]+$/g, '');
+};
+
 // 获取事件类型标签
 const getEventTypeTag = (eventType: string): 'success' | 'warning' | 'error' | 'info' | 'default' | 'primary' => {
+  const t = normalizeEventType(eventType);
   const typeMap: Record<string, 'success' | 'warning' | 'error' | 'info' | 'default' | 'primary'> = {
     'order_submit': 'warning',
+    'order_attempt': 'warning',
     'order_success': 'success',
     'order_failed': 'error',
+    'close_manual': 'warning',
+    'close_stop_loss': 'warning',
+    'close_take_profit': 'warning',
   };
-  return typeMap[eventType] || 'default';
+  return typeMap[t] || 'default';
 };
 
 // 获取事件类型文本
 const getEventTypeText = (eventType: string) => {
+  const t = normalizeEventType(eventType);
   const textMap: Record<string, string> = {
     'order_submit': '提交下单',
-    'order_success': '订单成功',
-    'order_failed': '订单失败',
+    'order_attempt': '提交下单',
+    'order_success': '下单成功',
+    'order_failed': '下单失败',
+    'close_manual': '手动平仓',
+    'close_stop_loss': '止损平仓',
+    'close_take_profit': '止盈平仓',
   };
-  return textMap[eventType] || eventType;
+  return textMap[t] || t;
 };
 
 // 获取日志策略参数
@@ -2374,6 +3090,88 @@ const getLogSubmitParams = (log: any): any => {
     };
   } catch (e) {
     return null;
+  }
+};
+
+// 获取失败原因（容错：字段可能不存在/格式不一致，绝不抛异常）
+// 说明：
+// - 后端 API 当前返回的 ExecutionLogItem 里没有 failure_reason 字段，因此这里优先从 eventData/message 里提取。
+const getFailureReason = (log: any): string => {
+  try {
+    if (!log) return '';
+    const status = String(log.status || '').toLowerCase();
+    if (status !== 'failed' && status !== 'error' && status !== 'fail' && status !== 'failed.') return '';
+
+    // 兼容：如果未来后端补了字段
+    const direct =
+      (log.failureReason ?? log.failure_reason ?? log.failureMessage ?? log.failure_message ?? '').toString().trim();
+    if (direct) return direct;
+
+    // 从 eventData 里提取
+    const raw = log.eventData;
+    if (raw) {
+      const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      const reason =
+        (data?.failure_reason ??
+          data?.failureReason ??
+          data?.reason ??
+          data?.error ??
+          data?.err ??
+          '').toString().trim();
+      if (reason) return reason;
+    }
+
+    // 兜底：使用 message（但避免重复显示与 message 相同的内容）
+    const msg = String(log.message || '').trim();
+    return msg;
+  } catch {
+    return '';
+  }
+};
+
+// 获取日志阶段（用于把一条失败日志拆到更明确的步骤）
+// - 后端常在 eventData.step 写入失败发生在哪一步
+// - 平仓类日志可能用 eventData.close_type
+const getLogStep = (log: any): string => {
+  try {
+    if (!log) return '';
+    const raw = log.eventData;
+    if (!raw) return '';
+    const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+
+    const step = String(data?.step || '').trim();
+    if (step) {
+      const stepMap: Record<string, string> = {
+        robot_check: '机器人检查',
+        signal_check: '信号检查',
+        auto_trade_check: '开关检查',
+        position_check: '持仓检查',
+        lock_check: '下单锁',
+        risk_check: '风控检查',
+        submit_order: '提交订单',
+        create_order: '创建订单',
+        wait_fill: '等待成交',
+        sync_order: '同步订单',
+        save_order: '保存订单',
+        exchange: '交易所',
+        system: '系统',
+      };
+      return stepMap[step] || step;
+    }
+
+    const closeType = String(data?.close_type || '').trim();
+    if (closeType) {
+      const closeMap: Record<string, string> = {
+        manual: '手动平仓',
+        stop_loss: '止损',
+        take_profit: '止盈',
+      };
+      return closeMap[closeType] || closeType;
+    }
+
+    return '';
+  } catch {
+    return '';
   }
 };
 
@@ -2700,12 +3498,12 @@ const loadData = async () => {
 
     // 计算统计数据
     runningCount.value = robotList.value.filter((r: any) => r.status === 2).length;
-    // 累计盈亏（所有机器人的总盈亏）
-    totalPnl.value = robotList.value.reduce((sum: number, r: any) => sum + (r.totalPnl || 0), 0);
-    // 今日盈亏（从机器人列表汇总，若后端返回todayPnl字段则使用，否则用totalPnl近似）
-    todayPnl.value = robotList.value.reduce((sum: number, r: any) => sum + (r.todayPnl ?? r.totalPnl ?? 0), 0);
-    // 消耗算力
-    totalPower.value = robotList.value.reduce((sum: number, r: any) => sum + (r.consumedPower || 0), 0);
+    
+    // 顶部统计：今日净盈亏（成交流水）+ 累计净盈亏（运行区间）
+    await loadNetPnlSummary();
+
+    // 加载运行区间净盈亏（用于机器人列表“净盈亏”展示）
+    await loadRunningSessionNetPnl(true);
 
     // 加载运行中机器人的实时数据（首次加载，使用后端最新状态）
     await loadRealtimeData(true);
@@ -2723,11 +3521,157 @@ const loadData = async () => {
     // 加载所有机器人的方向预警日志（executionLogs 改为按需加载）
     for (const robot of robotList.value) {
       loadSignalLogs(robot.id);
+      // 初始化折叠状态，避免 :expanded-names 传入 undefined 导致受控组件永远折叠
+      if (executionExpandedNames[robot.id] === undefined) {
+        executionExpandedNames[robot.id] = [];
+      }
+      if (executionOnlyFailed[robot.id] === undefined) {
+        executionOnlyFailed[robot.id] = false;
+      }
+    // 初始化“市场状态与风险偏好映射”折叠状态 + 默认映射（展开时会自动从后端加载覆盖）
+    if (riskMappingExpandedNames[robot.id] === undefined) {
+      riskMappingExpandedNames[robot.id] = [];
     }
+    if (!marketRiskMappingForm[robot.id]) {
+      marketRiskMappingForm[robot.id] = {
+        trend: 'balanced',
+        volatile: 'balanced',
+        high_vol: 'aggressive',
+        low_vol: 'conservative',
+      };
+    }
+    }
+
+    // 预取最近几条订单日志：让列表页能直接显示“订单日志数量/最近失败”
+    // 不影响展开后查看更多日志（展开会再拉一次更多）
+    preloadExecutionLogs();
   } catch (error) {
     console.error('加载机器人列表失败:', error);
   } finally {
     loading.value = false;
+  }
+};
+
+// 获取运行中区间数据（盈亏、手续费、成交笔数、净盈亏）：按 robotId 映射
+const loadRunningSessionNetPnl = async (force: boolean = false) => {
+  const now = Date.now();
+  if (!force && runningSessionNetPnlLastLoadedAt > 0 && now-runningSessionNetPnlLastLoadedAt < 30_000) {
+    return;
+  }
+  const runningRobots = robotList.value.filter((r: any) => r.status === 2);
+  if (runningRobots.length === 0) {
+    runningSessionNetPnlMap.value = {};
+    runningSessionPnlMap.value = {};
+    runningSessionFeeMap.value = {};
+    runningSessionTradeCountMap.value = {};
+    runningSessionNetPnlLastLoadedAt = now;
+    return;
+  }
+  runningSessionNetPnlLastLoadedAt = now;
+
+  try {
+    const pageSize = Math.min(200, Math.max(20, runningRobots.length * 2));
+    const res: any = await ToogoWalletApi.runSessionSummary({
+      page: 1,
+      pageSize,
+      isRunning: 1,
+    });
+    const list: any[] = res?.list || [];
+    const map: Record<number, { net: number; pnl: number; fee: number; tradeCount: number; id: number }> = {};
+    for (const row of list) {
+      const rid = Number(row?.robotId ?? row?.robot_id ?? 0);
+      if (!rid) continue;
+      const rowId = Number(row?.id ?? 0);
+      const pnl = Number(row?.totalPnl ?? 0);
+      const fee = Number(row?.totalFee ?? 0);
+      const tradeCount = Number(row?.tradeCount ?? 0);
+      const net = Number(row?.netPnl ?? row?.net_pnl ?? (pnl - fee));
+      const existing = map[rid];
+      // 取最新的一条（id 大）
+      if (!existing || rowId > existing.id) {
+        map[rid] = { net, pnl, fee, tradeCount, id: rowId };
+      }
+    }
+    const outNet: Record<number, number> = {};
+    const outPnl: Record<number, number> = {};
+    const outFee: Record<number, number> = {};
+    const outTradeCount: Record<number, number> = {};
+    for (const [k, v] of Object.entries(map)) {
+      const key = Number(k);
+      outNet[key] = Number(v.net) || 0;
+      outPnl[key] = Number(v.pnl) || 0;
+      outFee[key] = Number(v.fee) || 0;
+      outTradeCount[key] = Number(v.tradeCount) || 0;
+    }
+    runningSessionNetPnlMap.value = outNet;
+    runningSessionPnlMap.value = outPnl;
+    runningSessionFeeMap.value = outFee;
+    runningSessionTradeCountMap.value = outTradeCount;
+  } catch (e) {
+    // 失败不影响主页面：保留旧值
+    console.warn('[runSessionNetPnl] load failed:', e);
+  }
+};
+
+const getRunningSessionNetPnl = (robotId: number): number | null => {
+  if (!robotId) return null;
+  const v = runningSessionNetPnlMap.value[robotId];
+  if (typeof v !== 'number' || Number.isNaN(v)) return null;
+  return v;
+};
+
+const getRunningSessionPnl = (robotId: number): number | null => {
+  if (!robotId) return null;
+  const v = runningSessionPnlMap.value[robotId];
+  if (typeof v !== 'number' || Number.isNaN(v)) return null;
+  return v;
+};
+
+const getRunningSessionFee = (robotId: number): number | null => {
+  if (!robotId) return null;
+  const v = runningSessionFeeMap.value[robotId];
+  if (typeof v !== 'number' || Number.isNaN(v)) return null;
+  return v;
+};
+
+const getRunningSessionTradeCount = (robotId: number): number | null => {
+  if (!robotId) return null;
+  const v = runningSessionTradeCountMap.value[robotId];
+  if (typeof v !== 'number' || Number.isNaN(v)) return null;
+  return v;
+};
+
+// 顶部统计：今日净盈亏（成交流水-今日） + 累计净盈亏（运行区间-全量）
+const loadNetPnlSummary = async () => {
+  try {
+    // 获取今天的日期（开始时间）
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayStart = today.toISOString().slice(0, 19).replace('T', ' ');
+    
+    // 今日净盈亏：数据源=钱包-交易明细-成交流水-今日净盈亏(扣手续费)
+    const todayRes = await ToogoWalletApi.tradeHistory({
+      startTime: todayStart,
+      page: 1,
+      pageSize: 1 // 只需要统计数据，不需要列表
+    });
+    if (todayRes && todayRes.summary) {
+      todayNetPnl.value = Number(todayRes.summary.totalNetPnl) || 0;
+    }
+    
+    // 累计净盈亏：数据源=钱包-交易明细-运行区间-净盈亏(扣手续费)（全量汇总）
+    const totalRes = await ToogoWalletApi.runSessionSummary({
+      page: 1,
+      pageSize: 1 // 只需要统计数据，不需要列表
+    });
+    if (totalRes && totalRes.summary) {
+      totalNetPnl.value = Number(totalRes.summary.totalNetPnl) || 0;
+    }
+  } catch (error) {
+    console.error('加载净盈亏数据失败:', error);
+    // 加载失败时使用默认值
+    todayNetPnl.value = 0;
+    totalNetPnl.value = 0;
   }
 };
 
@@ -2797,8 +3741,14 @@ const wsOnPositionsPush = (message: WebSocketMessage) => {
     if (item?.error) {
       console.warn(`[WS][positions] robotId=${robotId} 获取持仓失败:`, item.error);
     }
+    // 重要：错误/限流/超时不等于“无持仓”，避免推空导致闪烁/丢失
     const positions = item?.list || [];
-    applyRobotPositionsSnapshot(robot, positions, 'WS推送');
+    const isStale = !!item?.stale;
+    if (item?.error && isStale && (!positions || positions.length === 0)) {
+      // 失败且没有可复用快照：忽略本帧（保留前端已有仓位）
+      continue;
+    }
+    applyRobotPositionsSnapshot(robot, positions, isStale ? 'WS推送(stale)' : 'WS推送');
   }
 };
 
@@ -2822,20 +3772,202 @@ const unsubscribeWsPositions = () => {
   sendMsg(SocketEnum.EventToogoRobotPositionsUnsubscribe, {});
 };
 
+// ============ WebSocket：机器人挂单实时推送（open orders snapshot）============
+// 说明：
+// - 详情弹窗展示“当前挂单”时，优先用 WS 快照/增量更新，避免 60s REST 刷新导致闪烁
+// - REST 仍可作为首次加载/断线兜底
+const wsOrdersSubscribedRobotIds = ref<string>(''); // 逗号分隔（当前实现=详情弹窗只订阅当前机器人）
+const applyRobotOrdersSnapshot = (robotId: number, orders: any[], _source: string) => {
+  if (!showDetailModal.value || !currentRobot.value) return;
+  if (currentRobot.value.id !== robotId) return;
+  currentOpenOrders.value = orders || [];
+  // console.debug(`[WS][orders] apply snapshot robotId=${robotId} source=${source} count=${(orders || []).length}`);
+};
+
+const wsOnOrdersPush = (message: WebSocketMessage) => {
+  const payload = message.data;
+  const list = payload?.list || [];
+  if (!list || list.length === 0) return;
+
+  for (const item of list) {
+    const robotId = item?.robotId;
+    if (!robotId) continue;
+    const orders = item?.list || [];
+    const isStale = !!item?.stale;
+    if (item?.error) {
+      console.warn(`[WS][orders] robotId=${robotId} 获取挂单失败:`, item.error);
+      // 失败且没有可复用快照：忽略本帧，避免清空
+      if (isStale && (!orders || orders.length === 0)) continue;
+    }
+    applyRobotOrdersSnapshot(robotId, orders, isStale ? 'WS推送(stale)' : 'WS推送');
+  }
+};
+
+// 交易所私有WS触发的挂单增量（无需订阅）
+const wsOnOrdersDelta = (message: WebSocketMessage) => {
+  const data = message.data || {};
+  const robotId = data?.robotId;
+  const delta = data?.list || [];
+  if (!robotId || !Array.isArray(delta) || delta.length === 0) return;
+  if (!showDetailModal.value || !currentRobot.value || currentRobot.value.id !== robotId) return;
+
+  // 增量合并：isOpen=false 则移除，其他 upsert
+  const cur = Array.isArray(currentOpenOrders.value) ? [...currentOpenOrders.value] : [];
+  const idxById = new Map<string, number>();
+  for (let i = 0; i < cur.length; i++) {
+    const id = cur[i]?.orderId;
+    if (id) idxById.set(String(id), i);
+  }
+  for (const d of delta) {
+    const id = d?.orderId;
+    if (!id) continue;
+    const key = String(id);
+    const isOpen = d?.isOpen;
+    if (isOpen === false) {
+      const idx = idxById.get(key);
+      if (idx !== undefined) {
+        cur.splice(idx, 1);
+        // 重新构建索引（订单数量通常很小，简单做即可）
+        idxById.clear();
+        for (let i = 0; i < cur.length; i++) {
+          const oid = cur[i]?.orderId;
+          if (oid) idxById.set(String(oid), i);
+        }
+      }
+      continue;
+    }
+    const idx = idxById.get(key);
+    if (idx === undefined) {
+      cur.unshift(d);
+      // 更新索引（同上，重建）
+      idxById.clear();
+      for (let i = 0; i < cur.length; i++) {
+        const oid = cur[i]?.orderId;
+        if (oid) idxById.set(String(oid), i);
+      }
+    } else {
+      cur[idx] = { ...(cur[idx] || {}), ...(d || {}) };
+    }
+  }
+  currentOpenOrders.value = cur;
+};
+
+const updateWsOrdersSubscription = () => {
+  // 弹窗关闭/无选中机器人：自动退订，避免后台持续推送
+  if (!showDetailModal.value || !currentRobot.value) {
+    if (wsOrdersSubscribedRobotIds.value) {
+      unsubscribeWsOrders();
+    }
+    return;
+  }
+  const robotIds = String(currentRobot.value.id);
+  if (!robotIds) return;
+  if (robotIds === wsOrdersSubscribedRobotIds.value) return;
+  wsOrdersSubscribedRobotIds.value = robotIds;
+  // 详情弹窗更需要实时：500ms
+  sendMsg(SocketEnum.EventToogoRobotOrdersSubscribe, { robotIds, intervalMs: 500 });
+};
+
+const unsubscribeWsOrders = () => {
+  wsOrdersSubscribedRobotIds.value = '';
+  sendMsg(SocketEnum.EventToogoRobotOrdersUnsubscribe, {});
+};
+
+// 交易所私有WS触发的“持仓即时刷新”（无需订阅）
+const wsOnPositionsDelta = (message: WebSocketMessage) => {
+  const data = message.data || {};
+  const robotId = data?.robotId;
+  if (!robotId) return;
+  const robot = robotList.value.find((r: any) => r.id === robotId);
+  if (!robot) return;
+  if (data?.error && data?.stale && (!data?.list || data?.list.length === 0)) {
+    // 不用错误空数组覆盖 UI
+    return;
+  }
+  applyRobotPositionsSnapshot(robot, data?.list || [], data?.stale ? 'WS增量(stale)' : 'WS增量');
+};
+
 // ============ WebSocket：交易关键事件（平仓成功/订单状态变更等）============
 const wsOnTradeEvent = (message: WebSocketMessage) => {
   const data = message.data || {};
   const type = data?.type;
   const robotId = data?.robotId;
 
+  // 平仓成功（手动/自动）：立刻从机器人列表持仓里移除（不等交易所/同步延迟）
+  if (type === 'close_success' && robotId) {
+    const symbol = data?.symbol;
+    const positionSide = data?.positionSide;
+    if (symbol && positionSide) {
+      const closeKey = `${robotId}_${symbol}_${positionSide}`;
+      recentManualCloseAt.value[closeKey] = Date.now(); // 复用抑制窗口，防止旧快照把已平仓仓位“渲染回来”
+    }
+
+    // 解除“新开仓保护窗”：平仓后应允许空快照立即清空
+    positionOpenProtectionUntil.value[robotId] = 0;
+    positionEmptyStreak.value[robotId] = 0;
+
+    // 立即移除该仓位（如果能定位到 symbol/side）
+    if (symbol && positionSide) {
+      const before = positionData.value[robotId] || [];
+      positionData.value[robotId] = before.filter((p: any) => !(p.symbol === symbol && p.positionSide === positionSide));
+
+      // 若该机器人已无持仓，清理本地开关/最高盈利缓存
+      if ((positionData.value[robotId] || []).length === 0) {
+        const keysToDelete = Object.keys(takeProfitRetreatSwitch.value).filter(key => key.startsWith(`${robotId}_`));
+        keysToDelete.forEach(key => delete takeProfitRetreatSwitch.value[key]);
+
+        const maxProfitCache = getMaxProfitCache();
+        const profitKeysToDelete = Object.keys(maxProfitCache).filter(key => key.startsWith(`${robotId}_`));
+        profitKeysToDelete.forEach(key => delete maxProfitCache[key]);
+        if (profitKeysToDelete.length > 0) {
+          saveMaxProfitCache(maxProfitCache);
+        }
+      }
+    }
+  }
+
   // 平仓成功：如果当前正在查看详情弹窗，则立即刷新订单相关数据（挂单/成交明细）
+  // 改为 WS 优先：挂单列表靠 orders/delta + orders/push 自动更新；成交明细仍由数据库更新（可按需刷新）
   if ((type === 'close_success' || type === 'order_delta') && robotId && currentRobot.value?.id === robotId && showDetailModal.value) {
-    refreshOrderData();
+    updateWsOrdersSubscription();
   }
 };
 
 // 持仓空结果防抖：连续多次为空才认为已平仓（避免后端偶发空数据导致闪烁）
 const positionEmptyStreak = ref<Record<number, number>>({});
+// 最近一次“非空持仓快照”的时间戳：用于抑制 OKX/网络抖动导致的瞬时空结果清空
+const positionLastNonEmptyAt = ref<Record<number, number>>({});
+// 新开仓保护窗：用于彻底抑制“新开仓首分钟空快照导致的消失/再出现”
+// - key=robotId -> timestamp(ms)
+const positionOpenProtectionUntil = ref<Record<number, number>>({});
+// 单仓位缺失计数：用于 Gate 双向持仓时“偶发少一侧快照”导致的行消失/再出现闪烁
+// key = `${robotId}_${symbol}_${positionSide}` => streak
+const positionMissingStreak = ref<Record<string, number>>({});
+// 单仓位缺失开始时间：用于“按时间保留”策略，避免 Gate 偶发缺一侧时行消失约1分钟又回来
+// key = `${robotId}_${symbol}_${positionSide}` => firstMissingAt(ms)
+const positionMissingSince = ref<Record<string, number>>({});
+// Gate 双向持仓“缺一侧快照”主动修复：缺失时对该机器人立即补拉一次 positions，而不是长时间保留/按轮询次数等待
+const positionRepairInFlight = ref<Record<number, boolean>>({});
+const positionRepairLastAt = ref<Record<number, number>>({});
+
+const repairRobotPositionsOnce = async (robot: any, reason: string) => {
+  if (!robot?.id) return;
+  const now = Date.now();
+  if (positionRepairInFlight.value[robot.id]) return;
+  const lastAt = positionRepairLastAt.value[robot.id] || 0;
+  // 冷却：避免 Gate 偶发抖动导致接口风暴
+  if (now - lastAt < 8000) return;
+  positionRepairLastAt.value[robot.id] = now;
+  positionRepairInFlight.value[robot.id] = true;
+  try {
+    const posRes = await ToogoRobotApi.positions({ robotId: robot.id });
+    applyRobotPositionsSnapshot(robot, posRes?.list || [], `补拉(${reason})`);
+  } catch {
+    // ignore
+  } finally {
+    positionRepairInFlight.value[robot.id] = false;
+  }
+};
 
 // 手动平仓后的“短暂抑制窗口”：避免交易所/缓存短时间仍返回旧持仓，导致页面又把已平仓的单子渲染回来
 // key = `${robotId}_${symbol}_${positionSide}` => timestamp(ms)
@@ -2860,6 +3992,7 @@ const applyBatchRobotAnalysisList = (list: any[], isInitialLoad: boolean = false
       tickerData.value[robotId] = {
         symbol: item.ticker.symbol,
         lastPrice: item.ticker.lastPrice,
+        markPrice: item.ticker.markPrice,
         high24h: item.ticker.high24h,
         low24h: item.ticker.low24h,
         volume24h: item.ticker.volume24h,
@@ -2888,6 +4021,9 @@ const applyBatchRobotAnalysisList = (list: any[], isInitialLoad: boolean = false
         if (existingConfig.autoCloseEnabled !== undefined && existingConfig.autoCloseEnabled !== item.config?.autoCloseEnabled) {
           newConfig.autoCloseEnabled = existingConfig.autoCloseEnabled;
         }
+        if (existingConfig.profitLockEnabled !== undefined && existingConfig.profitLockEnabled !== item.config?.profitLockEnabled) {
+          newConfig.profitLockEnabled = existingConfig.profitLockEnabled;
+        }
       }
 
       // 【防闪烁】账户数据保护：如果新数据的账户权益为0或无效，但已有有效旧数据，则保留旧数据
@@ -2896,7 +4032,7 @@ const applyBatchRobotAnalysisList = (list: any[], isInitialLoad: boolean = false
       const oldEquity = existingAccount?.accountEquity ?? existingAccount?.totalBalance ?? 0;
       if (newEquity === 0 && oldEquity > 0) {
         // 新数据权益为0但旧数据有值，保留旧数据避免闪烁
-        console.log(`[防闪烁] robotId=${robotId} 账户权益为0，保留旧数据: ${oldEquity}`);
+        // console.debug(`[防闪烁] robotId=${robotId} 账户权益为0，保留旧数据: ${oldEquity}`);
         newAccount = existingAccount;
       }
 
@@ -2916,7 +4052,22 @@ const applyBatchRobotAnalysisList = (list: any[], isInitialLoad: boolean = false
       // 注意：如果后端未返回 usedMargin 字段，不能用 `|| 0` 推断为0，否则会导致持仓被误清空并闪烁
       const usedMargin = item?.account?.usedMargin;
       const hasLocalPosition = positionData.value[robotId]?.length > 0;
+      // ===== 新开仓保护窗 =====
+      // 后端 usedMargin>0 往往比 positions 列表更早出现；此时可能还拿不到持仓快照，容易出现“先出现后消失”的闪烁
+      // 保护策略：只要检测到 usedMargin>0，就开启一段保护窗，在窗口内忽略空快照清空逻辑
+      if (usedMargin !== undefined && usedMargin !== null && usedMargin > 0) {
+        const protectMs = 15_000;
+        const until = Date.now() + protectMs;
+        positionOpenProtectionUntil.value[robotId] = Math.max(positionOpenProtectionUntil.value[robotId] || 0, until);
+      }
       if (usedMargin !== undefined && usedMargin !== null && usedMargin === 0 && hasLocalPosition) {
+        // OKX/交易所同步可能短暂返回 usedMargin=0（尤其开仓/重连窗口），若最近出现过非空持仓则不清空
+        const lastNonEmpty = positionLastNonEmptyAt.value[robotId] || 0;
+        const protectMs = 10_000;
+        if (lastNonEmpty > 0 && Date.now() - lastNonEmpty < protectMs) {
+          // 只计数但不触发清空
+          positionEmptyStreak.value[robotId] = (positionEmptyStreak.value[robotId] || 0) + 1;
+        } else {
         // 【防闪烁】使用防抖机制：累加空结果计数，连续3次为空才真正清空
         const streak = (positionEmptyStreak.value[robotId] || 0) + 1;
         positionEmptyStreak.value[robotId] = streak;
@@ -2925,6 +4076,7 @@ const applyBatchRobotAnalysisList = (list: any[], isInitialLoad: boolean = false
           positionData.value[robotId] = [];
           const keysToDelete = Object.keys(takeProfitRetreatSwitch.value).filter(key => key.startsWith(`${robotId}_`));
           keysToDelete.forEach(key => delete takeProfitRetreatSwitch.value[key]);
+        }
         }
       } else if (hasLocalPosition) {
         // 有持仓时重置空结果计数
@@ -2965,6 +4117,7 @@ const loadRealtimeData = async (isInitialLoad: boolean = false) => {
           tickerData.value[robotId] = {
             symbol: item.ticker.symbol,
             lastPrice: item.ticker.lastPrice,
+            markPrice: item.ticker.markPrice,
             high24h: item.ticker.high24h,
             low24h: item.ticker.low24h,
             volume24h: item.ticker.volume24h,
@@ -3000,6 +4153,10 @@ const loadRealtimeData = async (isInitialLoad: boolean = false) => {
                 existingConfig.autoCloseEnabled !== item.config?.autoCloseEnabled) {
               newConfig.autoCloseEnabled = existingConfig.autoCloseEnabled;
             }
+            if (existingConfig.profitLockEnabled !== undefined &&
+                existingConfig.profitLockEnabled !== item.config?.profitLockEnabled) {
+              newConfig.profitLockEnabled = existingConfig.profitLockEnabled;
+            }
           }
           
           analysisData.value[robotId] = {
@@ -3021,6 +4178,17 @@ const loadRealtimeData = async (isInitialLoad: boolean = false) => {
           
           if (usedMargin !== undefined && usedMargin !== null && usedMargin === 0 && hasLocalPosition) {
             // 【防闪烁】使用防抖机制：累加空结果计数，连续3次为空才真正清空
+            const protectMs = 10_000;
+            const lastNonEmpty = positionLastNonEmptyAt.value[robotId] || 0;
+            const openProtectUntil = positionOpenProtectionUntil.value[robotId] || 0;
+            if (openProtectUntil > 0 && Date.now() < openProtectUntil) {
+              // 新开仓保护窗内：忽略空快照，不清空也不计数
+              continue;
+            }
+            if (lastNonEmpty > 0 && Date.now() - lastNonEmpty < protectMs) {
+              positionEmptyStreak.value[robotId] = (positionEmptyStreak.value[robotId] || 0) + 1;
+              continue;
+            }
             const streak = (positionEmptyStreak.value[robotId] || 0) + 1;
             positionEmptyStreak.value[robotId] = streak;
             if (streak >= 3) {
@@ -3039,58 +4207,19 @@ const loadRealtimeData = async (isInitialLoad: boolean = false) => {
             }
           }
           
-          // 【重要】使用实时行情更新持仓的未实现盈亏
+          // 【重要】持仓盈亏/最高盈利/止盈止损进度统一以“后端返回”为准（OKX 的持仓数量口径可能是合约张数，前端用 positionAmt 自算会偏差）。
+          // 这里仅用实时行情更新 markPrice（用于展示），避免覆盖后端的 unrealizedPnl/maxProfitReached 导致前后端口径不一致。
           // 【防闪烁优化】使用原地更新而非 .map() 创建新数组，避免触发 Vue 完整重渲染
-          const currentPrice = item.ticker?.lastPrice;
+          // 永续合约展示：优先用 markPrice（更接近交易所口径），缺失时再用 lastPrice
+          const currentPrice = (item.ticker?.markPrice || item.ticker?.lastPrice);
           const positions = positionData.value[robotId];
           if (currentPrice && positions?.length > 0) {
-            const maxProfitCache = getMaxProfitCache();
-            let cacheUpdated = false;
-            
             // 【原地更新】直接修改数组中的对象属性，保持引用不变
             for (let i = 0; i < positions.length; i++) {
               const pos = positions[i];
-              
-              // 计算未实现盈亏: (当前价 - 开仓价) * 数量 * 方向
-              const direction = pos.positionSide === 'LONG' ? 1 : -1;
-              const quantity = Math.abs(pos.positionAmt || 0);
-              const entryPrice = pos.entryPrice || 0;
-              
-              // 未实现盈亏 = (标记价 - 开仓价) * 持仓量 * 方向
-              const priceDiff = currentPrice - entryPrice;
-              const newUnrealizedPnl = priceDiff * quantity * direction;
-              
-              // 更新最高盈利值（只有盈利时才更新，且以当前持仓的最高盈利为基准）
-              const cacheKey = `${robotId}_${pos.symbol}_${pos.positionSide}`;
-              let maxProfitReached = pos.maxProfitReached || 0;
-              
-              // 【重要】只有盈利才能更新最高盈利（最高盈利追踪：只增不减）
-              if (newUnrealizedPnl > 0 && newUnrealizedPnl > maxProfitReached) {
-                maxProfitReached = newUnrealizedPnl;
-                maxProfitCache[cacheKey] = maxProfitReached;
-                cacheUpdated = true;
-              }
-              
-              // 【原地更新】直接修改对象属性，Vue 会检测到属性变化并局部更新 DOM
+
+              // 【原地更新】仅更新 markPrice（展示用）
               pos.markPrice = currentPrice;
-              pos.unrealizedPnl = newUnrealizedPnl;
-              pos.maxProfitReached = maxProfitReached;
-              
-              // 【自动开启】检查是否满足自动启动条件（启动止盈进度达到100%）
-              const startProgress = calcStartProfitProgress(pos, { id: robotId });
-              if (startProgress >= 100) {
-                const switchKey = `${robotId}_${pos.symbol}_${pos.positionSide}`;
-                // 如果尚未开启，自动开启（调用后端API）
-                if (!takeProfitRetreatSwitch.value[switchKey]) {
-                  // 异步调用，不阻塞数据更新
-                  autoEnableTakeProfitRetreat(robotId, pos.symbol, pos.positionSide);
-                }
-              }
-            }
-            
-            // 保存缓存
-            if (cacheUpdated) {
-              saveMaxProfitCache(maxProfitCache);
             }
           }
         }
@@ -3160,7 +4289,7 @@ const startCountdownTimer = () => {
 const startRobot = async (robot: any) => {
   try {
     await ToogoRobotApi.start({ id: robot.id });
-    message.success('机器人已启动');
+    message.success(robot?.status === 3 ? '机器人已重启' : '机器人已启动');
     loadData();
   } catch (error: any) {
     message.error(error.message || '启动失败');
@@ -3226,88 +4355,15 @@ const toggleAutoTrade = async (robot: any, newValue: boolean) => {
 // 获取启动止盈回撤开关状态
 // 【关键】以后端状态为准，确保前后端一致
 const getTakeProfitRetreatSwitch = (robotId: number, symbol: string, positionSide: string, pos?: any): boolean => {
-  const key = `${robotId}_${symbol}_${positionSide}`;
-  
-  // 【修复】优先使用后端状态（后端是真实状态）
-  // 只有在后端状态不可用时才使用本地状态（例如 pos 为空）
+  // 【完全由后端控制】只使用后端返回的开关状态，不再使用本地状态
+  // 如果后端没有返回数据，返回false（表示未启动）
   if (pos !== undefined && pos !== null) {
-    const backendValue = pos.takeProfitEnabled || false;
-    // 同步后端状态到本地
-    if (backendValue) {
-      takeProfitRetreatSwitch.value[key] = true;
-    } else {
-      // 后端显示未启动，清除本地状态（新订单重置）
-      delete takeProfitRetreatSwitch.value[key];
-    }
-    return backendValue;
+    return pos.takeProfitEnabled || false;
   }
-  
-  // 后端状态不可用时，使用本地状态
-  return takeProfitRetreatSwitch.value[key] || false;
+  // 后端状态不可用时，返回false（默认未启动）
+  return false;
 };
   
-// 【自动开启】当启动止盈进度达到100%时自动开启止盈回撤（调用后端API）
-const autoEnableTakeProfitRetreat = async (robotId: number, symbol: string, positionSide: string) => {
-  const key = `${robotId}_${symbol}_${positionSide}`;
-  
-  // 如果已经开启，跳过
-  if (takeProfitRetreatSwitch.value[key]) {
-    return;
-  }
-  
-  try {
-    // 调用后端 API 更新数据库状态
-    await ToogoRobotApi.setTakeProfitSwitch({
-      robotId,
-      positionSide,
-      enabled: true,
-    });
-    // 更新本地状态
-      takeProfitRetreatSwitch.value[key] = true;
-    console.log(`[自动开启] 止盈回撤已自动开启: robotId=${robotId}, positionSide=${positionSide}`);
-  } catch (error: any) {
-    // 静默失败，避免刷屏
-    console.warn('自动开启止盈回撤失败:', error.message);
-    }
-};
-
-// 设置启动止盈回撤开关状态
-const setTakeProfitRetreatSwitch = async (robotId: number, symbol: string, positionSide: string, value: boolean, pos?: any) => {
-  const key = `${robotId}_${symbol}_${positionSide}`;
-  
-  // 不可关闭原则：如果当前已开启，不允许关闭
-  if (takeProfitRetreatSwitch.value[key] && !value) {
-    message.warning('止盈回撤已启动，不可关闭');
-    return; // 已启动，不允许关闭
-  }
-  
-  // 如果尝试开启
-  if (value) {
-    // 检查是否满足条件（启动止盈进度达到100%）
-    if (pos) {
-    const progress = calcStartProfitProgress(pos, { id: robotId });
-      if (progress < 100) {
-        message.warning('启动止盈进度未达到100%，无法开启止盈回撤');
-        return;
-      }
-    }
-    
-    try {
-      // 调用后端 API 更新数据库状态
-      await ToogoRobotApi.setTakeProfitSwitch({
-        robotId,
-        positionSide,
-        enabled: true,
-      });
-      // 更新本地状态
-    takeProfitRetreatSwitch.value[key] = true;
-      message.success('止盈回撤已启动');
-    } catch (error: any) {
-      message.error(error.message || '启动止盈回撤失败');
-    }
-  }
-};
-
 // 快速切换自动平仓开关
 const toggleAutoClose = async (robot: any, newValue: boolean) => {
   const newStatus = newValue ? 1 : 0;
@@ -3333,6 +4389,32 @@ const toggleAutoClose = async (robot: any, newValue: boolean) => {
     // 如果失败，恢复开关状态
     if (analysisData.value[robot.id]?.config) {
       analysisData.value[robot.id].config.autoCloseEnabled = oldValue;
+    }
+    message.error(error.message || '切换失败');
+  }
+};
+
+// 锁定盈利开关：止盈开关已启动时禁止自动开新仓（后端执行判断）
+const toggleProfitLock = async (robot: any, newValue: boolean) => {
+  const newStatus = newValue ? 1 : 0;
+  const oldValue = analysisData.value[robot.id]?.config?.profitLockEnabled;
+  if (!analysisData.value[robot.id]) {
+    analysisData.value[robot.id] = {};
+  }
+  if (!analysisData.value[robot.id].config) {
+    analysisData.value[robot.id].config = {};
+  }
+  analysisData.value[robot.id].config.profitLockEnabled = newValue;
+
+  try {
+    await ToogoRobotApi.update({
+      id: robot.id,
+      profitLockEnabled: newStatus,
+    });
+    message.success(newValue ? '已开启锁定盈利' : '已关闭锁定盈利');
+  } catch (error: any) {
+    if (analysisData.value[robot.id]?.config) {
+      analysisData.value[robot.id].config.profitLockEnabled = oldValue;
     }
     message.error(error.message || '切换失败');
   }
@@ -3386,29 +4468,44 @@ const deleteRobot = (robot: any) => {
 
 // 手动平仓 (列表中)
 const closePosition = async (robot: any, position: any) => {
-  // 【重要】记录前端传递的参数，用于调试
-  console.log('[Frontend] closePosition 调用参数:', {
-    robotId: robot.id,
-    symbol: position.symbol,
-    positionSide: position.positionSide,
-    positionAmt: position.positionAmt,
-    quantity: Math.abs(position.positionAmt),
-    fullPosition: position
-  });
+  const key = getCloseKey(robot.id, position.symbol, position.positionSide);
+  // 若该仓位正在平仓中，直接拦截，避免重复弹框/重复请求
+  if (closeInFlight.value[key]) {
+    message.warning('平仓请求处理中，请勿重复点击');
+    return;
+  }
   
-  dialog.warning({
+  const d = dialog.warning({
     title: '确认平仓',
-    content: `确定要平仓 ${position.positionSide === 'LONG' ? '多' : '空'} ${Math.abs(position.positionAmt).toFixed(4)} 吗？`,
+    content: () => {
+      const p = closeProgress.value[key] ?? 0;
+      return h('div', { style: 'display:flex;flex-direction:column;gap:10px;' }, [
+        h('div', null, `确定要平仓 ${position.positionSide === 'LONG' ? '多' : '空'} ${Math.abs(position.positionAmt).toFixed(4)} 吗？`),
+        closeInFlight.value[key]
+          ? h('div', { style: 'margin-top:2px;' }, [
+              h(NProgress, {
+                type: 'line',
+                percentage: p,
+                height: 10,
+                indicatorPlacement: 'inside',
+              } as any),
+              h('div', { style: 'margin-top:6px;color:#9ca3af;font-size:12px;' }, '请求提交中，请勿重复点击…'),
+            ])
+          : null,
+      ]);
+    },
     positiveText: '确定平仓',
     negativeText: '取消',
     onPositiveClick: async () => {
+      // 二次防抖：Naive Dialog 在异步期间仍可能被重复触发
+      if (closeInFlight.value[key]) {
+        return false;
+      }
+      closeInFlight.value[key] = true;
+      d.loading = true; // 让确认按钮进入 loading（Naive UI 内置防重复）
+
+      const stop = startCloseProgress(key);
       try {
-        console.log('[Frontend] 执行平仓请求:', {
-          robotId: robot.id,
-          symbol: position.symbol,
-          positionSide: position.positionSide,
-          quantity: Math.abs(position.positionAmt)
-        });
         await ToogoRobotApi.closePosition({
           robotId: robot.id,
           symbol: position.symbol,
@@ -3416,10 +4513,10 @@ const closePosition = async (robot: any, position: any) => {
           quantity: Math.abs(position.positionAmt),
         });
         message.success('平仓成功');
+        closeProgress.value[key] = 100;
 
         // ========= 关键优化：立即更新前端持仓视图（不等待下一轮同步/轮询） =========
-        const closeKey = `${robot.id}_${position.symbol}_${position.positionSide}`;
-        recentManualCloseAt.value[closeKey] = Date.now();
+        recentManualCloseAt.value[key] = Date.now();
 
         // 立即从当前持仓列表移除该仓位（用户体验：平仓后立刻消失）
         const before = positionData.value[robot.id] || [];
@@ -3450,8 +4547,18 @@ const closePosition = async (robot: any, position: any) => {
         if (currentRobot.value && showDetailModal.value) {
           await refreshOrderData();
         }
+        // 让用户感知“完成”，再关闭弹框，避免“没反应”
+        window.setTimeout(() => {
+          d.destroy();
+        }, 300);
       } catch (error: any) {
         message.error(error.message || '平仓失败');
+        // 返回 false：保持弹框不关闭，允许用户再次点击确认重试
+        return false;
+      } finally {
+        stop();
+        d.loading = false;
+        closeInFlight.value[key] = false;
       }
     },
   });
@@ -3651,6 +4758,8 @@ const startRefresh = () => {
     // 机器人运行状态变化时（启动/停止/崩溃）需要更新订阅范围
     updateWsSubscription();
     updateWsPositionsSubscription();
+    // 详情弹窗打开时：挂单走 WS（避免60s REST 刷新带来的闪烁）
+    updateWsOrdersSubscription();
 
     wsFallbackCounter++;
     // 兜底：每30秒拉一次（仅用于WS断线或漏推时纠偏）
@@ -3660,16 +4769,19 @@ const startRefresh = () => {
     }
   }, 2000);
   
-  // 中速刷新：每10秒刷新详情页订单数据
+  // 详情页挂单改为 WS；这里保留一个更低频的兜底（防止极端情况下 WS/对账都失效）
   orderRefreshTimer = setInterval(() => {
-    // 如果当前打开了详情页面，刷新订单数据
     if (currentRobot.value && showDetailModal.value) {
+      // 仅兜底刷新成交明细/挂单（DB为主），频率降低，减少闪烁风险
       refreshOrderData();
     }
-  }, 60000);
+  }, 5 * 60 * 1000);
   
   // 慢速刷新：每30秒更新日志数据（executionLogs 改为按需加载）
   refreshTimer = setInterval(() => {
+    // 刷新运行区间净盈亏（低频，来自数据库汇总）
+    loadRunningSessionNetPnl(false);
+
     // 刷新所有机器人的方向预警日志
     for (const robot of robotList.value) {
       loadSignalLogs(robot.id);
@@ -3721,12 +4833,13 @@ const saveMaxProfitCache = (cache: Record<string, number>) => {
 const isPositionStructureEqual = (oldPos: any, newPos: any): boolean => {
   if (!oldPos || !newPos) return false;
   // 只比较结构性字段，不比较价格和盈亏（这些会频繁变化导致闪烁）
+  // 【注意】开关状态变化不应该被视为结构变化，应该原地更新
   return (
     oldPos.symbol === newPos.symbol &&
     oldPos.positionSide === newPos.positionSide &&
     Math.abs((oldPos.quantity || 0) - (newPos.quantity || 0)) < 0.0001 &&
-    Math.abs((oldPos.entryPrice || 0) - (newPos.entryPrice || 0)) < 0.01 &&
-    oldPos.takeProfitEnabled === newPos.takeProfitEnabled
+    Math.abs((oldPos.entryPrice || 0) - (newPos.entryPrice || 0)) < 0.01
+    // 移除 takeProfitEnabled 的比较，允许开关状态变化时原地更新
   );
 };
 
@@ -3737,17 +4850,41 @@ const applyRobotPositionsSnapshot = (robot: any, positions: any[], source: strin
   if (list.length > 0) {
         // 有数据：重置空结果计数
         positionEmptyStreak.value[robot.id] = 0;
+        positionLastNonEmptyAt.value[robot.id] = Date.now();
+        // 有非空快照后，继续维持一小段保护窗，避免“刚出现下一秒又空”导致闪
+        {
+          const protectMs = 15_000;
+          const until = Date.now() + protectMs;
+          positionOpenProtectionUntil.value[robot.id] = Math.max(positionOpenProtectionUntil.value[robot.id] || 0, until);
+        }
         // 【防闪烁优化】使用原地更新策略：只更新变化的字段，保持对象引用稳定
         const oldPositions = positionData.value[robot.id] || [];
         const newPositions: any[] = [];
+        const seenKeys = new Set<string>();
         
         // 获取最高盈利缓存（用于清理和检测新仓位）
         const maxProfitCache = getMaxProfitCache();
         let cacheNeedsUpdate = false;
 
     for (const newPos of list) {
+      // 规范化（防止 Gate/OKX 偶发返回 long/short 导致 key 抖动、方向判断错误）
+      if (newPos && newPos.positionSide != null) {
+        newPos.positionSide = String(newPos.positionSide).toUpperCase().trim();
+      }
+      if (newPos && newPos.symbol != null) {
+        // 统一 symbol key：兼容 BTC/USDT、BTC_USDT、BTCUSDT 等格式，避免 key 抖动导致“行消失又回来”
+        newPos.symbol = String(newPos.symbol)
+          .toUpperCase()
+          .trim()
+          .replaceAll('/', '')
+          .replaceAll('_', '')
+          .replaceAll('-', '');
+      }
+
       // 过滤“0数量”持仓（平仓后引擎/交易所可能短暂返回 PositionAmt=0 的残留对象）
-      if (Math.abs(Number(newPos.positionAmt || 0)) < 0.0001) {
+      // Gate 刚开仓时可能出现非常小的抖动值（例如 0.00009999），若阈值过大会把“第二个新仓位”误过滤导致行闪烁。
+      const amt = Number(newPos.positionAmt ?? 0);
+      if (!Number.isFinite(amt) || Math.abs(amt) <= 1e-12) {
         continue;
       }
 
@@ -3757,6 +4894,11 @@ const applyRobotPositionsSnapshot = (robot: any, positions: any[], source: strin
       if (closedAt > 0 && Date.now() - closedAt < 5000) {
         continue;
       }
+
+      seenKeys.add(`${newPos.symbol}_${newPos.positionSide}`);
+      // 重置“单仓位缺失计数”
+      positionMissingStreak.value[closeKey] = 0;
+      delete positionMissingSince.value[closeKey];
 
           // 查找对应的旧持仓
           const oldPos = oldPositions.find(
@@ -3785,34 +4927,164 @@ const applyRobotPositionsSnapshot = (robot: any, positions: any[], source: strin
             finalMaxProfit = currentProfit;
           }
           
-      // 同步后端返回的止盈回撤状态到本地开关（新订单重置）
-          const switchKey = `${robot.id}_${newPos.symbol}_${newPos.positionSide}`;
-          if (newPos.takeProfitEnabled) {
-            takeProfitRetreatSwitch.value[switchKey] = true;
-          } else {
-            delete takeProfitRetreatSwitch.value[switchKey];
-          }
+      // 【完全由后端控制】开关状态完全由后端控制，不再同步到本地
           
           // 如果持仓结构相同（只是价格/盈亏变化），原地更新字段，保持对象引用
+          // 【修复】确保后端推送的血条字段（takeProfitStartProgress、stopLossProgress等）被正确保留
           if (oldPos && isPositionStructureEqual(oldPos, newPos)) {
+            // 保留后端计算的血条字段和开关状态（优先使用后端数据）
+            const backendProgressFields = {
+              takeProfitStartProgress: newPos.takeProfitStartProgress,
+              takeProfitRetreatBar: newPos.takeProfitRetreatBar,
+              stopLossProgress: newPos.stopLossProgress,
+              realTimeProfitPercent: newPos.realTimeProfitPercent,
+              takeProfitRetreatPercent: newPos.takeProfitRetreatPercent,
+              // 【重要】确保开关状态被正确保留（后端控制）
+              takeProfitEnabled: newPos.takeProfitEnabled,
+            };
+            // 【重要】当开关状态变化时（特别是从false变为true），需要强制触发Vue响应式更新
+            const oldTakeProfitEnabled = oldPos.takeProfitEnabled || false;
+            const newTakeProfitEnabled = newPos.takeProfitEnabled || false;
+            const switchStateChanged = oldTakeProfitEnabled !== newTakeProfitEnabled;
+            
             Object.assign(oldPos, {
               ...newPos,
-          maxProfitReached: finalMaxProfit,
+              maxProfitReached: finalMaxProfit,
+              // 确保后端推送的血条字段和开关状态被保留（即使为0/false也要保留，表示后端已计算）
+              ...backendProgressFields,
             });
+            
+            // 【修复】如果开关状态发生变化（特别是启动止盈），强制触发Vue响应式更新
+            if (switchStateChanged && newTakeProfitEnabled) {
+              // 使用Vue的响应式更新机制，确保UI能立即反映变化
+              // 通过重新赋值触发响应式更新
+              oldPos.takeProfitEnabled = true;
+            }
+            
         newPositions.push(oldPos);
           } else {
+            // 新创建持仓对象时，确保包含所有后端字段（包括开关状态和血条字段）
             newPositions.push({
             ...newPos,
           maxProfitReached: finalMaxProfit,
+            // 确保后端推送的开关状态和血条字段被包含
+            takeProfitEnabled: newPos.takeProfitEnabled,
+            takeProfitStartProgress: newPos.takeProfitStartProgress,
+            takeProfitRetreatBar: newPos.takeProfitRetreatBar,
+            stopLossProgress: newPos.stopLossProgress,
+            realTimeProfitPercent: newPos.realTimeProfitPercent,
+            takeProfitRetreatPercent: newPos.takeProfitRetreatPercent,
             });
           }
         }
+
+        // Gate 双向持仓：有时快照会短暂少返回一侧（例如只返回 LONG 或只返回 SHORT）
+        // 为避免 UI 行“消失又回来”闪烁：对“未出现在本次快照”的旧仓位做缺失保护。
+        // 说明：之前按“连续缺失>=3次移除”，若轮询约20s，则会出现“消失约1分钟”的体感。
+        // 这里改为“按时间保留”（默认2分钟内都保留），更贴近真实交易状态。
+        for (const oldPos of oldPositions) {
+          if (!oldPos) continue;
+          const sym = String(oldPos.symbol || '')
+            .toUpperCase()
+            .trim()
+            .replaceAll('/', '')
+            .replaceAll('_', '')
+            .replaceAll('-', '');
+          const ps = String(oldPos.positionSide || '').toUpperCase().trim();
+          if (!sym || !ps) continue;
+          const k = `${sym}_${ps}`;
+          if (seenKeys.has(k)) continue; // 本次已出现
+
+          const fullKey = `${robot.id}_${sym}_${ps}`;
+          const last = positionMissingStreak.value[fullKey] || 0;
+          const next = last + 1;
+          positionMissingStreak.value[fullKey] = next;
+
+          // 保护策略（更优体验）：
+          // - 首次缺失：立刻对该机器人“补拉一次 positions”（单机器人、带冷却），多数情况下几百毫秒内就能补齐缺失的一侧
+          // - 短窗口保留：在补拉结果回来前保留旧行，避免闪烁
+          // - 超过短窗口仍未出现：才认为确实已无该仓位，清理本地状态并移除（避免平仓后拖很久）
+          const now = Date.now();
+          const firstMissingAt = positionMissingSince.value[fullKey] || 0;
+          if (firstMissingAt === 0) {
+            positionMissingSince.value[fullKey] = now;
+            // 异步补拉，不阻塞本次渲染
+            setTimeout(() => repairRobotPositionsOnce(robot, `missing:${sym}_${ps}`), 200);
+            newPositions.push(oldPos);
+            continue;
+          }
+          const keepMs = 25_000;
+          if (now-firstMissingAt < keepMs) {
+            newPositions.push(oldPos);
+          } else {
+            // 连续缺失：清理该仓位相关的本地状态（止盈开关/最高盈利）
+            const switchKey = `${robot.id}_${sym}_${ps}`;
+            delete takeProfitRetreatSwitch.value[switchKey];
+            delete maxProfitCache[switchKey];
+            cacheNeedsUpdate = true;
+            delete positionMissingSince.value[fullKey];
+          }
+        }
         
-        // 只有持仓列表结构变化（增删）时才替换数组
-    const oldKeys = oldPositions.map((p: any) => `${p.symbol}_${p.positionSide}`).sort().join(',');
-    const newKeys = newPositions.map((p: any) => `${p.symbol}_${p.positionSide}`).sort().join(',');
-        if (oldKeys !== newKeys) {
-          positionData.value[robot.id] = newPositions;
+        // 【优化】局部刷新：只更新血条相关字段，保持对象引用不变，实现局部刷新
+        // 检查持仓列表结构是否变化（增删）
+        const oldKeys = oldPositions.map((p: any) => `${p.symbol}_${p.positionSide}`).sort().join(',');
+        const newKeys = newPositions.map((p: any) => `${p.symbol}_${p.positionSide}`).sort().join(',');
+        const structureChanged = oldKeys !== newKeys;
+        
+        if (structureChanged) {
+          // 结构变化（增删持仓），需要替换整个数组
+          positionData.value[robot.id] = [...newPositions];
+        } else {
+          // 结构未变化，只更新血条相关字段，实现局部刷新
+          // 保持对象引用不变，只更新属性，Vue会自动检测并只更新相关DOM
+          let needRefresh = false; // 标记是否需要触发局部刷新
+          for (const newPos of newPositions) {
+            const oldPos = oldPositions.find((p: any) => 
+              p.symbol === newPos.symbol && p.positionSide === newPos.positionSide
+            );
+            if (oldPos) {
+              // 检测止损血条是否达到100%
+              const oldStopLossProgress = oldPos.stopLossProgress || 0;
+              const newStopLossProgress = newPos.stopLossProgress || 0;
+              const stopLossReached100 = oldStopLossProgress < 100 && newStopLossProgress >= 100;
+              
+              // 检测回撤止盈血条是否达到0%（需要先判断是否已启动止盈）
+              const isTakeProfitEnabled = getTakeProfitRetreatSwitch(robot.id, newPos.symbol, newPos.positionSide, newPos);
+              const oldRetreatBar = oldPos.takeProfitRetreatBar !== undefined && oldPos.takeProfitRetreatBar !== null ? Number(oldPos.takeProfitRetreatBar) : 100;
+              const newRetreatBar = newPos.takeProfitRetreatBar !== undefined && newPos.takeProfitRetreatBar !== null ? Number(newPos.takeProfitRetreatBar) : 100;
+              const retreatBarReached0 = isTakeProfitEnabled && oldRetreatBar > 0 && newRetreatBar <= 0;
+              
+              // 如果止损血条达到100%或回撤止盈血条达到0%，标记需要刷新
+              if (stopLossReached100 || retreatBarReached0) {
+                needRefresh = true;
+              }
+              
+              // 只更新血条相关字段和开关状态，保持对象引用不变
+              // 这样Vue可以检测到属性变化并只更新相关的DOM部分（血条列）
+              oldPos.takeProfitStartProgress = newPos.takeProfitStartProgress;
+              oldPos.takeProfitRetreatBar = newPos.takeProfitRetreatBar;
+              oldPos.stopLossProgress = newPos.stopLossProgress;
+              oldPos.realTimeProfitPercent = newPos.realTimeProfitPercent;
+              oldPos.takeProfitRetreatPercent = newPos.takeProfitRetreatPercent;
+              oldPos.takeProfitEnabled = newPos.takeProfitEnabled;
+              // 同时更新未实现盈亏和最高盈利（这些也会影响血条显示）
+              oldPos.unrealizedPnl = newPos.unrealizedPnl;
+              if (newPos.maxProfitReached !== undefined && newPos.maxProfitReached !== null) {
+                oldPos.maxProfitReached = Math.max(oldPos.maxProfitReached || 0, newPos.maxProfitReached);
+              }
+            }
+          }
+          
+          // 如果检测到止损血条达到100%或回撤止盈血条达到0%，触发局部刷新（类似启动止盈血条刷新）
+          if (needRefresh) {
+            // 延迟执行，避免频繁刷新，同时确保Vue响应式更新完成
+            setTimeout(() => {
+              repairRobotPositionsOnce(robot, `血条触发刷新:止损100%或回撤0%`);
+            }, 200);
+          }
+          
+          // 不需要替换数组，Vue会自动检测对象属性的变化并局部更新DOM
         }
         
     // 保存更新后的缓存
@@ -3830,19 +5102,30 @@ const applyRobotPositionsSnapshot = (robot: any, positions: any[], source: strin
 
   // 空列表：
   // - 默认：连续3次为空才清空（避免偶发空数据造成闪烁）
-  // - 若刚手动平仓或账户 usedMargin=0（明显已无持仓），则立即清空（避免“平了还显示”）
+  // - 若刚手动平仓，则立即清空（避免“平了还显示”）
   const hadLocalPosition = (positionData.value[robot.id] || []).length > 0;
-  const usedMargin = analysisData.value?.[robot.id]?.account?.usedMargin;
+  // 新开仓保护窗内：直接忽略空快照（不清空也不计数），彻底消除“新开仓闪一下”
+  const openProtectUntil = positionOpenProtectionUntil.value[robot.id] || 0;
+  if (openProtectUntil > 0 && Date.now() < openProtectUntil) {
+    return;
+  }
   const hasRecentManualClose = Object.keys(recentManualCloseAt.value).some((k) => {
     if (!k.startsWith(`${robot.id}_`)) return false;
     const ts = recentManualCloseAt.value[k] || 0;
     return ts > 0 && Date.now() - ts < 5000;
   });
 
-  if (hadLocalPosition && (hasRecentManualClose || usedMargin === 0)) {
-    console.log(`[${source}] robotId=${robot.id} 空列表快速清空（manualClose=${hasRecentManualClose}, usedMargin=${usedMargin}）`);
+  // 如果最近保护窗内出现过非空持仓，则认为本次空结果大概率是同步抖动，不清空（除非明确手动平仓）
+  const lastNonEmpty = positionLastNonEmptyAt.value[robot.id] || 0;
+  const protectMs = 10_000;
+  const recentlyNonEmpty = lastNonEmpty > 0 && Date.now() - lastNonEmpty < protectMs;
+
+  if (hadLocalPosition && hasRecentManualClose) {
+    console.log(`[${source}] robotId=${robot.id} 手动平仓后空列表快速清空`);
           positionData.value[robot.id] = [];
     positionEmptyStreak.value[robot.id] = 0;
+    positionLastNonEmptyAt.value[robot.id] = 0;
+    positionOpenProtectionUntil.value[robot.id] = 0;
 
     // 详情弹窗联动：持仓被清空时同步清空详情页
     if (showDetailModal.value && currentRobot.value?.id === robot.id) {
@@ -3861,11 +5144,18 @@ const applyRobotPositionsSnapshot = (robot: any, positions: any[], source: strin
     return;
   }
 
+  if (hadLocalPosition && recentlyNonEmpty) {
+    // 抑制抖动：不累加 streak，不清空，等待下一次快照再决策
+    return;
+  }
+
   const streak = (positionEmptyStreak.value[robot.id] || 0) + 1;
   positionEmptyStreak.value[robot.id] = streak;
   if (streak >= 3 && hadLocalPosition) {
     console.log(`[${source}] robotId=${robot.id} 连续${streak}次无持仓，清空持仓列表`);
     positionData.value[robot.id] = [];
+    positionLastNonEmptyAt.value[robot.id] = 0;
+    positionOpenProtectionUntil.value[robot.id] = 0;
 
     // 详情弹窗联动：持仓被清空时同步清空详情页
     if (showDetailModal.value && currentRobot.value?.id === robot.id) {
@@ -3977,7 +5267,7 @@ const applyStrategyGroup = async () => {
         const updateData = {
           id: currentRobot.value.id,
           robotName: currentRobot.value.robotName,
-          exchange: configData.exchange || firstStrategy.exchange || 'bitget',
+          exchange: configData.exchange || firstStrategy.exchange || 'binance',
           symbol: configData.symbol || firstStrategy.symbol || 'BTC-USDT',
           tradeType: configData.tradeType || firstStrategy.tradeType || 'perpetual',
           orderType: configData.orderType || firstStrategy.orderType || 'market',
@@ -4060,10 +5350,21 @@ const goToStrategy = () => {
 
 
 onMounted(async () => {
+  // 每秒刷新一次“当前时间”，用于运行时长等纯UI计算
+  nowTickTimer = setInterval(() => {
+    nowTick.value = Date.now();
+  }, 1000);
+
   // 监听WS推送（机器人批量实时分析）
   addOnMessage(SocketEnum.EventToogoRobotRealtimePush, wsOnRealtimePush);
   // 监听WS推送（机器人持仓快照）
   addOnMessage(SocketEnum.EventToogoRobotPositionsPush, wsOnPositionsPush);
+  // 监听WS推送（机器人挂单快照）
+  addOnMessage(SocketEnum.EventToogoRobotOrdersPush, wsOnOrdersPush);
+  // 监听WS推送（机器人挂单增量）
+  addOnMessage(SocketEnum.EventToogoRobotOrdersDelta, wsOnOrdersDelta);
+  // 监听WS推送（持仓增量：由交易所私有WS触发的即时刷新）
+  addOnMessage(SocketEnum.EventToogoRobotPositionsDelta, wsOnPositionsDelta);
   // 监听WS推送（交易关键事件）
   addOnMessage(SocketEnum.EventToogoRobotTradeEvent, wsOnTradeEvent);
   loadData();
@@ -4075,11 +5376,20 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  if (nowTickTimer) {
+    clearInterval(nowTickTimer);
+    nowTickTimer = null;
+  }
+
   removeOnMessage(SocketEnum.EventToogoRobotRealtimePush);
   removeOnMessage(SocketEnum.EventToogoRobotPositionsPush);
+  removeOnMessage(SocketEnum.EventToogoRobotOrdersPush);
+  removeOnMessage(SocketEnum.EventToogoRobotOrdersDelta);
+  removeOnMessage(SocketEnum.EventToogoRobotPositionsDelta);
   removeOnMessage(SocketEnum.EventToogoRobotTradeEvent);
   unsubscribeWs();
   unsubscribeWsPositions();
+  unsubscribeWsOrders();
   stopRefresh();
   // 清理倒计时定时器
   if (subscriptionCountdownTimer.value) {
@@ -4122,6 +5432,71 @@ onUnmounted(() => {
 
 .mb-3 {
   margin-bottom: 12px;
+}
+
+/* ==================== 筛选工具栏优化 ==================== */
+.filter-toolbar-card {
+  :deep(.n-card__content) {
+    padding: 12px 16px;
+  }
+
+  :deep(.n-select) {
+    .n-base-selection {
+      transition: all 0.2s ease;
+      
+      &:hover {
+        border-color: var(--primary-color);
+      }
+    }
+  }
+
+  :deep(.n-radio-group) {
+    .n-radio-button {
+      transition: all 0.2s ease;
+    }
+  }
+}
+
+/* ==================== 列表视图表格样式优化 ==================== */
+.robot-list-table-card {
+  :deep(.n-card__content) {
+    padding: 0;
+  }
+}
+
+.robot-list-table {
+  /* 表头样式优化 */
+  :deep(.n-data-table-thead) {
+    .n-data-table-th {
+      font-weight: 600;
+      font-size: 13px;
+      padding: 10px 8px;
+      background: var(--table-header-color);
+    }
+  }
+
+  /* 表格行样式优化 */
+  :deep(.n-data-table-tbody) {
+    .n-data-table-tr {
+      transition: background-color 0.2s ease;
+      
+      &:hover {
+        background: var(--table-header-color);
+      }
+    }
+
+    .n-data-table-td {
+      padding: 10px 8px;
+      font-size: 13px;
+      line-height: 1.6;
+      vertical-align: middle;
+    }
+  }
+
+  /* 固定列样式 */
+  :deep(.n-data-table-td--fixed-right) {
+    background: inherit;
+  }
 }
 
 .robot-card {
@@ -4246,7 +5621,7 @@ onUnmounted(() => {
         transform: translateY(-1px);
         
         .signal-header { color: #059669; }
-        .signal-trigger { color: #10b981; font-weight: 800; }
+        .signal-trigger { color: #10b981; font-weight: 600; }
       }
     }
     
@@ -4261,7 +5636,7 @@ onUnmounted(() => {
         transform: translateY(-1px);
         
         .signal-header { color: #dc2626; }
-        .signal-trigger { color: #ef4444; font-weight: 800; }
+        .signal-trigger { color: #ef4444; font-weight: 600; }
       }
     }
     
@@ -4269,7 +5644,7 @@ onUnmounted(() => {
       display: flex;
       align-items: center;
       gap: 4px;
-      font-weight: 600;
+      font-weight: 500;
       font-size: 12px;
       margin-bottom: 2px;
       
@@ -4278,7 +5653,7 @@ onUnmounted(() => {
     
     .signal-trigger {
       font-size: 13px;
-      font-weight: 700;
+      font-weight: 600;
       font-family: 'JetBrains Mono', monospace;
     }
     
@@ -4299,7 +5674,7 @@ onUnmounted(() => {
     
     .price-value {
       font-size: 16px;
-      font-weight: 700;
+      font-weight: 600;
       font-family: 'JetBrains Mono', monospace;
       
       &.up { color: #10b981; }
@@ -4308,7 +5683,7 @@ onUnmounted(() => {
     
     .price-change {
       font-size: 11px;
-      font-weight: 500;
+      font-weight: 400;
       
       &.up { color: #10b981; }
       &.down { color: #ef4444; }
@@ -4347,7 +5722,8 @@ onUnmounted(() => {
   .chart-labels {
     display: flex;
     justify-content: space-between;
-    font-size: 9px;
+    font-size: 10px;
+    font-weight: 400;
     margin-top: 4px;
     
     .label-high { color: #ef4444; }
@@ -4375,10 +5751,10 @@ onUnmounted(() => {
   .robot-mood-text {
     font-size: 11px;
     color: var(--robot-text-secondary);
-    font-weight: 500;
+    font-weight: 400;
     text-align: center;
     max-width: 120px;
-    line-height: 1.2;
+    line-height: 1.3;
   }
   
   .robot-shadow {
@@ -4892,13 +6268,15 @@ onUnmounted(() => {
   }
   
   .signal-reason {
-    padding: 6px 10px;
-    background: rgba(99, 102, 241, 0.08);
-    border-radius: 5px;
+    padding: 4px 0 0 0;
+    background: transparent;
+    border: none;
     font-size: 11px;
+    font-weight: 400;
     color: var(--robot-text-secondary);
-    line-height: 1.4;
-    margin-bottom: 6px;
+    line-height: 1.5;
+    margin-top: 6px;
+    text-align: center;
   }
   
   .signal-logs-list {
@@ -5087,11 +6465,11 @@ onUnmounted(() => {
   
   .stat-value {
       font-family: 'JetBrains Mono', monospace;
-      font-weight: 600;
+      font-weight: 500;
       font-size: 14px;
       
-      &.primary { color: var(--primary-color); }
-      &.warning { color: #f59e0b; }
+      &.primary { color: var(--primary-color); font-weight: 600; }
+      &.warning { color: #f59e0b; font-weight: 600; }
   }
 
   .param-box {
@@ -5164,24 +6542,83 @@ onUnmounted(() => {
     align-items: center;
     gap: 4px;
     font-size: 12px;
-    line-height: 1.4;
+    line-height: 1.5;
 
     .label {
       color: var(--robot-text-tertiary);
       font-size: 11px;
+      font-weight: 400;
     }
 
     .value {
       font-family: 'JetBrains Mono', monospace;
-      font-weight: 600;
+      font-weight: 500;
+      font-size: 12px;
       color: var(--robot-text-primary);
 
-      &.highlight { color: #6366f1; }
-      &.error { color: #ef4444; }
-      &.success { color: #10b981; }
-      &.warning { color: #f59e0b; }
+      &.highlight { color: #6366f1; font-weight: 600; }
+      &.error { color: #ef4444; font-weight: 600; }
+      &.success { color: #10b981; font-weight: 600; }
+      &.warning { color: #f59e0b; font-weight: 600; }
     }
   }
+}
+
+/* ==================== 统一字体规范 ==================== */
+:deep(.robot-card.running) {
+  /* 标题文字 */
+  --font-title: 500 12px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  /* 正文文字 */
+  --font-body: 400 12px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  /* 辅助说明文字 */
+  --font-secondary: 400 11px/1.4 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  /* 数值文字（价格、数量等） */
+  --font-mono: 600 12px/1.4 'JetBrains Mono', 'Courier New', monospace;
+  /* 小标签文字 */
+  --font-small: 400 10px/1.3 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  /* 微小注释 */
+  --font-tiny: 400 10px/1.2 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+/* 市场状态与风险偏好映射（机器人列表页） */
+.signal-prelogs-panels {
+  margin-top: 6px;
+}
+
+.mapping-item-card {
+  background: rgba(99, 102, 241, 0.035);
+  border: 1px solid rgba(99, 102, 241, 0.12);
+  border-radius: 8px;
+  padding: 10px 10px 12px;
+}
+
+.mapping-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.mapping-header .market-name {
+  font-size: 12px;
+  color: var(--robot-text-primary);
+  font-weight: 600;
+}
+
+.mapping-arrow {
+  text-align: center;
+  color: rgba(0, 0, 0, 0.35);
+  font-size: 12px;
+  margin: 6px 0;
+}
+
+/* 风险偏好标签简洁样式 */
+.risk-mapping-tag {
+  font-weight: 400;
+  font-size: 11px;
+  background-color: transparent !important;
+  color: #888888 !important;
+  opacity: 1;
 }
 
 .account-section {
@@ -5430,7 +6867,7 @@ onUnmounted(() => {
 
 /* 列宽定义 - 紧凑模式 */
 .col-info { width: 90px; min-width: 90px; }
-.col-quantity { width: 65px; min-width: 65px; }
+.col-quantity { width: 95px; min-width: 95px; }
 .col-price { width: 60px; min-width: 60px; }
 .col-pl { width: 80px; min-width: 80px; }
 .col-monitor { width: 208px; min-width: 208px; }
@@ -5499,13 +6936,13 @@ onUnmounted(() => {
   font-size: 9px;
   line-height: 1.4;
   width: 100%;
+  text-align: center;
 }
 .order-info-item {
   display: flex;
   align-items: center;
-  gap: 4px;
   margin-bottom: 2px;
-  justify-content: flex-start;
+  justify-content: center;
 }
 .order-info-item:last-child {
   margin-bottom: 0;
@@ -5521,6 +6958,7 @@ onUnmounted(() => {
   font-family: monospace;
   font-size: 9px;
   word-break: break-all;
+  text-align: center;
 }
 .market-state-text {
   font-size: 9px;
@@ -5565,6 +7003,20 @@ onUnmounted(() => {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
   transition: all 0.2s ease;
 }
+
+/* 杠杆标签（来自交易所持仓数据 pos.leverage） */
+.leverage-tag {
+  font-size: 9px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+  transition: all 0.2s ease;
+  color: #3b82f6;
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.15) 0%, rgba(59, 130, 246, 0.1) 100%);
+  border: 1px solid rgba(59, 130, 246, 0.28);
+}
 .margin-mode-tag.isolated { 
   color: #f59e0b; 
   background: linear-gradient(135deg, rgba(245, 158, 11, 0.15) 0%, rgba(245, 158, 11, 0.1) 100%);
@@ -5583,6 +7035,18 @@ onUnmounted(() => {
 }
 
 /* 数字显示样式 */
+.qty-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.margin-in-qty {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  color: var(--text-color-1);
+  font-size: 11px;
+}
 .quantity-value {
   font-family: 'JetBrains Mono', monospace;
   font-weight: 600;
@@ -5906,14 +7370,14 @@ onUnmounted(() => {
   padding: 60px 20px;
   background: linear-gradient(135deg, rgba(99, 102, 241, 0.03) 0%, rgba(99, 102, 241, 0.01) 100%);
   border-radius: 8px;
-  border: 2px dashed rgba(99, 102, 241, 0.2);
+  border: none;
   margin: 12px 0;
   color: var(--text-color-3);
 }
 
 .empty-icon {
-  font-size: 48px;
-  margin-bottom: 16px;
+  font-size: 32px;
+  margin-bottom: 10px;
   opacity: 0.5;
   animation: float 3s ease-in-out infinite;
   filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1));

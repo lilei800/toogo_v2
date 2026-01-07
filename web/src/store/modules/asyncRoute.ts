@@ -61,6 +61,8 @@ const frontendHiddenChildRoutes: Array<{
       },
     },
   },
+
+  // 客服聊天路由兜底已转为 constantRouter（router/index.ts），这里不再注入，避免与动态菜单路由重复导致初始化异常
 ];
 
 /**
@@ -96,19 +98,19 @@ function isRouteExists(routes: RouteRecordRaw[], name?: string, path?: string): 
 function findParentRoute(routes: RouteRecordRaw[], parentPath: string): RouteRecordRaw | null {
   // 规范化路径：确保以/开头
   const normalizedParentPath = parentPath.startsWith('/') ? parentPath : '/' + parentPath;
-  
+
   for (const route of routes) {
     const routePath = route.path as string;
     if (!routePath) continue;
-    
+
     // 规范化路由路径
     const normalizedRoutePath = routePath.startsWith('/') ? routePath : '/' + routePath;
-    
+
     // 精确匹配路径
     if (normalizedRoutePath === normalizedParentPath) {
       return route;
     }
-    
+
     // 递归查找子路由
     if (route.children && route.children.length > 0) {
       const found = findParentRoute(route.children as RouteRecordRaw[], parentPath);
@@ -116,10 +118,13 @@ function findParentRoute(routes: RouteRecordRaw[], parentPath: string): RouteRec
         return found;
       }
     }
-    
+
     // 如果当前路由是父路由的一部分（如 /toogo 匹配 /toogo/robot）
     // 需要确保路径匹配且不是完全相同的路径
-    if (normalizedRoutePath !== normalizedParentPath && normalizedParentPath.startsWith(normalizedRoutePath + '/')) {
+    if (
+      normalizedRoutePath !== normalizedParentPath &&
+      normalizedParentPath.startsWith(normalizedRoutePath + '/')
+    ) {
       // 检查是否有子路由精确匹配
       if (route.children && route.children.length > 0) {
         const found = findParentRoute(route.children as RouteRecordRaw[], parentPath);
@@ -142,7 +147,7 @@ function findParentRoute(routes: RouteRecordRaw[], parentPath: string): RouteRec
  */
 function mergeFrontendHiddenRoutes(routes: RouteRecordRaw[]): RouteRecordRaw[] {
   const mergedRoutes = [...routes];
-  
+
   // 按父路径分组
   const groupedByParent = new Map<string, RouteRecordRaw[]>();
   for (const item of frontendHiddenChildRoutes) {
@@ -151,11 +156,11 @@ function mergeFrontendHiddenRoutes(routes: RouteRecordRaw[]): RouteRecordRaw[] {
     }
     groupedByParent.get(item.parentPath)!.push(item.childRoute);
   }
-  
+
   // 处理每个父路径
   groupedByParent.forEach((childRoutes, parentPath) => {
     const existingParent = findParentRoute(mergedRoutes, parentPath);
-    
+
     for (const childRoute of childRoutes) {
       // 检查子路由是否已存在
       const childName = childRoute.name as string;
@@ -163,7 +168,7 @@ function mergeFrontendHiddenRoutes(routes: RouteRecordRaw[]): RouteRecordRaw[] {
       if (isRouteExists(mergedRoutes, childName, childPath)) {
         continue; // 跳过已存在的路由
       }
-      
+
       if (existingParent) {
         // 父路由存在，将子路由添加到父路由的children中
         if (!existingParent.children) {
@@ -171,14 +176,14 @@ function mergeFrontendHiddenRoutes(routes: RouteRecordRaw[]): RouteRecordRaw[] {
         }
         // 检查children中是否已存在
         const existsInChildren = existingParent.children.some(
-          (r: any) => r.name === childName || r.path === childPath
+          (r: any) => r.name === childName || r.path === childPath,
         );
         if (!existsInChildren) {
           existingParent.children.push(childRoute);
         }
       } else {
         // 父路由不存在，尝试查找父路径的父路由（如 /toogo/robot 找不到，尝试找 /toogo）
-        const parentParts = parentPath.split('/').filter(p => p);
+        const parentParts = parentPath.split('/').filter((p) => p);
         if (parentParts.length > 1) {
           // 尝试查找上一级父路由
           const grandParentPath = '/' + parentParts.slice(0, -1).join('/');
@@ -187,7 +192,8 @@ function mergeFrontendHiddenRoutes(routes: RouteRecordRaw[]): RouteRecordRaw[] {
             // 创建中间父路由
             const middleParentPath = '/' + parentParts.join('/');
             let middleParent = grandParent.children?.find(
-              (r: any) => r.path === middleParentPath || r.path === parentParts[parentParts.length - 1]
+              (r: any) =>
+                r.path === middleParentPath || r.path === parentParts[parentParts.length - 1],
             );
             if (!middleParent) {
               // 创建中间父路由
@@ -207,7 +213,7 @@ function mergeFrontendHiddenRoutes(routes: RouteRecordRaw[]): RouteRecordRaw[] {
               middleParent.children = [];
             }
             const existsInMiddleChildren = middleParent.children.some(
-              (r: any) => r.name === childName || r.path === childPath
+              (r: any) => r.name === childName || r.path === childPath,
             );
             if (!existsInMiddleChildren) {
               middleParent.children.push(childRoute);
@@ -227,7 +233,7 @@ function mergeFrontendHiddenRoutes(routes: RouteRecordRaw[]): RouteRecordRaw[] {
       }
     }
   });
-  
+
   return mergedRoutes;
 }
 interface TreeHelperConfig {
@@ -344,7 +350,10 @@ export const useAsyncRouteStore = defineStore('app-async-route', {
           accessedRouters = mergeFrontendHiddenRoutes(accessedRouters);
         } catch (error) {
           // 后端菜单接口异常时，回退到前端静态路由，避免登录后白屏/跳回登录页
-          console.log('[generateRoutes] generatorDynamicRouter failed, fallback to frontend routes:', error);
+          console.log(
+            '[generateRoutes] generatorDynamicRouter failed, fallback to frontend routes:',
+            error,
+          );
           accessedRouters = filter(asyncRoutes, routeFilter);
         }
       } else {

@@ -8,6 +8,6 @@ export function ImportExcel(params: UploadFileParams) {
       url: '/hgexample/comp/importExcel',
       method: 'post',
     },
-    params
+    params,
   );
 }

@@ -77,18 +77,18 @@
                   marginRight: '4px',
                 },
               },
-              [option.username as string]
+              [option.username as string],
             ),
             h(
               NText,
               { depth: 3, tag: 'div' },
               {
                 default: () => option.label as string,
-              }
+              },
             ),
-          ]
+          ],
         ),
-      ]
+      ],
     );
   };
 
@@ -129,7 +129,7 @@
         resetFields();
       }
     },
-    { deep: true }
+    { deep: true },
   );
 
   onMounted(() => {

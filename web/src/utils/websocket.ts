@@ -144,12 +144,12 @@ class ToogoWebSocket {
         this.isConnecting = false;
         this.reconnectAttempts = 0;
         this.startHeartbeat();
-        
+
         // 重新订阅之前的频道
         this.subscriptions.forEach((channel) => {
           this.subscribe(channel);
         });
-        
+
         resolve();
       };
 
@@ -241,10 +241,10 @@ class ToogoWebSocket {
     try {
       // 可能是多条消息以换行分隔
       const messages = data.split('\n').filter(Boolean);
-      
+
       for (const msgStr of messages) {
         const message: WsMessage = JSON.parse(msgStr);
-        
+
         // 触发对应类型的处理器
         const handlers = this.handlers.get(message.type as MessageType);
         if (handlers) {
@@ -279,7 +279,9 @@ class ToogoWebSocket {
     }
 
     this.reconnectAttempts++;
-    console.log(`[ToogoWebSocket] Reconnecting... (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+    console.log(
+      `[ToogoWebSocket] Reconnecting... (${this.reconnectAttempts}/${this.maxReconnectAttempts})`,
+    );
 
     setTimeout(() => {
       this.connect().catch(console.error);

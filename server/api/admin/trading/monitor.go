@@ -135,6 +135,7 @@ type RobotAccountInfo struct {
 type RobotConfigInfo struct {
 	AutoTradeEnabled  bool    `json:"autoTradeEnabled" dc:"自动下单"`
 	AutoCloseEnabled  bool    `json:"autoCloseEnabled" dc:"自动平仓"`
+	ProfitLockEnabled bool    `json:"profitLockEnabled" dc:"锁定盈利开关（止盈启动后禁止自动开新仓）"`
 	DualSidePosition  bool    `json:"dualSidePosition" dc:"双向开单"`
 	UseMonitorSignal  bool    `json:"useMonitorSignal" dc:"信号监控"`
 	RiskPreference    string  `json:"riskPreference" dc:"风险偏好"`

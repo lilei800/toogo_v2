@@ -64,8 +64,6 @@ func (c *cRobotRealtime) Subscribe(client *websocket.Client, req *websocket.WReq
 	}
 	robotRealtimeSubs.Store(client.ID, sub)
 
-	g.Log().Warningf(client.Context(), "[WS][RobotRealtime] subscribe ok: client=%s robotIds=%s intervalMs=%d event=%s", client.ID, robotIds, intervalMs, req.Event)
-
 	// ack
 	websocket.SendSuccess(client, req.Event, g.Map{
 		"robotIds":    robotIds,

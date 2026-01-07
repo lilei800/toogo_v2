@@ -220,7 +220,7 @@
 
         setTimeout(() => {
           nextTick(() =>
-            useEcharts(fullYearSalesChart.value as HTMLDivElement).setOption(option.value)
+            useEcharts(fullYearSalesChart.value as HTMLDivElement).setOption(option.value),
           );
         }, 10);
       });

@@ -122,6 +122,7 @@ type TradingRobotUpdateInp struct {
 	AutoStartRetreatPercent float64 `json:"autoStartRetreatPercent" v:"between:0.1,100" dc:"启动回撤百分比"` // 改为可选
 	AutoTradeEnabled        *int    `json:"autoTradeEnabled" dc:"全自动下单：0=否,1=是（可选，nil表示不更新）"`
 	AutoCloseEnabled        *int    `json:"autoCloseEnabled" dc:"全自动平仓：0=否,1=是（可选，nil表示不更新）"`
+	ProfitLockEnabled       *int    `json:"profitLockEnabled" dc:"锁定盈利开关：0=关闭,1=开启（可选，nil表示不更新；止盈启动后禁止自动开新仓）"`
 	DualSidePosition        *int    `json:"dualSidePosition" dc:"双向开单：0=单向,1=双向（可选，nil表示不更新）"`
 	Remark                  string  `json:"remark" dc:"备注"`
 }

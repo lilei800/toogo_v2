@@ -282,9 +282,19 @@ func GetAuthorization(r *ghttp.Request) string {
 	// 默认从请求头获取
 	var authorization = r.Header.Get("Authorization")
 
-	// 如果请求头不存在则从get参数获取
+	// 如果请求头不存在则从 query/get 参数获取（WebSocket Upgrade 场景下更可靠）
 	if authorization == "" {
-		return r.Get("authorization").String()
+		// Query first (most common for ws://.../socket/?authorization=xxx)
+		if q := r.GetQuery("authorization").String(); q != "" {
+			authorization = q
+		} else if q := r.GetQuery("Authorization").String(); q != "" {
+			authorization = q
+		} else if q := r.GetQuery("token").String(); q != "" {
+			authorization = q
+		} else {
+			// Fallback to generic get (may include form/query depending on GF internals)
+			authorization = r.Get("authorization").String()
+		}
 	}
 	return gstr.Replace(authorization, "Bearer ", "")
 }
