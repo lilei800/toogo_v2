@@ -1,8 +1,92 @@
-*.zip
-.idea
-.user.ini
+# 编译文件
+*.exe
+*.dll
+*.so
+*.dylib
+server/main
+server/hotgo
+server/hotgo_server
+
+# 依赖目录
+node_modules/
+web/node_modules/
+web_backup_old/node_modules/
+web/web_backup_old/node_modules/
+
+# 日志文件
+*.log
+logs/
+server/logs/
+**/logs/
+
+# 临时文件
+temp/
+server/temp/
+**/temp/
+*.tmp
+
+# 缓存文件
+cache/
+server/storage/cache/
+**/cache/
+.npm/
+.yarn/
+
+# 编译输出
+dist/
+build/
+web/dist/
+web/build/
+
+# IDE配置
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 系统文件
 .DS_Store
+Thumbs.db
+desktop.ini
+.user.ini
+
+# 压缩文件
+*.zip
+*.tar.gz
+*.rar
+
+# 脚本文件（可选，根据需要）
 pull.bat
 push.sh
-/dist
 
+# 环境变量和配置文件（包含敏感信息）
+.env
+.env.local
+.env.production
+server/.env
+*.env
+!*.env.example
+
+# 密码和密钥文件
+passwords*.txt
+passwords*.env
+*passwords*
+
+# 备份文件
+*.bak
+*.backup
+*_backup_*
+
+# 数据库文件
+*.db
+*.sqlite
+*.sqlite3
+
+# 测试覆盖率
+coverage/
+*.cover
+
+# Go相关
+*.test
+*.out
