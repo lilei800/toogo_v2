@@ -4,7 +4,8 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ./deploy/nginx/conf.d:/etc/nginx/conf.d:ro
+      # Use HTTPS config when certs exist
+      - ./deploy/nginx/conf.d/hotgo.https.conf:/etc/nginx/conf.d/default.conf:ro
       - ./deploy_data/nginx_logs:/var/log/nginx
       - ./deploy_data/certbot/www:/var/www/certbot
       - ./deploy_data/certbot/conf:/etc/letsencrypt:ro

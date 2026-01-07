@@ -59,6 +59,9 @@ desktop.ini
 # 脚本文件（可选，根据需要）
 pull.bat
 push.sh
+setup_domain.sh
+check_ssl.sh
+nginx_toogo.conf
 
 # 环境变量和配置文件（包含敏感信息）
 .env
@@ -72,6 +75,20 @@ server/.env
 passwords*.txt
 passwords*.env
 *passwords*
+
+# ===== 本项目生成的敏感部署资料（请勿提交到 GitHub）=====
+服务器配置信息.md
+config.yaml.production
+域名配置文件清单.txt
+开始部署-看这里.md
+快速部署操作清单.md
+一键部署指南-FinalShell版.md
+域名快速配置指南.md
+域名配置说明.md
+服务器部署检查清单.md
+README-域名配置.md
+Docker部署方案对比.md
+域名快速配置指南.md
 
 # 备份文件
 *.bak
